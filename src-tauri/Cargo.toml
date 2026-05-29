@@ -1,0 +1,55 @@
+[package]
+name = "avskrift"
+version = "0.1.0"
+description = "Lokal transkribering, diarisering och avidentifiering av svenskt tal"
+authors = ["Pluggentipsar"]
+edition = "2021"
+
+[lib]
+# `_lib`-suffixet behövs för att lib-namnet inte ska krocka med bin-namnet på Windows.
+name = "avskrift_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+once_cell = "1"
+regex = "1"
+aho-corasick = "1"
+
+# --- Avidentifiering (återanvänt från Avidentifierare) ---
+ort = "=2.0.0-rc.12"
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+docx-rs = "0.4"
+candle-core = "0.10"
+candle-transformers = "0.10"
+
+# --- Tal -> text ---
+# whisper.cpp-bindningar. KB-Whisper konverteras till GGML/GGUF och läses härifrån.
+# OBS: pinna mot en konkret version och verifiera API:t vid första bygget – se FINISH.md.
+whisper-rs = "0.14"
+
+# --- Diarisering (pyannote-segmentering + talar-embeddings via ONNX) ---
+# sherpa-onnx-bindningar; kör hela diariserings-pipen i ren Rust/ONNX (samma ort-tänk).
+sherpa-rs = "0.6"
+
+# --- Ljudavkodning -> 16 kHz mono f32 (ingen extern FFmpeg) ---
+symphonia = { version = "0.5", features = [
+    "mp3", "aac", "isomp4", "alac", "flac", "ogg", "vorbis", "wav", "pcm",
+] }
+rubato = "0.15"
+
+# On-demand download of Whisper models (small, blocking HTTP client).
+ureq = "2"
+
+# Optimera beroenden även i dev-bygget så lokal inferens är användbar under `tauri dev`.
+# Vår egen krate förblir ooptimerad för snabba, felsökbara ombyggen.
+[profile.dev.package."*"]
+opt-level = 3

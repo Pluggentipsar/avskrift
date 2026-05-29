@@ -1,0 +1,33 @@
+.DS_Store
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+
+# Rust / Tauri build output
+/src-tauri/target/
+/src-tauri/gen/
+
+# Bundled/downloaded models — fetch or build locally (see README / FINISH.md)
+/src-tauri/resources/model/
+/src-tauri/resources/llm/
+/src-tauri/resources/diarization/
+/src-tauri/resources/whisper/
+
+# Python tooling
+/model-tools/.venv/
+/model-tools/_export/
+__pycache__/
+*.pyc
+
+# Generated icon raster + installers
+/src-tauri/icon-1024.png
+*-setup.exe
+*.msi
+
+Thumbs.db
+*.log

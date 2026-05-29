@@ -1,0 +1,7 @@
+# Diagnos-akronymer som matchas ENDAST i versaler (för att undvika krockar med
+# vanliga svenska/engelska ord när de skrivs gemena, t.ex. "add", "cp", "damp").
+ADD
+CP
+DAMP
+GAD
+AST

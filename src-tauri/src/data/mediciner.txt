@@ -1,0 +1,71 @@
+# Inbyggd läkemedelslista (matchas oavsett skiftläge, hela ord). Utöka fritt.
+
+# ADHD / centralstimulantia
+Concerta
+Ritalin
+Ritalina
+Equasym
+Medikinet
+Metylfenidat
+Elvanse
+Lisdexamfetamin
+Attentin
+Amfetamin
+Strattera
+Atomoxetin
+Intuniv
+Guanfacin
+
+# Antidepressiva / SSRI / SNRI
+Sertralin
+Zoloft
+Citalopram
+Cipramil
+Escitalopram
+Cipralex
+Fluoxetin
+Fontex
+Paroxetin
+Mirtazapin
+Venlafaxin
+Efexor
+Duloxetin
+Bupropion
+Voxra
+
+# Antipsykotika / stämningsstabiliserande
+Abilify
+Aripiprazol
+Risperdal
+Risperidon
+Olanzapin
+Zyprexa
+Quetiapin
+Seroquel
+Litium
+Lamotrigin
+Lamictal
+
+# Ångest / sömn
+Stesolid
+Diazepam
+Oxascand
+Sobril
+Atarax
+Lergigan
+Theralen
+Propavan
+Melatonin
+Circadin
+Zopiklon
+Imovane
+
+# Epilepsi / övrigt vanligt
+Ergenyl
+Keppra
+Levetiracetam
+Insulin
+Levaxin
+Levotyroxin
+Waran
+Trombyl

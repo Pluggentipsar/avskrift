@@ -1,0 +1,126 @@
+//! Model registry and path resolution.
+//!
+//! Two model families live side by side:
+//!   * **Tal -> text**: KB-Whisper in GGML/GGUF form, one file per size. Selectable at runtime.
+//!   * **Diarisering**: a pyannote segmentation ONNX + a speaker-embedding ONNX (sherpa-onnx).
+//!   * **Avidentifiering**: KB-BERT NER (ONNX) + Qwen (GGUF) — reused from Avidentifierare.
+//!
+//! Whisper models are large and there are several sizes, so they are *not* embedded in the
+//! installer. The smallest default is bundled; the rest are downloaded on demand into the app's
+//! data directory. Diarisation + PII models are small enough to embed as bundle resources.
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager};
+
+/// One selectable KB-Whisper size.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperModelInfo {
+    /// Stable id used by the frontend and as the on-disk filename stem, e.g. "kb-whisper-small".
+    pub id: String,
+    /// Human label, e.g. "Small (snabb, bra balans)".
+    pub label: String,
+    /// Approximate download size in MB (for the UI).
+    pub size_mb: u32,
+    /// Whether the .bin file is present on disk right now.
+    pub downloaded: bool,
+}
+
+/// The five KB-Whisper sizes KBLab publishes, as `(id, label, size_mb, ggml_url)`.
+///
+/// The URLs point at GGML/whisper.cpp conversions of KB-Whisper. **Verify these against the actual
+/// published artefacts before release** (see FINISH.md) — KBLab publishes the PyTorch/CT2 weights,
+/// and the GGML files come from a community/own conversion repo.
+pub const WHISPER_MODELS: &[(&str, &str, u32, &str)] = &[
+    ("kb-whisper-tiny", "Tiny — snabbast, lägst kvalitet", 75,
+        "https://huggingface.co/KBLab/kb-whisper-tiny/resolve/main/ggml-model.bin"),
+    ("kb-whisper-base", "Base — snabb", 145,
+        "https://huggingface.co/KBLab/kb-whisper-base/resolve/main/ggml-model.bin"),
+    ("kb-whisper-small", "Small — bra balans (rekommenderad)", 480,
+        "https://huggingface.co/KBLab/kb-whisper-small/resolve/main/ggml-model.bin"),
+    ("kb-whisper-medium", "Medium — högre kvalitet, långsammare", 1530,
+        "https://huggingface.co/KBLab/kb-whisper-medium/resolve/main/ggml-model.bin"),
+    ("kb-whisper-large", "Large — bäst kvalitet, kräver kraftig dator", 3090,
+        "https://huggingface.co/KBLab/kb-whisper-large/resolve/main/ggml-model.bin"),
+];
+
+/// Download URL for a Whisper model id.
+pub fn whisper_url(id: &str) -> Option<&'static str> {
+    WHISPER_MODELS.iter().find(|(mid, ..)| *mid == id).map(|(.., url)| *url)
+}
+
+/// Resolved on-disk locations of every model the app needs.
+pub struct ModelPaths {
+    /// Directory holding `<id>.bin` Whisper models (app data dir, writable).
+    pub whisper_dir: PathBuf,
+    /// pyannote segmentation ONNX (bundled resource).
+    pub diar_segmentation: PathBuf,
+    /// Speaker-embedding ONNX (bundled resource).
+    pub diar_embedding: PathBuf,
+    // --- PII (reused) ---
+    pub ner_model: PathBuf,
+    pub ner_tokenizer: PathBuf,
+    pub ner_labels: PathBuf,
+    pub llm_model: PathBuf,
+    pub llm_tokenizer: PathBuf,
+}
+
+impl ModelPaths {
+    /// Full path to a Whisper model file by id.
+    pub fn whisper_file(&self, id: &str) -> PathBuf {
+        self.whisper_dir.join(format!("{id}.bin"))
+    }
+
+    /// The catalogue with live `downloaded` flags.
+    pub fn whisper_catalogue(&self) -> Vec<WhisperModelInfo> {
+        WHISPER_MODELS
+            .iter()
+            .map(|(id, label, size_mb, _url)| WhisperModelInfo {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                size_mb: *size_mb,
+                downloaded: self.whisper_file(id).exists(),
+            })
+            .collect()
+    }
+}
+
+/// Resolve every model path, preferring bundled resources and falling back to the source tree
+/// during `tauri dev`. Whisper models live in the writable app-data dir so they can be downloaded
+/// after install.
+pub fn resolve(app: &AppHandle) -> ModelPaths {
+    let resource_dir = app.path().resource_dir().ok();
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // A bundled resource: prefer the installed copy, fall back to the dev source tree.
+    let res = |rel: &str| -> PathBuf {
+        if let Some(rd) = &resource_dir {
+            let p = rd.join("resources").join(rel);
+            if p.exists() {
+                return p;
+            }
+        }
+        manifest.join("resources").join(rel)
+    };
+
+    // Writable per-user dir for downloaded Whisper models.
+    let whisper_dir = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("whisper-models"))
+        .unwrap_or_else(|_| manifest.join("resources").join("whisper"));
+    let _ = std::fs::create_dir_all(&whisper_dir);
+
+    ModelPaths {
+        whisper_dir,
+        diar_segmentation: res("diarization/segmentation.onnx"),
+        diar_embedding: res("diarization/embedding.onnx"),
+        ner_model: res("model/model.onnx"),
+        ner_tokenizer: res("model/tokenizer.json"),
+        ner_labels: res("model/labels.json"),
+        llm_model: res("llm/model.gguf"),
+        llm_tokenizer: res("llm/tokenizer.json"),
+    }
+}

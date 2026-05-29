@@ -1,0 +1,97 @@
+# Inbyggd diagnos-ordlista (matchas oavsett skiftläge, hela ord).
+# Rader som börjar med # ignoreras. Utöka fritt.
+
+# Neuropsykiatriskt / utveckling
+ADHD
+OCD
+PTSD
+ASD
+FASD
+DCD
+autism
+autismspektrumtillstånd
+autismspektrumstörning
+aspergers syndrom
+asperger
+dyslexi
+dyskalkyli
+språkstörning
+selektiv mutism
+tourettes syndrom
+tourette
+ticssyndrom
+trotssyndrom
+uppförandestörning
+intellektuell funktionsnedsättning
+utvecklingsstörning
+inlärningssvårigheter
+koncentrationssvårigheter
+dyspraxi
+
+# Nedstämdhet / ångest
+depression
+egentlig depression
+nedstämdhet
+ångest
+ångestsyndrom
+generaliserat ångestsyndrom
+social fobi
+paniksyndrom
+panikångest
+tvångssyndrom
+separationsångest
+
+# Trauma / stress
+posttraumatiskt stressyndrom
+akut stressreaktion
+utmattningssyndrom
+utmattningsdepression
+anpassningsstörning
+
+# Ätstörning / självskada
+anorexia nervosa
+anorexi
+bulimia nervosa
+bulimi
+ätstörning
+hetsätningsstörning
+självskadebeteende
+självskada
+självmordstankar
+suicidtankar
+suicidalitet
+
+# Allvarlig psykisk sjukdom
+bipolär sjukdom
+bipolaritet
+schizofreni
+psykos
+borderline
+emotionellt instabil personlighetsstörning
+personlighetsstörning
+
+# Missbruk / beroende
+alkoholberoende
+narkotikaberoende
+drogmissbruk
+substansbrukssyndrom
+spelberoende
+
+# Somatiskt (vanligt i elevhälsa)
+epilepsi
+epileptiker
+diabetes
+diabetiker
+astma
+allergi
+allergiker
+celiaki
+glutenintolerans
+glutenintolerant
+laktosintolerans
+laktosintolerant
+cerebral pares
+downs syndrom
+down syndrom
+fetalt alkoholsyndrom
+migrän

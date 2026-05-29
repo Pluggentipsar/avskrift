@@ -1,0 +1,12 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="224" fill="#111214"/>
+  <!-- document -->
+  <rect x="270" y="190" width="420" height="600" rx="34" fill="#ffffff"/>
+  <!-- text lines: ink, electric-blue redaction bar, faint -->
+  <rect x="338" y="312" width="284" height="46" rx="23" fill="#111214"/>
+  <rect x="338" y="410" width="284" height="46" rx="23" fill="#2440ff"/>
+  <rect x="338" y="508" width="170" height="46" rx="23" fill="#cdd0d6"/>
+  <!-- shield with check, overlapping bottom-right -->
+  <path d="M624 560l108-26 108 26v112c0 92-66 144-108 162-42-18-108-70-108-162V560z" fill="#2440ff" stroke="#111214" stroke-width="18"/>
+  <path d="M690 672l34 34 64-70" fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
