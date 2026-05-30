@@ -17,6 +17,7 @@ vite.config.js.timestamp-*
 /src-tauri/resources/llm/
 /src-tauri/resources/diarization/
 /src-tauri/resources/whisper/
+/src-tauri/resources/summary-models/
 
 # Python tooling
 /model-tools/.venv/

@@ -34,6 +34,7 @@ samples ─┬─ transcribe.rs   whisper-rs (KB-Whisper GGML) → RawSegment[] 
 | `diarize.rs` | sherpa-onnx-diarisering → talar-turer |
 | `align.rs` | Slår ihop transkript + diarisering, stabil "TALARE_n"-märkning |
 | `transcript.rs` | Datamodell + export-format (txt/srt/vtt/docx) |
+| `summarize.rs` | Mötessammanfattning: map-reduce + mallar via Qwen (candle) |
 | `engine.rs` | **Återanvänd** PII-motor; `analyze_segments`/`anonymized_segments` tillagda |
 | `pii/`, `ai.rs`, `docio.rs`, `data/` | **Återanvänt oförändrat** från Avidentifierare |
 
@@ -46,6 +47,10 @@ samples ─┬─ transcribe.rs   whisper-rs (KB-Whisper GGML) → RawSegment[] 
 - `anonymize(args{texts, enabled, terms, use_ai}) -> AnalyzeResult`
 - `anonymized_segments(rejected) -> string[]`
 - `export_transcript(args{path, anonymize, rejected, speaker_labels, word_level})`
+- `list_summary_models() -> SummaryModelInfo[]` · `list_summary_templates() -> TemplateInfo[]`
+- `download_summary_model(id)` → event `avskrift:download`
+- `summarize(args{text, model, template}) -> string` (markdown-utkast)
+- `save_summary(path, text)` (txt/docx)
 
 Framstegsmeddelanden sänds som event `avskrift:progress`. Tung körning sker på
 `tauri::async_runtime::spawn_blocking` så UI:t inte fryser.
@@ -61,6 +66,16 @@ Cargo-features `cuda` / `metal` / `vulkan` (se `Cargo.toml`) aktiverar matchande
 KB-BERT (NER) går via ONNX Runtime (`ort`) och kör alltid på CPU. GPU där skulle kräva ORT:s
 CUDA/DirectML execution provider — ett separat API; utelämnat då NER redan är snabbt. Se TODO i
 FINISH.md om det behövs.
+
+## Mötessammanfattning (map-reduce)
+
+`summarize.rs` använder en separat `Summarizer` (egen Qwen-instans, skild från PII-`LlmDetector` så
+modeller/sampling inte krockar). Långa transkript delas i bitar (~6 000 tecken, radvis) som var och
+en sammanfattas ("map"), varefter delsammanfattningarna syntetiseras till slutdokumentet enligt vald
+mall ("reduce"). Korta transkript görs i ett pass. System-prompten är hård på att **aldrig hitta på**
+beslut/namn/siffror. Modellen är **valbar och nedladdningsbar** (Qwen2.5 1,5B/3B/7B) via samma
+mönster som Whisper; 1,5B återanvänder den inbäddade PII-modellen så funktionen finns ur lådan.
+Resultatet visas som ett **redigerbart utkast** med varning — aldrig som facit.
 
 ## Synkad uppspelning
 

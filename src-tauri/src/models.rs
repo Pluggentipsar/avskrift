@@ -51,6 +51,54 @@ pub fn whisper_url(id: &str) -> Option<&'static str> {
     WHISPER_MODELS.iter().find(|(mid, ..)| *mid == id).map(|(.., url)| *url)
 }
 
+/// One selectable summarisation model. Larger = better Swedish prose / less hallucination, but
+/// slower and a bigger download. These are downloaded on demand into the writable model dir.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryModelInfo {
+    pub id: String,
+    pub label: String,
+    pub size_mb: u32,
+    pub downloaded: bool,
+}
+
+/// Downloadable summarisation models as `(id, label, size_mb, gguf_url, tokenizer_url)`.
+///
+/// All Qwen2.5-Instruct (Apache-2.0), GGUF Q4_K_M via bartowski. The 1.5B mirrors the bundled PII
+/// model so summarisation works out of the box; 3B/7B are opt-in for noticeably better minutes.
+/// **Verify URLs before release** (see FINISH.md).
+pub const SUMMARY_MODELS: &[(&str, &str, u32, &str, &str)] = &[
+    (
+        "qwen2.5-1.5b",
+        "Liten (1,5B) — snabb, finns redan, lägst kvalitet",
+        940,
+        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/tokenizer.json",
+    ),
+    (
+        "qwen2.5-3b",
+        "Medel (3B) — bra balans (rekommenderad)",
+        1930,
+        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main/tokenizer.json",
+    ),
+    (
+        "qwen2.5-7b",
+        "Stor (7B) — bäst kvalitet, kräver kraftig dator / GPU",
+        4680,
+        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/resolve/main/tokenizer.json",
+    ),
+];
+
+/// `(gguf_url, tokenizer_url)` for a summary model id.
+pub fn summary_urls(id: &str) -> Option<(&'static str, &'static str)> {
+    SUMMARY_MODELS
+        .iter()
+        .find(|(mid, ..)| *mid == id)
+        .map(|(_, _, _, gguf, tok)| (*gguf, *tok))
+}
+
 /// Resolved on-disk locations of every model the app needs.
 pub struct ModelPaths {
     /// Directory holding `<id>.bin` Whisper models (app data dir, writable).
@@ -65,6 +113,8 @@ pub struct ModelPaths {
     pub ner_labels: PathBuf,
     pub llm_model: PathBuf,
     pub llm_tokenizer: PathBuf,
+    /// Directory holding downloaded summarisation models (`<id>.gguf` + `<id>.tokenizer.json`).
+    pub summary_dir: PathBuf,
 }
 
 impl ModelPaths {
@@ -82,6 +132,37 @@ impl ModelPaths {
                 label: (*label).to_string(),
                 size_mb: *size_mb,
                 downloaded: self.whisper_file(id).exists(),
+            })
+            .collect()
+    }
+
+    /// GGUF + tokenizer paths for a summary model id. The 1.5B id reuses the bundled PII LLM (so
+    /// summarisation works without any download); others live in the writable summary dir.
+    pub fn summary_files(&self, id: &str) -> (PathBuf, PathBuf) {
+        if id == "qwen2.5-1.5b" && self.llm_model.exists() {
+            return (self.llm_model.clone(), self.llm_tokenizer.clone());
+        }
+        (
+            self.summary_dir.join(format!("{id}.gguf")),
+            self.summary_dir.join(format!("{id}.tokenizer.json")),
+        )
+    }
+
+    /// True when both files for a summary model are present (or it's the bundled 1.5B).
+    pub fn summary_downloaded(&self, id: &str) -> bool {
+        let (gguf, tok) = self.summary_files(id);
+        gguf.exists() && tok.exists()
+    }
+
+    /// The summary-model catalogue with live `downloaded` flags.
+    pub fn summary_catalogue(&self) -> Vec<SummaryModelInfo> {
+        SUMMARY_MODELS
+            .iter()
+            .map(|(id, label, size_mb, ..)| SummaryModelInfo {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                size_mb: *size_mb,
+                downloaded: self.summary_downloaded(id),
             })
             .collect()
     }
@@ -106,12 +187,17 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     };
 
     // Writable per-user dir for downloaded Whisper models.
-    let whisper_dir = app
-        .path()
-        .app_data_dir()
-        .map(|d| d.join("whisper-models"))
-        .unwrap_or_else(|_| manifest.join("resources").join("whisper"));
+    let data_dir = app.path().app_data_dir().ok();
+    let writable = |sub: &str| -> PathBuf {
+        data_dir
+            .as_ref()
+            .map(|d| d.join(sub))
+            .unwrap_or_else(|| manifest.join("resources").join(sub))
+    };
+    let whisper_dir = writable("whisper-models");
+    let summary_dir = writable("summary-models");
     let _ = std::fs::create_dir_all(&whisper_dir);
+    let _ = std::fs::create_dir_all(&summary_dir);
 
     ModelPaths {
         whisper_dir,
@@ -122,5 +208,6 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
         ner_labels: res("model/labels.json"),
         llm_model: res("llm/model.gguf"),
         llm_tokenizer: res("llm/tokenizer.json"),
+        summary_dir,
     }
 }

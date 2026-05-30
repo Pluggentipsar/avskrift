@@ -80,6 +80,12 @@ Manuell verifiering:
       Diarisering (`sherpa-rs`) kör på CPU; lägg ev. till en GPU-feature där på samma sätt.
 - [ ] **NER på GPU (valfritt):** KB-BERT via `ort` kör på CPU. För GPU, aktivera ORT:s CUDA/DirectML
       execution provider i `pii/model.rs` — separat API, ej kopplat till cargo-featuresen ovan.
+- [ ] **Sammanfattningsmodeller:** verifiera GGUF/tokenizer-URL:erna i `models.rs` (SUMMARY_MODELS)
+      och `fetch-summary.ps1`. Testa map-reduce på ett långt möte; trimma `CHUNK_CHARS` och
+      `max_new` i `summarize.rs` efter vald modell. 7B på CPU är seg — rekommendera GPU-bygge.
+      Överväg att strömma genererade tokens till UI:t (event) för långa sammanfattningar.
+- [ ] **Markdown i docx:** `save_summary` skriver markdown-rubriker som literal text i .docx (v1).
+      Överväg enkel rubrik-/punktlist-rendering om det behövs.
 - [ ] **Synkad uppspelning:** kräver `security.assetProtocol` i `tauri.conf.json` (redan satt, scope
       `**`). Stäm av scope mot var ljudfiler/inspelningar faktiskt ligger om du snävar in det.
 - [ ] **Mikrofon-behörighet**: macOS kräver `NSMicrophoneUsageDescription` i appens Info.plist

@@ -10,6 +10,7 @@ mod download;
 mod engine;
 mod models;
 mod pii;
+mod summarize;
 mod transcribe;
 mod transcript;
 
@@ -18,8 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use engine::{AnalyzeResult, Engine, ModelPaths as PiiPaths};
-use models::{ModelPaths, WhisperModelInfo};
+use models::{ModelPaths, SummaryModelInfo, WhisperModelInfo};
 use pii::Category;
+use summarize::Summarizer;
 use tauri::{AppHandle, Emitter, Manager, State};
 use transcribe::Transcriber;
 use transcript::Transcript;
@@ -30,6 +32,8 @@ struct Backend {
     transcriber: Mutex<Transcriber>,
     /// The most recent transcript (timings + speakers), held for export.
     transcript: Mutex<Option<Transcript>>,
+    /// Lazily-loaded summariser, keyed by the loaded model id (reloaded on change).
+    summarizer: Mutex<Option<(String, Summarizer)>>,
     paths: ModelPaths,
 }
 
@@ -69,6 +73,97 @@ async fn download_whisper_model(app: AppHandle, id: String) -> Result<(), String
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+// ---- Summarisation models & templates ----
+
+#[tauri::command]
+fn list_summary_models(backend: State<Backend>) -> Vec<SummaryModelInfo> {
+    backend.paths.summary_catalogue()
+}
+
+#[derive(serde::Serialize)]
+struct TemplateInfo {
+    id: String,
+    label: String,
+}
+
+#[tauri::command]
+fn list_summary_templates() -> Vec<TemplateInfo> {
+    summarize::TEMPLATES
+        .iter()
+        .map(|t| TemplateInfo { id: t.id.to_string(), label: t.label.to_string() })
+        .collect()
+}
+
+/// Download a summary model (GGUF + tokenizer) by id, emitting `avskrift:download` progress.
+#[tauri::command]
+async fn download_summary_model(app: AppHandle, id: String) -> Result<(), String> {
+    let (gguf_url, tok_url, gguf_dest, tok_dest) = {
+        let backend = app.state::<Backend>();
+        let (gguf_url, tok_url) =
+            models::summary_urls(&id).ok_or_else(|| format!("okänd modell: {id}"))?;
+        let (gguf_dest, tok_dest) = backend.paths.summary_files(&id);
+        (gguf_url.to_string(), tok_url.to_string(), gguf_dest, tok_dest)
+    };
+
+    let app_cb = app.clone();
+    let id_cb = id.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // Tokenizer first (small), then the large GGUF with progress.
+        download::to_file(&tok_url, &tok_dest, &|_, _| {}).map_err(|e| e.to_string())?;
+        download::to_file(&gguf_url, &gguf_dest, &|downloaded, total| {
+            let _ = app_cb.emit(
+                "avskrift:download",
+                serde_json::json!({ "id": id_cb, "downloaded": downloaded, "total": total }),
+            );
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SummarizeArgs {
+    /// Transcript text to summarise (utterances joined; may be the anonymised version).
+    text: String,
+    model: String,
+    template: String,
+}
+
+/// Generate structured Swedish minutes from a transcript. Returns the draft markdown — always shown
+/// to the user as an editable draft with an "AI-generated, review" warning.
+#[tauri::command]
+async fn summarize(app: AppHandle, args: SummarizeArgs) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || run_summarize(&app, args))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn run_summarize(app: &AppHandle, args: SummarizeArgs) -> anyhow::Result<String> {
+    let backend = app.state::<Backend>();
+    let progress = |m: &str| emit(app, m);
+
+    let (gguf, tok) = backend.paths.summary_files(&args.model);
+    if !gguf.exists() || !tok.exists() {
+        return Err(anyhow::anyhow!(
+            "Sammanfattningsmodellen '{}' är inte nedladdad. Hämta den först.",
+            args.model
+        ));
+    }
+
+    // Lazily (re)load the summariser when the selected model changes.
+    let mut guard = backend.summarizer.lock().unwrap();
+    let needs_load = !matches!(&*guard, Some((cur, _)) if *cur == args.model);
+    if needs_load {
+        progress(&format!("Laddar modell ({})…", args.model));
+        *guard = Some((args.model.clone(), Summarizer::load(&gguf, &tok)?));
+    }
+    let (_, summarizer) = guard.as_ref().unwrap();
+    summarizer.summarize(&args.text, &args.template, &progress)
 }
 
 // ---- Transcription ----
@@ -238,6 +333,21 @@ fn ext(p: &Path) -> Option<String> {
     p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
 }
 
+/// Save an (edited) summary draft as plain text or .docx. The markdown is written as-is for txt; for
+/// docx each line becomes a paragraph (markdown headings kept as literal text in v1).
+#[tauri::command]
+fn save_summary(path: String, text: String) -> Result<(), String> {
+    let out = PathBuf::from(&path);
+    let res = match ext(&out).as_deref() {
+        Some("docx") => {
+            let paragraphs: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+            docio::save_docx(&out, &paragraphs)
+        }
+        _ => docio::save_text(&out, &text),
+    };
+    res.map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -256,6 +366,7 @@ pub fn run() {
                 engine,
                 transcriber: Mutex::new(Transcriber::new()),
                 transcript: Mutex::new(None),
+                summarizer: Mutex::new(None),
                 paths,
             });
             Ok(())
@@ -263,11 +374,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_whisper_models,
             download_whisper_model,
+            list_summary_models,
+            list_summary_templates,
+            download_summary_model,
+            summarize,
             transcribe,
             save_recording,
             anonymize,
             anonymized_segments,
             export_transcript,
+            save_summary,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

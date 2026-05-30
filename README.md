@@ -26,6 +26,10 @@ Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
   - **Ordlistor** — svenska diagnoser/mediciner + egen ordlista
   - **Valfritt AI-lager** — lokal Qwen2.5-1.5B (candle) för kontextuella ledtrådar
   - **Granskning** — varje träff godkänns/avvisas innan export; konsekvent pseudonymisering
+- **Mötessammanfattning** — en valbar, nedladdningsbar lokal språkmodell (Qwen2.5 1,5B/3B/7B)
+  sammanfattar transkriptet strukturerat enligt en **mall** (mötesprotokoll, kort sammanfattning,
+  beslut & åtgärder). Långa möten hanteras via **map-reduce**. Resultatet är ett **redigerbart
+  utkast** med "AI-genererat — granska"-varning; kan sammanfatta råtext eller den avidentifierade.
 - **Export**: ren text, Word (.docx), och undertexter **.srt / .vtt** med tidsstämplar — i råform
   eller avidentifierad. Med ordnivå-tidsstämplar även **ord-VTT** (en undertext per ord).
 
@@ -41,7 +45,8 @@ Tauri 2 (Rust-backend) + SvelteKit (gränssnitt).
 | Tal → text | `whisper-rs` (whisper.cpp) | KB-Whisper (GGML) |
 | Diarisering | `sherpa-rs` (sherpa-onnx) | pyannote-segmentering + talar-embedding (ONNX) |
 | NER | `ort` (ONNX Runtime) | KB-BERT (int8 ONNX) |
-| AI-lager | `candle` | Qwen2.5-1.5B (GGUF) |
+| AI-lager (PII) | `candle` | Qwen2.5-1.5B (GGUF) |
+| Sammanfattning | `candle` | Qwen2.5 1,5B/3B/7B (GGUF, valbar) |
 | Word-I/O | `docx-rs` | — |
 
 ## Bygga från källkod
@@ -56,7 +61,8 @@ npm install
 model-tools\fetch-whisper.ps1 -Size small      # KB-Whisper (GGML)
 model-tools\fetch-diarization.ps1              # pyannote + embedding (ONNX)
 model-tools\build-pii-ner.ps1                  # KB-BERT -> int8 ONNX
-model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF)
+model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF, PII-lager)
+model-tools\fetch-summary.ps1 -Size 3b         # Qwen2.5-3B (GGUF, sammanfattning) – valfritt
 
 npm run tauri dev      # utveckling
 npm run tauri build    # NSIS-installer (CPU)

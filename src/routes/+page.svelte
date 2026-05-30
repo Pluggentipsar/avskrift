@@ -77,7 +77,18 @@
   // ---- Transcript / review state ----
   let transcript = $state<Transcript | null>(null);
   let speakerLabels = $state<Record<string, string>>({});
-  let view = $state<"transcript" | "review">("transcript");
+  let view = $state<"transcript" | "review" | "summary">("transcript");
+
+  // ---- Summarisation ----
+  type SummaryModel = { id: string; label: string; sizeMb: number; downloaded: boolean };
+  type TemplateInfo = { id: string; label: string };
+  let summaryModels = $state<SummaryModel[]>([]);
+  let summaryTemplates = $state<TemplateInfo[]>([]);
+  let selectedSummaryModel = $state("qwen2.5-3b");
+  let selectedTemplate = $state("protokoll");
+  let summaryFromAnon = $state(false);
+  let summaryDraft = $state("");
+  const summaryDownloaded = $derived(summaryModels.find((m) => m.id === selectedSummaryModel)?.downloaded ?? false);
 
   let analysis = $state<AnalyzeResult | null>(null);
   let rejected = $state<Set<number>>(new Set());
@@ -141,6 +152,8 @@
 
   $effect(() => {
     refreshModels();
+    refreshSummaryModels();
+    invoke<TemplateInfo[]>("list_summary_templates").then((t) => (summaryTemplates = t)).catch(() => {});
     const saved = localStorage.getItem("avskrift_terms");
     if (saved) terms = JSON.parse(saved);
   });
@@ -195,6 +208,93 @@
       error = String(e);
     } finally {
       downloading = null;
+    }
+  }
+
+  async function refreshSummaryModels() {
+    try {
+      summaryModels = await invoke<SummaryModel[]>("list_summary_models");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function downloadSummaryModel(id: string) {
+    error = "";
+    downloading = id;
+    downloadPct = 0;
+    try {
+      await invoke("download_summary_model", { id });
+      await refreshSummaryModels();
+      showToast("Modellen hämtades");
+    } catch (e) {
+      error = String(e);
+    } finally {
+      downloading = null;
+    }
+  }
+
+  /** Build the transcript text to feed the summariser: speaker-prefixed lines, raw or anonymised. */
+  async function summaryInputText(): Promise<string> {
+    if (!transcript) return "";
+    let bodies = transcript.utterances.map((u) => u.text);
+    if (summaryFromAnon && analysis) {
+      try {
+        bodies = await invoke<string[]>("anonymized_segments", { rejected: rejectedIds() });
+      } catch (e) {
+        error = String(e);
+      }
+    }
+    return transcript.utterances
+      .map((u, i) => {
+        const name = u.speaker ? speakerLabels[u.speaker] ?? u.speaker : null;
+        const body = bodies[i] ?? u.text;
+        return name ? `${name}: ${body}` : body;
+      })
+      .join("\n");
+  }
+
+  async function runSummarize() {
+    if (!transcript || busy) return;
+    if (!summaryDownloaded) {
+      error = "Hämta den valda sammanfattningsmodellen först.";
+      return;
+    }
+    busy = true;
+    error = "";
+    progressMsg = "Förbereder…";
+    try {
+      const text = await summaryInputText();
+      summaryDraft = await invoke<string>("summarize", {
+        args: { text, model: selectedSummaryModel, template: selectedTemplate },
+      });
+      view = "summary";
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+      progressMsg = "";
+    }
+  }
+
+  async function copySummary() {
+    if (!summaryDraft) return;
+    await navigator.clipboard.writeText(summaryDraft);
+    showToast("Kopierat till urklipp");
+  }
+
+  async function saveSummary(ext: "txt" | "docx") {
+    if (!summaryDraft) return;
+    const path = await save({
+      defaultPath: `${fileStem}_sammanfattning.${ext}`,
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
+    });
+    if (!path) return;
+    try {
+      await invoke("save_summary", { path, text: summaryDraft });
+      showToast("Filen sparades");
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -579,6 +679,37 @@
             {/if}
           </section>
         {/if}
+
+        <section class="anon-block">
+          <h2>Sammanfattning</h2>
+          <select class="profile" bind:value={selectedTemplate}>
+            {#each summaryTemplates as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
+          </select>
+          <select class="profile mt" bind:value={selectedSummaryModel}>
+            {#each summaryModels as m (m.id)}
+              <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
+            {/each}
+          </select>
+          {#if !summaryDownloaded}
+            {#if downloading === selectedSummaryModel}
+              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
+              <p class="hint">Hämtar… {downloadPct}%</p>
+            {:else}
+              <button class="btn block mt" onclick={() => downloadSummaryModel(selectedSummaryModel)} disabled={!!downloading}>
+                Hämta modell ({summaryModels.find((m) => m.id === selectedSummaryModel)?.sizeMb ?? "?"} MB)
+              </button>
+            {/if}
+          {/if}
+          {#if analysis}
+            <label class="ai-toggle">
+              <input type="checkbox" bind:checked={summaryFromAnon} />
+              <span>Sammanfatta avidentifierad text<em>använder maskerade namn/uppgifter</em></span>
+            </label>
+          {/if}
+          <button class="btn block mt" onclick={runSummarize} disabled={busy || !summaryDownloaded}>
+            {summaryDraft ? "Generera om" : "Skapa sammanfattning"}
+          </button>
+        </section>
       {/if}
     </aside>
 
@@ -603,9 +734,14 @@
           <div class="tabs">
             <button class="tab" class:on={view === "transcript"} onclick={() => (view = "transcript")}>Transkript</button>
             <button class="tab" class:on={view === "review"} onclick={() => (view = "review")} disabled={!analysis}>Avidentifiering</button>
+            <button class="tab" class:on={view === "summary"} onclick={() => (view = "summary")} disabled={!summaryDraft}>Sammanfattning</button>
           </div>
           <div class="actions">
-            {#if view === "review" && analysis}
+            {#if view === "summary" && summaryDraft}
+              <button class="btn primary" onclick={copySummary}>Kopiera</button>
+              <button class="btn" onclick={() => saveSummary("txt")}>.txt</button>
+              <button class="btn" onclick={() => saveSummary("docx")}>Word</button>
+            {:else if view === "review" && analysis}
               <button class="btn primary" onclick={copyAnon}>Kopiera</button>
               <button class="btn" onclick={() => exportAs("txt", true)}>.txt</button>
               <button class="btn" onclick={() => exportAs("docx", true)}>Word</button>
@@ -694,6 +830,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z"/><path d="M9 12l2 2 4-4"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
+        {:else if view === "summary"}
+          <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
+          <textarea class="summary-edit" bind:value={summaryDraft} spellcheck="true"></textarea>
         {/if}
       {/if}
     </main>
@@ -742,6 +881,7 @@
   .btn.primary:hover:not(:disabled) { filter: brightness(1.12); }
   .btn.block { width: 100%; }
   .btn.mt { margin-top: 8px; }
+  select.profile.mt { margin-top: 8px; }
   .btn.big { padding: 12px; font-size: 15px; margin-bottom: 22px; }
   .link { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0 2px; }
   .x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
@@ -801,6 +941,8 @@
   .seek { flex: 1; accent-color: var(--accent); cursor: pointer; }
 
   .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 76ch; padding: 4px 2px; }
+  .summary-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px; max-width: 80ch; }
+  .summary-edit:focus { outline: none; border-color: var(--accent); }
   .hit { border: none; background: none; font: inherit; line-height: inherit; cursor: pointer; padding: 0 1px 1px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
   .hit:hover { background: color-mix(in srgb, var(--c) 13%, transparent); }
   .hit.rejected { border-bottom: 2px dotted var(--faint); text-decoration: line-through; color: var(--faint); }
