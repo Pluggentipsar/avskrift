@@ -70,6 +70,7 @@
   let diarize = $state(true);
   let autoSpeakers = $state(true);
   let numSpeakers = $state(2);
+  let translate = $state(false);
 
   let audioPath = $state<string | null>(null);
   let audioName = $state<string | null>(null);
@@ -86,9 +87,19 @@
   let summaryTemplates = $state<TemplateInfo[]>([]);
   let selectedSummaryModel = $state("qwen2.5-3b");
   let selectedTemplate = $state("protokoll");
+  let customHeadings = $state("## Närvarande\n## Dagordning\n## Beslut\n## Åtgärder");
   let summaryFromAnon = $state(false);
   let summaryDraft = $state("");
   const summaryDownloaded = $derived(summaryModels.find((m) => m.id === selectedSummaryModel)?.downloaded ?? false);
+
+  // ---- Editing, corrections, projects, export options ----
+  let editingIdx = $state<number | null>(null);
+  let editText = $state("");
+  let dirty = $state(false); // unsaved edits since last transcribe/open
+  let correctionInput = $state("");
+  let exportTimestamps = $state(false);
+  let includeTranscript = $state(false);
+  let transcribePct = $state<number | null>(null);
 
   let analysis = $state<AnalyzeResult | null>(null);
   let rejected = $state<Set<number>>(new Set());
@@ -164,9 +175,11 @@
       downloading = e.payload.id;
       downloadPct = e.payload.total > 0 ? Math.round((e.payload.downloaded / e.payload.total) * 100) : 0;
     });
+    const pc = listen<number>("avskrift:percent", (e) => (transcribePct = e.payload));
     return () => {
       p.then((f) => f());
       d.then((f) => f());
+      pc.then((f) => f());
     };
   });
 
@@ -266,7 +279,7 @@
     try {
       const text = await summaryInputText();
       summaryDraft = await invoke<string>("summarize", {
-        args: { text, model: selectedSummaryModel, template: selectedTemplate },
+        args: { text, model: selectedSummaryModel, template: selectedTemplate, customHeadings },
       });
       view = "summary";
     } catch (e) {
@@ -291,7 +304,9 @@
     });
     if (!path) return;
     try {
-      await invoke("save_summary", { path, text: summaryDraft });
+      await invoke("save_summary", {
+        args: { path, text: summaryDraft, includeTranscript, timestamps: exportTimestamps, speakerLabels },
+      });
       showToast("Filen sparades");
     } catch (e) {
       error = String(e);
@@ -302,6 +317,7 @@
     if (!audioPath || busy) return;
     busy = true;
     error = "";
+    transcribePct = 0;
     progressMsg = "Startar…";
     try {
       const t = await invoke<Transcript>("transcribe", {
@@ -312,6 +328,7 @@
           diarize,
           numSpeakers: diarize && !autoSpeakers ? numSpeakers : null,
           wordTimestamps,
+          translate,
         },
       });
       transcript = t;
@@ -324,12 +341,126 @@
       }
       speakerLabels = labels;
       analysis = null;
+      summaryDraft = "";
+      dirty = false;
       view = "transcript";
     } catch (e) {
       error = String(e);
     } finally {
       busy = false;
+      transcribePct = null;
       progressMsg = "";
+    }
+  }
+
+  // ---- Transcript editing ----
+
+  function startEdit(idx: number) {
+    if (!transcript) return;
+    editingIdx = idx;
+    editText = transcript.utterances[idx].text;
+  }
+
+  async function commitEdit() {
+    if (editingIdx === null || !transcript) return;
+    const idx = editingIdx;
+    const next = editText.trim();
+    editingIdx = null;
+    if (next === transcript.utterances[idx].text) return;
+    transcript.utterances[idx].text = next;
+    // Editing invalidates word-level timings for that utterance; drop them to avoid stale highlights.
+    transcript.utterances[idx].words = [];
+    await pushTranscript();
+  }
+
+  function cancelEdit() {
+    editingIdx = null;
+  }
+
+  /** Persist the (edited) transcript to the backend so anonymise/summarise/export use it. */
+  async function pushTranscript() {
+    if (!transcript) return;
+    dirty = true;
+    analysis = null; // any prior anonymisation no longer matches the edited text
+    try {
+      await invoke("update_transcript", { transcript });
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function renameSpeaker(id: string, name: string) {
+    speakerLabels[id] = name;
+    // Labels live in the UI; nothing to push to the transcript itself.
+  }
+
+  /** Apply find→replace corrections (one "fel=>rätt" per line) across every utterance. */
+  async function applyCorrections() {
+    if (!transcript) return;
+    const rules = correctionInput
+      .split("\n")
+      .map((l) => l.split(/=>|->|=/).map((s) => s.trim()))
+      .filter((p) => p.length >= 2 && p[0].length > 0);
+    if (!rules.length) return;
+    let changed = 0;
+    for (const u of transcript.utterances) {
+      let t = u.text;
+      for (const [from, to] of rules) {
+        // Whole-word, case-insensitive, escaped.
+        const re = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi");
+        t = t.replace(re, to);
+      }
+      if (t !== u.text) {
+        u.text = t;
+        u.words = [];
+        changed++;
+      }
+    }
+    if (changed) {
+      await pushTranscript();
+      showToast(`Rättade ${changed} segment`);
+    } else {
+      showToast("Inga träffar");
+    }
+  }
+
+  // ---- Projects ----
+
+  async function saveProject() {
+    if (!transcript) return;
+    const path = await save({
+      defaultPath: `${fileStem}.avskrift`,
+      filters: [{ name: "Avskrift-projekt", extensions: ["avskrift"] }],
+    });
+    if (!path) return;
+    try {
+      await invoke("save_project", { args: { path, speakerLabels, audioPath } });
+      dirty = false;
+      showToast("Projektet sparades");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function openProject() {
+    const path = await open({ multiple: false, filters: [{ name: "Avskrift-projekt", extensions: ["avskrift"] }] });
+    if (typeof path !== "string") return;
+    try {
+      const p = await invoke<{ transcript: Transcript; speakerLabels: Record<string, string>; audioPath: string | null }>(
+        "open_project",
+        { path },
+      );
+      transcript = p.transcript;
+      speakerLabels = p.speakerLabels ?? {};
+      audioPath = p.audioPath ?? null;
+      audioName = audioPath ? audioPath.split(/[\\/]/).pop() ?? audioPath : "projekt";
+      analysis = null;
+      summaryDraft = "";
+      dirty = false;
+      view = "transcript";
+      showToast("Projektet öppnades");
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -405,7 +536,14 @@
     if (!path) return;
     try {
       await invoke("export_transcript", {
-        args: { path, anonymize, rejected: anonymize ? rejectedIds() : [], speakerLabels, wordLevel },
+        args: {
+          path,
+          anonymize,
+          rejected: anonymize ? rejectedIds() : [],
+          speakerLabels,
+          wordLevel,
+          timestamps: exportTimestamps,
+        },
       });
       showToast("Filen sparades");
     } catch (e) {
@@ -633,12 +771,22 @@
           <input type="checkbox" bind:checked={wordTimestamps} />
           <span>Ordnivå-tidsstämplar<em>tid per ord — för exakta undertexter (.vtt)</em></span>
         </label>
+        <label class="ai-toggle">
+          <input type="checkbox" bind:checked={translate} />
+          <span>Översätt till engelska<em>transkriberar och översätter i samma steg</em></span>
+        </label>
       </section>
 
       <button class="btn primary block big" onclick={runTranscribe}
         disabled={busy || !audioPath || !selectedDownloaded}>
         {busy ? "Arbetar…" : "Transkribera"}
       </button>
+      <div class="row">
+        <button class="btn grow" onclick={openProject} disabled={busy}>Öppna projekt…</button>
+        <button class="btn grow" onclick={saveProject} disabled={busy || !transcript}>
+          Spara projekt{dirty ? " •" : ""}
+        </button>
+      </div>
 
       {#if transcript}
         <section class="anon-block">
@@ -684,7 +832,11 @@
           <h2>Sammanfattning</h2>
           <select class="profile" bind:value={selectedTemplate}>
             {#each summaryTemplates as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
+            <option value="custom">Egen mall / dagordning…</option>
           </select>
+          {#if selectedTemplate === "custom"}
+            <textarea class="mt" bind:value={customHeadings} rows="4" placeholder="En rubrik per rad, t.ex.&#10;## Närvarande&#10;## Dagordning&#10;## Beslut"></textarea>
+          {/if}
           <select class="profile mt" bind:value={selectedSummaryModel}>
             {#each summaryModels as m (m.id)}
               <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
@@ -710,6 +862,26 @@
             {summaryDraft ? "Generera om" : "Skapa sammanfattning"}
           </button>
         </section>
+
+        <section class="anon-block">
+          <h2>Rätta återkommande fel</h2>
+          <textarea bind:value={correctionInput} rows="3" placeholder="Ett per rad: fel=>rätt&#10;t.ex. kjol=>Tjörn"></textarea>
+          <button class="btn block mt" onclick={applyCorrections} disabled={busy || correctionInput.trim() === ""}>
+            Tillämpa på hela transkriptet
+          </button>
+        </section>
+
+        <section class="anon-block">
+          <h2>Exportalternativ</h2>
+          <label class="ai-toggle">
+            <input type="checkbox" bind:checked={exportTimestamps} />
+            <span>Tidsstämplar i text/Word</span>
+          </label>
+          <label class="ai-toggle">
+            <input type="checkbox" bind:checked={includeTranscript} />
+            <span>Bifoga transkript i sammanfattning<em>protokoll + transkript i ett dokument</em></span>
+          </label>
+        </section>
       {/if}
     </aside>
 
@@ -721,7 +893,12 @@
         <div class="state">
           <div class="spinner"></div>
           <p class="state-title">{progressMsg || "Arbetar…"}</p>
-          <p class="state-sub">Allt körs lokalt på din dator. Första körningen laddar modellen.</p>
+          {#if transcribePct !== null}
+            <div class="progress"><div class="progress-bar" style="width:{transcribePct}%"></div></div>
+            <p class="state-sub">{transcribePct}% — transkriberar</p>
+          {:else}
+            <p class="state-sub">Allt körs lokalt på din dator. Första körningen laddar modellen.</p>
+          {/if}
         </div>
       {:else if !transcript}
         <div class="state">
@@ -791,31 +968,40 @@
 
         {#if view === "transcript"}
           <div class="meta">
-            {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} · klicka på texten för att spela
+            {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} · klicka tid för att spela · dubbelklicka text för att rätta
           </div>
           <div class="transcript">
             {#each groups as g}
               <div class="turn">
                 {#if g.speaker}
-                  <input class="speaker" bind:value={speakerLabels[g.speaker]} />
+                  <input class="speaker" value={speakerLabels[g.speaker]} oninput={(e) => renameSpeaker(g.speaker!, e.currentTarget.value)} />
                 {/if}
-                <p class="utext">
-                  {#each g.items as it}<span
-                      class="ts"
-                      role="button"
-                      tabindex="0"
+                {#each g.items as it}
+                  <p class="utext">
+                    <span class="ts" role="button" tabindex="0"
                       onclick={() => seekTo(it.u.start)}
                       onkeydown={(e) => e.key === "Enter" && seekTo(it.u.start)}
-                    >{fmtTime(it.u.start)}</span>{#if it.u.words && it.u.words.length}{#each it.u.words as w}<button
-                          class="word"
-                          class:playing={playing && currentTime >= w.start && currentTime < w.end}
-                          onclick={() => seekTo(w.start)}
-                        >{w.text}</button>{" "}{/each}{:else}<button
-                        class="useg"
-                        class:playing={activeUtterance === it.idx}
-                        onclick={() => seekTo(it.u.start)}
-                      >{it.u.text}</button>{" "}{/if}{/each}
-                </p>
+                    >{fmtTime(it.u.start)}</span>{#if editingIdx === it.idx}<textarea
+                        class="edit"
+                        bind:value={editText}
+                        onblur={commitEdit}
+                        onkeydown={(e) => { if (e.key === "Escape") cancelEdit(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEdit(); }}
+                      ></textarea>{:else}<span
+                        class="body"
+                        role="button"
+                        tabindex="0"
+                        ondblclick={() => startEdit(it.idx)}
+                        onkeydown={(e) => e.key === "Enter" && startEdit(it.idx)}
+                      >{#if it.u.words && it.u.words.length}{#each it.u.words as w}<button
+                              class="word"
+                              class:playing={playing && currentTime >= w.start && currentTime < w.end}
+                              onclick={() => seekTo(w.start)}
+                            >{w.text}</button>{" "}{/each}{:else}<span
+                            class="useg"
+                            class:playing={activeUtterance === it.idx}
+                          >{it.u.text}</span>{/if}</span>{/if}
+                  </p>
+                {/each}
               </div>
             {/each}
           </div>
@@ -933,6 +1119,15 @@
   .word, .useg { border: none; background: none; font: inherit; line-height: inherit; color: inherit; cursor: pointer; padding: 0 1px; border-radius: 3px; }
   .word:hover, .useg:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .word.playing, .useg.playing { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
+  .body { cursor: text; border-radius: 3px; }
+  .body:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+  .edit { width: 100%; box-sizing: border-box; font: inherit; font-size: 15.5px; line-height: 1.7; border: 1px solid var(--accent); border-radius: 4px; padding: 6px 9px; resize: vertical; margin-top: 2px; }
+
+  .progress { width: 220px; height: 7px; background: var(--line); border-radius: 4px; margin: 4px auto 10px; overflow: hidden; }
+  .progress-bar { height: 100%; background: var(--accent); transition: width .25s; }
+
+  .row { display: flex; gap: 8px; margin: 8px 0 22px; }
+  .grow { flex: 1; }
 
   .player { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 14px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 6px; }
   .play { flex: none; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }

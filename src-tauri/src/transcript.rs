@@ -89,6 +89,41 @@ impl Transcript {
         out
     }
 
+    /// Plain text with a `[mm:ss]` timestamp before each utterance, and a speaker prefix when the
+    /// speaker changes. Used when the user wants timestamps in the text/Word export.
+    pub fn to_text_timed(&self, texts: Option<&[String]>, labels: &BTreeMap<String, String>) -> String {
+        self.timed_lines(texts, labels).join("\n") + "\n"
+    }
+
+    /// One "[mm:ss] Name: text" line per utterance (Name only when the speaker changes).
+    fn timed_lines(&self, texts: Option<&[String]>, labels: &BTreeMap<String, String>) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.utterances.len());
+        let mut last_speaker: Option<&str> = None;
+        for (i, u) in self.utterances.iter().enumerate() {
+            let body = texts.and_then(|t| t.get(i)).map(String::as_str).unwrap_or(&u.text);
+            let ts = clock(u.start);
+            let name_part = match &u.speaker {
+                Some(sp) if last_speaker != Some(sp.as_str()) => {
+                    last_speaker = Some(sp.as_str());
+                    let name = labels.get(sp).map(String::as_str).unwrap_or(sp);
+                    format!("{name}: ")
+                }
+                _ => String::new(),
+            };
+            lines.push(format!("[{ts}] {name_part}{body}"));
+        }
+        lines
+    }
+
+    /// docx paragraphs with `[mm:ss]` timestamps (see [`to_text_timed`]).
+    pub fn to_docx_paragraphs_timed(
+        &self,
+        texts: Option<&[String]>,
+        labels: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        self.timed_lines(texts, labels)
+    }
+
     /// SubRip (.srt) subtitles. Optional `texts` override as in [`to_text`].
     pub fn to_srt(&self, texts: Option<&[String]>, labels: &BTreeMap<String, String>) -> String {
         let mut out = String::new();
@@ -177,6 +212,17 @@ fn hmsms(t: f64) -> (u64, u64, u64, u64) {
     let ms = total_ms % 1000;
     let total_s = total_ms / 1000;
     (total_s / 3600, (total_s % 3600) / 60, total_s % 60, ms)
+}
+
+/// Short `mm:ss` (or `h:mm:ss` past an hour) clock for inline text timestamps.
+fn clock(t: f64) -> String {
+    let s = t.max(0.0).round() as u64;
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{sec:02}")
+    } else {
+        format!("{m:02}:{sec:02}")
+    }
 }
 
 #[cfg(test)]

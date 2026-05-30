@@ -86,6 +86,13 @@ Manuell verifiering:
       Överväg att strömma genererade tokens till UI:t (event) för långa sammanfattningar.
 - [ ] **Markdown i docx:** `save_summary` skriver markdown-rubriker som literal text i .docx (v1).
       Överväg enkel rubrik-/punktlist-rendering om det behövs.
+- [ ] **Progress-callback:** `transcribe.rs` använder `set_progress_callback_safe`. Verifiera namnet
+      mot pinnad whisper-rs-version (äldre: `set_progress_callback`). Event: `avskrift:percent`.
+- [ ] **Översättning:** `set_translate(true)` översätter till engelska. Whisper stöder bara
+      engelska som målspråk — UI:t beskriver det så.
+- [ ] **Projektfil (.avskrift):** JSON med transkript + talarnamn + ljudsökväg (ej inbäddat ljud).
+      `audio_path` kan peka på en temp-WAV för inspelningar; överväg att kopiera ljud bredvid
+      projektet om det ska vara flyttbart.
 - [ ] **Synkad uppspelning:** kräver `security.assetProtocol` i `tauri.conf.json` (redan satt, scope
       `**`). Stäm av scope mot var ljudfiler/inspelningar faktiskt ligger om du snävar in det.
 - [ ] **Mikrofon-behörighet**: macOS kräver `NSMicrophoneUsageDescription` i appens Info.plist

@@ -130,7 +130,11 @@ struct SummarizeArgs {
     /// Transcript text to summarise (utterances joined; may be the anonymised version).
     text: String,
     model: String,
+    /// Built-in template id, or "custom" to use `custom_headings`.
     template: String,
+    /// User's own agenda/headings, used when `template == "custom"`.
+    #[serde(default)]
+    custom_headings: String,
 }
 
 /// Generate structured Swedish minutes from a transcript. Returns the draft markdown — always shown
@@ -162,8 +166,21 @@ fn run_summarize(app: &AppHandle, args: SummarizeArgs) -> anyhow::Result<String>
         progress(&format!("Laddar modell ({})…", args.model));
         *guard = Some((args.model.clone(), Summarizer::load(&gguf, &tok)?));
     }
+    // Resolve the structure instruction: built-in template, or the user's own agenda.
+    let structure: String = if args.template == "custom" {
+        if args.custom_headings.trim().is_empty() {
+            return Err(anyhow::anyhow!("ingen egen mall angiven"));
+        }
+        summarize::custom_structure(&args.custom_headings)
+    } else {
+        summarize::template(&args.template)
+            .ok_or_else(|| anyhow::anyhow!("okänd mall: {}", args.template))?
+            .structure
+            .to_string()
+    };
+
     let (_, summarizer) = guard.as_ref().unwrap();
-    summarizer.summarize(&args.text, &args.template, &progress)
+    summarizer.summarize(&args.text, &structure, &progress)
 }
 
 // ---- Transcription ----
@@ -181,6 +198,9 @@ struct TranscribeArgs {
     /// Capture word-level timestamps (slightly slower).
     #[serde(default)]
     word_timestamps: bool,
+    /// Translate speech to English instead of transcribing verbatim.
+    #[serde(default)]
+    translate: bool,
 }
 
 #[tauri::command]
@@ -199,6 +219,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     let audio = audio::load(Path::new(&args.path))?;
 
     let model_path = backend.paths.whisper_file(&args.model);
+    let app_pct = app.clone();
     let raw = {
         let mut tr = backend.transcriber.lock().unwrap();
         tr.transcribe(
@@ -207,7 +228,11 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
             &audio.samples,
             &args.language,
             args.word_timestamps,
+            args.translate,
             &progress,
+            move |p| {
+                let _ = app_pct.emit("avskrift:percent", p);
+            },
         )?
     };
 
@@ -248,6 +273,64 @@ fn save_recording(data: Vec<u8>) -> Result<String, String> {
     let path = std::env::temp_dir().join(format!("avskrift-inspelning-{ts}.wav"));
     std::fs::write(&path, &data).map_err(|e| format!("kunde inte spara inspelningen: {e}"))?;
     Ok(path.to_string_lossy().to_string())
+}
+
+// ---- Editing & projects ----
+
+/// Replace the stored transcript with an edited copy (e.g. after the user fixed ASR errors or
+/// renamed speakers). All downstream steps — anonymisation, summarisation, export — use this.
+#[tauri::command]
+fn update_transcript(backend: State<Backend>, transcript: Transcript) {
+    *backend.transcript.lock().unwrap() = Some(transcript);
+}
+
+/// A saved project: the transcript plus the UI's speaker-label overrides. Audio is referenced by
+/// path, not embedded, to keep project files small.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Project {
+    version: u32,
+    transcript: Transcript,
+    #[serde(default)]
+    speaker_labels: BTreeMap<String, String>,
+    #[serde(default)]
+    audio_path: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveProjectArgs {
+    path: String,
+    speaker_labels: BTreeMap<String, String>,
+    audio_path: Option<String>,
+}
+
+/// Save the current transcript + labels to a `.avskrift` JSON project file.
+#[tauri::command]
+fn save_project(backend: State<Backend>, args: SaveProjectArgs) -> Result<(), String> {
+    let guard = backend.transcript.lock().unwrap();
+    let transcript = guard
+        .as_ref()
+        .ok_or_else(|| "det finns inget transkript att spara".to_string())?
+        .clone();
+    let project = Project {
+        version: 1,
+        transcript,
+        speaker_labels: args.speaker_labels,
+        audio_path: args.audio_path,
+    };
+    let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+    std::fs::write(&args.path, json).map_err(|e| format!("kunde inte spara projektet: {e}"))
+}
+
+/// Open a `.avskrift` project file; loads its transcript into backend state and returns it (with
+/// labels and audio path) so the UI can restore the session.
+#[tauri::command]
+fn open_project(backend: State<Backend>, path: String) -> Result<Project, String> {
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("kunde inte läsa projektet: {e}"))?;
+    let project: Project = serde_json::from_str(&json).map_err(|e| format!("ogiltig projektfil: {e}"))?;
+    *backend.transcript.lock().unwrap() = Some(project.transcript.clone());
+    Ok(project)
 }
 
 // ---- Anonymisation (reuses the Avidentifierare engine over the transcript) ----
@@ -297,6 +380,9 @@ struct ExportArgs {
     /// For VTT only: emit one cue per word (requires a word-timestamped transcript). Raw text only.
     #[serde(default)]
     word_level: bool,
+    /// Prefix each utterance with a `[mm:ss]` timestamp in txt/docx export.
+    #[serde(default)]
+    timestamps: bool,
 }
 
 #[tauri::command]
@@ -323,7 +409,11 @@ fn export_inner(backend: &Backend, args: ExportArgs) -> anyhow::Result<()> {
             docio::save_text(&out, &transcript.to_vtt_words(labels))?
         }
         Some("vtt") => docio::save_text(&out, &transcript.to_vtt(texts, labels))?,
+        Some("docx") if args.timestamps => {
+            docio::save_docx(&out, &transcript.to_docx_paragraphs_timed(texts, labels))?
+        }
         Some("docx") => docio::save_docx(&out, &transcript.to_docx_paragraphs(texts, labels))?,
+        _ if args.timestamps => docio::save_text(&out, &transcript.to_text_timed(texts, labels))?,
         _ => docio::save_text(&out, &transcript.to_text(texts, labels))?, // txt / default
     }
     Ok(())
@@ -333,11 +423,41 @@ fn ext(p: &Path) -> Option<String> {
     p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
 }
 
-/// Save an (edited) summary draft as plain text or .docx. The markdown is written as-is for txt; for
-/// docx each line becomes a paragraph (markdown headings kept as literal text in v1).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveSummaryArgs {
+    path: String,
+    /// The (edited) summary draft.
+    text: String,
+    /// Also append the full transcript below the summary (combined document).
+    #[serde(default)]
+    include_transcript: bool,
+    /// Timestamps on the appended transcript.
+    #[serde(default)]
+    timestamps: bool,
+    #[serde(default)]
+    speaker_labels: BTreeMap<String, String>,
+}
+
+/// Save an (edited) summary draft as plain text or .docx, optionally with the full transcript
+/// appended (combined "protokoll + transkript" document). Markdown is written as-is in txt; in docx
+/// each line becomes a paragraph (headings kept as literal text in v1).
 #[tauri::command]
-fn save_summary(path: String, text: String) -> Result<(), String> {
-    let out = PathBuf::from(&path);
+fn save_summary(backend: State<Backend>, args: SaveSummaryArgs) -> Result<(), String> {
+    let mut text = args.text;
+    if args.include_transcript {
+        let guard = backend.transcript.lock().unwrap();
+        if let Some(t) = guard.as_ref() {
+            let body = if args.timestamps {
+                t.to_text_timed(None, &args.speaker_labels)
+            } else {
+                t.to_text(None, &args.speaker_labels)
+            };
+            text.push_str("\n\n## Transkript\n\n");
+            text.push_str(&body);
+        }
+    }
+    let out = PathBuf::from(&args.path);
     let res = match ext(&out).as_deref() {
         Some("docx") => {
             let paragraphs: Vec<String> = text.lines().map(|l| l.to_string()).collect();
@@ -380,6 +500,9 @@ pub fn run() {
             summarize,
             transcribe,
             save_recording,
+            update_transcript,
+            save_project,
+            open_project,
             anonymize,
             anonymized_segments,
             export_transcript,

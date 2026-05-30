@@ -49,8 +49,11 @@ samples ─┬─ transcribe.rs   whisper-rs (KB-Whisper GGML) → RawSegment[] 
 - `export_transcript(args{path, anonymize, rejected, speaker_labels, word_level})`
 - `list_summary_models() -> SummaryModelInfo[]` · `list_summary_templates() -> TemplateInfo[]`
 - `download_summary_model(id)` → event `avskrift:download`
-- `summarize(args{text, model, template}) -> string` (markdown-utkast)
-- `save_summary(path, text)` (txt/docx)
+- `summarize(args{text, model, template, custom_headings}) -> string` (markdown-utkast)
+- `save_summary(args{path, text, include_transcript, timestamps, speaker_labels})` (txt/docx)
+- `update_transcript(transcript)` — ersätt lagrat transkript efter redigering/rättning
+- `save_project(args{path, speaker_labels, audio_path})` · `open_project(path) -> Project` (.avskrift JSON)
+- Transkriberings-progress: event `avskrift:percent` (0–100)
 
 Framstegsmeddelanden sänds som event `avskrift:progress`. Tung körning sker på
 `tauri::async_runtime::spawn_blocking` så UI:t inte fryser.

@@ -91,20 +91,20 @@ impl Summarizer {
         Ok(Self { model: Mutex::new(model), tokenizer, eos, device })
     }
 
-    /// Summarise `transcript_text` into the chosen template. `progress` reports map/reduce phases.
+    /// Summarise `transcript_text` using the chosen structure instruction (from a built-in template
+    /// or the user's own agenda/headings). `progress` reports map/reduce phases.
     pub fn summarize(
         &self,
         transcript_text: &str,
-        template_id: &str,
+        structure: &str,
         progress: &dyn Fn(&str),
     ) -> Result<String> {
-        let tmpl = template(template_id).ok_or_else(|| anyhow!("okänd mall: {template_id}"))?;
         let chunks = split_chunks(transcript_text, CHUNK_CHARS);
 
         if chunks.len() <= 1 {
             // Short enough to do in one pass — skip the map stage.
             progress("Sammanfattar…");
-            return self.generate(&final_prompt(tmpl, transcript_text), 1024);
+            return self.generate(&final_prompt(structure, transcript_text), 1024);
         }
 
         // Map: summarise each chunk into neutral bullet notes.
@@ -117,7 +117,7 @@ impl Summarizer {
 
         // Reduce: synthesise the notes into the final templated document.
         progress("Sätter ihop sammanfattningen…");
-        self.generate(&final_prompt(tmpl, notes.trim()), 1024)
+        self.generate(&final_prompt(structure, notes.trim()), 1024)
     }
 
     fn generate(&self, prompt: &str, max_new: usize) -> Result<String> {
@@ -164,12 +164,20 @@ fn map_prompt(chunk: &str) -> String {
     )
 }
 
-fn final_prompt(tmpl: &Template, body: &str) -> String {
+fn final_prompt(structure: &str, body: &str) -> String {
     format!(
         "<|im_start|>system\n{SYSTEM}<|im_end|>\n\
-         <|im_start|>user\n{}\n\nUnderlag (mötestranskript eller delsammanfattningar):\n\n{body}\
-         <|im_end|>\n<|im_start|>assistant\n",
-        tmpl.structure
+         <|im_start|>user\n{structure}\n\nUnderlag (mötestranskript eller delsammanfattningar):\
+         \n\n{body}<|im_end|>\n<|im_start|>assistant\n"
+    )
+}
+
+/// Build a structure instruction from a user-supplied agenda/heading list.
+pub fn custom_structure(headings: &str) -> String {
+    format!(
+        "Strukturera sammanfattningen enligt användarens egen mall nedan. Använd exakt dessa \
+         rubriker som ## -rubriker och fyll i relevant innehåll under varje (utelämna en rubrik om \
+         inget relevant sägs):\n{headings}"
     )
 }
 

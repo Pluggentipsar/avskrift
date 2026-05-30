@@ -18,6 +18,13 @@ Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
 - **Inspelning** direkt i appen (mikrofon) — eller öppna en befintlig ljudfil.
 - **Synkad uppspelning** — spela upp ljudet och följ med i transkriptet; klicka på ett ord eller
   yttrande för att hoppa dit. Med ordnivå-tidsstämplar markeras ordet som spelas.
+- **Redigerbart transkript** — dubbelklicka på ett segment för att rätta ASR-fel; allt nedströms
+  (avidentifiering, sammanfattning, export) använder den rättade texten. Plus **rättningsordlista**
+  (fel⇒rätt på hela transkriptet) och **översättningsläge** (svenskt tal → engelsk text).
+- **Spara/öppna projekt** — spara transkript, rättningar och talarnamn till en `.avskrift`-fil och
+  återuppta senare, så långsam transkribering inte går förlorad.
+- **Egen mall** — vid sammanfattning kan du klistra in din egen dagordning/rubriker.
+- **Procent-progress** vid transkribering.
 - **Diarisering** med **pyannote**-segmentering + talar-embeddings (via sherpa-onnx) — varje
   yttrande märks "Talare 1/2…", som du kan döpa om.
 - **Avidentifiering** av transkriptet med samma motor som Avidentifierare:

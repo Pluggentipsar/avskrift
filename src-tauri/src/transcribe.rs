@@ -60,7 +60,8 @@ impl Transcriber {
     }
 
     /// Transcribe 16 kHz mono f32 `samples`. `language` is an ISO code, or "auto" to detect.
-    /// When `word_timestamps` is set, each segment is filled with word-level timing.
+    /// When `word_timestamps` is set, each segment is filled with word-level timing. When
+    /// `translate` is set, Whisper translates the speech to English. `pct` receives 0–100 progress.
     pub fn transcribe(
         &mut self,
         id: &str,
@@ -68,7 +69,9 @@ impl Transcriber {
         samples: &[f32],
         language: &str,
         word_timestamps: bool,
+        translate: bool,
         progress: &dyn Fn(&str),
+        pct: impl Fn(i32) + Send + Sync + 'static,
     ) -> Result<Vec<RawSegment>> {
         progress(&format!("Laddar modell ({id})…"));
         let ctx = self.ensure(id, path)?;
@@ -78,12 +81,15 @@ impl Transcriber {
         if language != "auto" {
             params.set_language(Some(language));
         }
-        params.set_translate(false);
+        params.set_translate(translate);
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_token_timestamps(word_timestamps);
+        // Live percent progress from whisper.cpp (0–100). Verify this API name against the pinned
+        // whisper-rs version (see FINISH.md); older versions use `set_progress_callback`.
+        params.set_progress_callback_safe(move |p: i32| pct(p));
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         params.set_n_threads(threads.saturating_sub(1).max(1) as i32);
 
