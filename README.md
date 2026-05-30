@@ -58,8 +58,11 @@ Tauri 2 (Rust-backend) + SvelteKit (gränssnitt).
 
 ## Bygga från källkod
 
-Se **[FINISH.md](FINISH.md)** för fullständig bygg- och verifieringsguide (inkl. modellhämtning,
-versionspinning och NSIS-installer). Kortversion:
+> **Börja i [START.md](START.md)** — en steg-för-steg-guide som tar dig från klon till körande app
+> i rätt ordning, och fångar fel tidigt. `model-tools/preflight.ps1` kollar verktygen åt dig och
+> `model-tools/API-FIXES.md` är fusklappen om kompileringen klagar. (`FINISH.md` = djupare risklista.)
+
+Kortversion:
 
 ```powershell
 npm install
