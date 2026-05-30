@@ -74,8 +74,14 @@ Manuell verifiering:
 - [ ] pyannote-licens/villkor för distribution.
 - [ ] Trimma diariserings-parametrar (`threshold`, `min_duration_*`) på riktigt material.
 - [ ] **GPU-byggen**: installera CUDA Toolkit (NVIDIA) resp. ha Metal (macOS) / Vulkan SDK. Bygg med
-      `--features cuda|metal|vulkan`. Verifiera att whisper-rs exponerar dessa feature-namn i din
-      version; lägg ev. till en `sherpa-rs`-GPU-feature på samma sätt.
+      `--features cuda|metal|vulkan`. Verifiera att whisper-rs **och candle** exponerar dessa
+      feature-namn i dina versioner (`candle-core`/`candle-transformers` har `cuda`/`metal`).
+      `ai.rs::best_device()` antar `Device::new_cuda`/`new_metal` — stäm av mot candle-API:t.
+      Diarisering (`sherpa-rs`) kör på CPU; lägg ev. till en GPU-feature där på samma sätt.
+- [ ] **NER på GPU (valfritt):** KB-BERT via `ort` kör på CPU. För GPU, aktivera ORT:s CUDA/DirectML
+      execution provider i `pii/model.rs` — separat API, ej kopplat till cargo-featuresen ovan.
+- [ ] **Synkad uppspelning:** kräver `security.assetProtocol` i `tauri.conf.json` (redan satt, scope
+      `**`). Stäm av scope mot var ljudfiler/inspelningar faktiskt ligger om du snävar in det.
 - [ ] **Mikrofon-behörighet**: macOS kräver `NSMicrophoneUsageDescription` i appens Info.plist
       (lägg i `tauri.conf.json` → `bundle.macOS.infoPlist` eller motsvarande). Windows (WebView2)
       visar en behörighetsfråga automatiskt.

@@ -43,9 +43,28 @@ pub struct LlmDetector {
     device: Device,
 }
 
+/// Pick the best candle device for the build. With `--features cuda`/`metal` this returns a GPU
+/// device (falling back to CPU if no GPU is present at runtime); otherwise CPU. Mirrors the GPU
+/// flags that whisper.cpp uses, so a GPU build accelerates both tal->text and the Qwen LLM layer.
+fn best_device() -> Device {
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(d) = Device::new_cuda(0) {
+            return d;
+        }
+    }
+    #[cfg(feature = "metal")]
+    {
+        if let Ok(d) = Device::new_metal(0) {
+            return d;
+        }
+    }
+    Device::Cpu
+}
+
 impl LlmDetector {
     pub fn load(gguf_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-        let device = Device::Cpu;
+        let device = best_device();
         let mut file = std::fs::File::open(gguf_path)
             .map_err(|e| anyhow!("kunde inte öppna {}: {e}", gguf_path.display()))?;
         let content = gguf_file::Content::read(&mut file)

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import "@fontsource/instrument-serif/400.css";
@@ -97,6 +97,37 @@
   let recChunks: Float32Array[] = [];
   let recSampleRate = 16000;
   let recTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ---- Playback (synced with the transcript) ----
+  let audioEl = $state<HTMLAudioElement | null>(null);
+  let playing = $state(false);
+  let currentTime = $state(0);
+  // Asset-protocol URL so the webview can stream the local file (see tauri.conf assetProtocol).
+  const audioSrc = $derived(audioPath ? convertFileSrc(audioPath) : "");
+
+  function seekTo(t: number) {
+    if (!audioEl) return;
+    audioEl.currentTime = Math.max(0, t);
+    audioEl.play();
+  }
+  function togglePlay() {
+    if (!audioEl) return;
+    audioEl.paused ? audioEl.play() : audioEl.pause();
+  }
+
+  // Index of the utterance currently playing (for highlight), or -1.
+  const activeUtterance = $derived.by(() => {
+    if (!transcript || !playing) return -1;
+    return transcript.utterances.findIndex((u) => currentTime >= u.start && currentTime < u.end);
+  });
+
+  // Keep the currently playing word/segment scrolled into view during playback.
+  $effect(() => {
+    if (!playing || view !== "transcript") return;
+    void currentTime; // re-run as playback advances
+    const el = document.querySelector(".word.playing, .useg.playing");
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  });
 
   // ---- Process state ----
   let busy = $state(false);
@@ -401,14 +432,15 @@
   }
 
   // Group consecutive utterances by the same speaker for a cleaner transcript view.
+  type GroupItem = { speaker: string | null; start: number; items: { idx: number; u: Utterance }[] };
   const groups = $derived.by(() => {
-    if (!transcript) return [] as { speaker: string | null; start: number; texts: string[] }[];
-    const out: { speaker: string | null; start: number; texts: string[] }[] = [];
-    for (const u of transcript.utterances) {
+    if (!transcript) return [] as GroupItem[];
+    const out: GroupItem[] = [];
+    transcript.utterances.forEach((u, idx) => {
       const last = out[out.length - 1];
-      if (last && last.speaker === u.speaker) last.texts.push(u.text);
-      else out.push({ speaker: u.speaker, start: u.start, texts: [u.text] });
-    }
+      if (last && last.speaker === u.speaker) last.items.push({ idx, u });
+      else out.push({ speaker: u.speaker, start: u.start, items: [{ idx, u }] });
+    });
     return out;
   });
 </script>
@@ -591,9 +623,39 @@
           </div>
         </div>
 
+        {#if audioSrc}
+          <div class="player">
+            <button class="play" onclick={togglePlay} aria-label={playing ? "Pausa" : "Spela"}>
+              {#if playing}
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+              {:else}
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>
+              {/if}
+            </button>
+            <span class="pt">{fmtTime(currentTime)}{audioEl?.duration ? " / " + fmtTime(audioEl.duration) : ""}</span>
+            <input
+              class="seek"
+              type="range"
+              min="0"
+              max={audioEl?.duration || 0}
+              step="0.01"
+              value={currentTime}
+              oninput={(e) => seekTo(+e.currentTarget.value)}
+            />
+            <audio
+              bind:this={audioEl}
+              src={audioSrc}
+              ontimeupdate={() => (currentTime = audioEl?.currentTime ?? 0)}
+              onplay={() => (playing = true)}
+              onpause={() => (playing = false)}
+              onended={() => (playing = false)}
+            ></audio>
+          </div>
+        {/if}
+
         {#if view === "transcript"}
           <div class="meta">
-            {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""}
+            {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} · klicka på texten för att spela
           </div>
           <div class="transcript">
             {#each groups as g}
@@ -601,7 +663,23 @@
                 {#if g.speaker}
                   <input class="speaker" bind:value={speakerLabels[g.speaker]} />
                 {/if}
-                <p class="utext"><span class="ts">{fmtTime(g.start)}</span>{g.texts.join(" ")}</p>
+                <p class="utext">
+                  {#each g.items as it}<span
+                      class="ts"
+                      role="button"
+                      tabindex="0"
+                      onclick={() => seekTo(it.u.start)}
+                      onkeydown={(e) => e.key === "Enter" && seekTo(it.u.start)}
+                    >{fmtTime(it.u.start)}</span>{#if it.u.words && it.u.words.length}{#each it.u.words as w}<button
+                          class="word"
+                          class:playing={playing && currentTime >= w.start && currentTime < w.end}
+                          onclick={() => seekTo(w.start)}
+                        >{w.text}</button>{" "}{/each}{:else}<button
+                        class="useg"
+                        class:playing={activeUtterance === it.idx}
+                        onclick={() => seekTo(it.u.start)}
+                      >{it.u.text}</button>{" "}{/if}{/each}
+                </p>
               </div>
             {/each}
           </div>
@@ -709,8 +787,18 @@
   .turn { margin-bottom: 16px; }
   .speaker { font: inherit; font-weight: 700; font-size: 13px; color: var(--accent); border: none; background: none; padding: 0 0 2px; border-bottom: 1px dashed transparent; }
   .speaker:hover, .speaker:focus { border-bottom-color: var(--line-2); outline: none; }
-  .utext { margin: 3px 0 0; line-height: 1.7; font-size: 15.5px; }
-  .ts { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 10px; }
+  .utext { margin: 3px 0 0; line-height: 1.8; font-size: 15.5px; }
+  .ts { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 10px; cursor: pointer; }
+  .ts:hover { color: var(--accent); }
+  .word, .useg { border: none; background: none; font: inherit; line-height: inherit; color: inherit; cursor: pointer; padding: 0 1px; border-radius: 3px; }
+  .word:hover, .useg:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .word.playing, .useg.playing { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
+
+  .player { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 14px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 6px; }
+  .play { flex: none; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .play svg { width: 16px; height: 16px; }
+  .pt { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .seek { flex: 1; accent-color: var(--accent); cursor: pointer; }
 
   .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 76ch; padding: 4px 2px; }
   .hit { border: none; background: none; font: inherit; line-height: inherit; cursor: pointer; padding: 0 1px 1px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }

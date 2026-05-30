@@ -13,15 +13,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
-# GPU-acceleration för Whisper (valbart). Bygg med t.ex.
-#   npm run tauri build -- --features cuda      (NVIDIA)
-#   npm run tauri build -- --features metal     (Apple Silicon)
-#   npm run tauri build -- --features vulkan    (plattformsoberoende GPU)
-# Default = CPU. När någon GPU-feature är på sätter transcribe.rs use_gpu(true).
+# GPU-acceleration (valbart). Bygg med t.ex.
+#   npm run tauri build -- --features cuda      (NVIDIA: Whisper + Qwen)
+#   npm run tauri build -- --features metal     (Apple Silicon: Whisper + Qwen)
+#   npm run tauri build -- --features vulkan    (plattformsoberoende GPU: Whisper)
+# Default = CPU. Varje feature aktiverar matchande backend i både whisper-rs (tal->text)
+# och candle (Qwen-LLM-lagret). Vulkan stöds av whisper.cpp men inte candle, så Qwen kör
+# då på CPU. KB-BERT (NER via ort) kör alltid på CPU – se FINISH.md.
 [features]
 default = []
-cuda = ["whisper-rs/cuda"]
-metal = ["whisper-rs/metal"]
+cuda = ["whisper-rs/cuda", "candle-core/cuda", "candle-transformers/cuda"]
+metal = ["whisper-rs/metal", "candle-core/metal", "candle-transformers/metal"]
 vulkan = ["whisper-rs/vulkan"]
 
 [dependencies]

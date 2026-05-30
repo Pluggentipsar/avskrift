@@ -16,6 +16,8 @@ Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
   noggrannhetsbehov. Modeller hämtas vid behov; den minsta kan bäddas in i installern.
   Med **valbar GPU-acceleration** (CUDA / Metal / Vulkan) och **ordnivå-tidsstämplar**.
 - **Inspelning** direkt i appen (mikrofon) — eller öppna en befintlig ljudfil.
+- **Synkad uppspelning** — spela upp ljudet och följ med i transkriptet; klicka på ett ord eller
+  yttrande för att hoppa dit. Med ordnivå-tidsstämplar markeras ordet som spelas.
 - **Diarisering** med **pyannote**-segmentering + talar-embeddings (via sherpa-onnx) — varje
   yttrande märks "Talare 1/2…", som du kan döpa om.
 - **Avidentifiering** av transkriptet med samma motor som Avidentifierare:
@@ -59,11 +61,14 @@ model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF)
 npm run tauri dev      # utveckling
 npm run tauri build    # NSIS-installer (CPU)
 
-# GPU-byggen (whisper.cpp-backend):
-npm run tauri build -- --features cuda     # NVIDIA
-npm run tauri build -- --features metal    # Apple Silicon
-npm run tauri build -- --features vulkan   # plattformsoberoende GPU
+# GPU-byggen — accelererar både Whisper (tal->text) och Qwen (AI-lagret):
+npm run tauri build -- --features cuda     # NVIDIA  (Whisper + Qwen)
+npm run tauri build -- --features metal    # Apple Silicon (Whisper + Qwen)
+npm run tauri build -- --features vulkan   # plattformsoberoende GPU (endast Whisper)
 ```
+
+> GPU-byggena gäller **KB-Whisper** (via whisper.cpp) och **Qwen** (via candle). KB-BERT (NER via
+> ONNX Runtime) kör alltid på CPU — det är redan snabbt och använder ett annat GPU-API.
 
 ## Modeller & licenser
 

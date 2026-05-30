@@ -50,6 +50,25 @@ samples ─┬─ transcribe.rs   whisper-rs (KB-Whisper GGML) → RawSegment[] 
 Framstegsmeddelanden sänds som event `avskrift:progress`. Tung körning sker på
 `tauri::async_runtime::spawn_blocking` så UI:t inte fryser.
 
+## GPU-acceleration
+
+Cargo-features `cuda` / `metal` / `vulkan` (se `Cargo.toml`) aktiverar matchande backend i:
+
+- **whisper.cpp** (`whisper-rs`) — `transcribe.rs` sätter `use_gpu(true)` när någon feature är på.
+- **candle** (Qwen-LLM) — `ai.rs::best_device()` väljer cuda/metal-device (med CPU-fallback).
+  `vulkan` accelererar bara Whisper; Qwen kör då på CPU (candle saknar Vulkan-backend).
+
+KB-BERT (NER) går via ONNX Runtime (`ort`) och kör alltid på CPU. GPU där skulle kräva ORT:s
+CUDA/DirectML execution provider — ett separat API; utelämnat då NER redan är snabbt. Se TODO i
+FINISH.md om det behövs.
+
+## Synkad uppspelning
+
+Frontenden laddar ljudfilen via Tauris **asset-protokoll** (`convertFileSrc`, aktiverat i
+`tauri.conf.json` → `security.assetProtocol`). En `<audio>`-spelare driver `currentTime`; transkriptet
+markerar det yttrande/ord vars tidsintervall täcker `currentTime`, och klick på ord/yttrande/tidsstämpel
+hoppar i ljudet (`seekTo`). Med ordnivå-tidsstämplar blir markeringen ord-för-ord och scrollar med.
+
 ## Designval
 
 - **Ren Rust/ONNX, ingen Python** — bevarar Avidentifierares enklicks-/enbinärsinstallation.
