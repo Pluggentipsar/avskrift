@@ -41,10 +41,11 @@ samples ─┬─ transcribe.rs   whisper-rs (KB-Whisper GGML) → RawSegment[] 
 
 - `list_whisper_models() -> WhisperModelInfo[]`
 - `download_whisper_model(id)` → event `avskrift:download {id, downloaded, total}`
-- `transcribe(args{path, model, language, diarize, num_speakers}) -> Transcript`
+- `transcribe(args{path, model, language, diarize, num_speakers, word_timestamps}) -> Transcript`
+- `save_recording(data: bytes) -> string` (skriver webbläsar-inspelad WAV till temp, returnerar sökväg)
 - `anonymize(args{texts, enabled, terms, use_ai}) -> AnalyzeResult`
 - `anonymized_segments(rejected) -> string[]`
-- `export_transcript(args{path, anonymize, rejected, speaker_labels})`
+- `export_transcript(args{path, anonymize, rejected, speaker_labels, word_level})`
 
 Framstegsmeddelanden sänds som event `avskrift:progress`. Tung körning sker på
 `tauri::async_runtime::spawn_blocking` så UI:t inte fryser.

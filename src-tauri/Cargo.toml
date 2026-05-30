@@ -13,6 +13,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# GPU-acceleration för Whisper (valbart). Bygg med t.ex.
+#   npm run tauri build -- --features cuda      (NVIDIA)
+#   npm run tauri build -- --features metal     (Apple Silicon)
+#   npm run tauri build -- --features vulkan    (plattformsoberoende GPU)
+# Default = CPU. När någon GPU-feature är på sätter transcribe.rs use_gpu(true).
+[features]
+default = []
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
+vulkan = ["whisper-rs/vulkan"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

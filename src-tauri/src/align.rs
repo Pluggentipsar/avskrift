@@ -8,13 +8,21 @@ use std::collections::HashMap;
 
 use crate::diarize::SpeakerTurn;
 use crate::transcribe::RawSegment;
-use crate::transcript::Utterance;
+use crate::transcript::{Utterance, Word};
+
+/// Convert transcriber words to the serialisable transcript words.
+fn words_of(seg: &RawSegment) -> Vec<Word> {
+    seg.words
+        .iter()
+        .map(|w| Word { start: w.start, end: w.end, text: w.text.clone() })
+        .collect()
+}
 
 /// Build utterances without speaker info (diarisation off).
 pub fn without_speakers(segments: Vec<RawSegment>) -> Vec<Utterance> {
     segments
         .into_iter()
-        .map(|s| Utterance { start: s.start, end: s.end, speaker: None, text: s.text })
+        .map(|s| Utterance { start: s.start, end: s.end, speaker: None, words: words_of(&s), text: s.text })
         .collect()
 }
 
@@ -35,7 +43,8 @@ pub fn with_speakers(segments: Vec<RawSegment>, turns: &[SpeakerTurn]) -> Vec<Ut
                 });
                 format!("TALARE_{n}")
             });
-            Utterance { start: seg.start, end: seg.end, speaker, text: seg.text }
+            let words = words_of(&seg);
+            Utterance { start: seg.start, end: seg.end, speaker, words, text: seg.text }
         })
         .collect()
 }
@@ -62,8 +71,8 @@ mod tests {
     #[test]
     fn assigns_dominant_overlap_and_relabels() {
         let segs = vec![
-            RawSegment { start: 0.0, end: 2.0, text: "ett".into() },
-            RawSegment { start: 2.0, end: 4.0, text: "två".into() },
+            RawSegment { start: 0.0, end: 2.0, text: "ett".into(), words: vec![] },
+            RawSegment { start: 2.0, end: 4.0, text: "två".into(), words: vec![] },
         ];
         // Diariser numbered them 5 and 2; we expect TALARE_1 then TALARE_2 by appearance.
         let turns = vec![

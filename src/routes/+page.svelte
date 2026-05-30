@@ -11,7 +11,8 @@
 
   // ---- Types mirrored from the Rust side ----
   type WhisperModel = { id: string; label: string; sizeMb: number; downloaded: boolean };
-  type Utterance = { start: number; end: number; speaker: string | null; text: string };
+  type Word = { start: number; end: number; text: string };
+  type Utterance = { start: number; end: number; speaker: string | null; text: string; words?: Word[] };
   type Transcript = { utterances: Utterance[]; language: string; model: string; diarized: boolean };
   type SpanInfo = { id: number; category: string; source: string; text: string; replacement: string };
   type Segment = { text: string; span: number | null };
@@ -85,6 +86,17 @@
   let terms = $state<string[]>([]);
   let termInput = $state("");
   let useAi = $state(false);
+  let wordTimestamps = $state(false);
+
+  // ---- Recording ----
+  let recording = $state(false);
+  let recElapsed = $state(0);
+  let recCtx: AudioContext | null = null;
+  let recStream: MediaStream | null = null;
+  let recNode: ScriptProcessorNode | null = null;
+  let recChunks: Float32Array[] = [];
+  let recSampleRate = 16000;
+  let recTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---- Process state ----
   let busy = $state(false);
@@ -168,6 +180,7 @@
           language,
           diarize,
           numSpeakers: diarize && !autoSpeakers ? numSpeakers : null,
+          wordTimestamps,
         },
       });
       transcript = t;
@@ -249,10 +262,11 @@
   }
 
   const fileStem = $derived((audioName ?? "transkript").replace(/\.[^.]+$/, ""));
+  const hasWords = $derived(!!transcript?.utterances.some((u) => u.words && u.words.length > 0));
 
-  async function exportAs(ext: "txt" | "srt" | "vtt" | "docx", anonymize: boolean) {
+  async function exportAs(ext: "txt" | "srt" | "vtt" | "docx", anonymize: boolean, wordLevel = false) {
     if (!transcript) return;
-    const suffix = anonymize ? "_avidentifierad" : "";
+    const suffix = anonymize ? "_avidentifierad" : wordLevel ? "_ord" : "";
     const path = await save({
       defaultPath: `${fileStem}${suffix}.${ext}`,
       filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
@@ -260,7 +274,7 @@
     if (!path) return;
     try {
       await invoke("export_transcript", {
-        args: { path, anonymize, rejected: anonymize ? rejectedIds() : [], speakerLabels },
+        args: { path, anonymize, rejected: anonymize ? rejectedIds() : [], speakerLabels, wordLevel },
       });
       showToast("Filen sparades");
     } catch (e) {
@@ -325,14 +339,23 @@
     <aside class="sidebar">
       <section>
         <h2>Ljudfil</h2>
-        {#if audioName}
+        {#if recording}
+          <div class="recording">
+            <span class="recdot"></span> Spelar in… {fmtTime(recElapsed)}
+            <button class="btn block" onclick={stopRecording}>Stoppa inspelning</button>
+          </div>
+        {:else if audioName}
           <div class="file-chip">
             <span title={audioPath}>{audioName}</span>
             <button class="link" onclick={() => { audioPath = null; audioName = null; transcript = null; analysis = null; }}>rensa</button>
           </div>
         {:else}
           <button class="btn block" onclick={openAudio}>Välj ljudfil…</button>
-          <p class="hint">mp3, wav, m4a, ogg, flac …</p>
+          <button class="btn block mt" onclick={startRecording}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            Spela in
+          </button>
+          <p class="hint">mp3, wav, m4a, ogg, flac … eller spela in direkt</p>
         {/if}
       </section>
 
@@ -379,6 +402,10 @@
             </label>
           {/if}
         {/if}
+        <label class="ai-toggle">
+          <input type="checkbox" bind:checked={wordTimestamps} />
+          <span>Ordnivå-tidsstämplar<em>tid per ord — för exakta undertexter (.vtt)</em></span>
+        </label>
       </section>
 
       <button class="btn primary block big" onclick={runTranscribe}
@@ -462,6 +489,9 @@
               <button class="btn" onclick={() => exportAs("docx", false)}>Word</button>
               <button class="btn" onclick={() => exportAs("srt", false)}>.srt</button>
               <button class="btn" onclick={() => exportAs("vtt", false)}>.vtt</button>
+              {#if hasWords}
+                <button class="btn" onclick={() => exportAs("vtt", false, true)} title="En undertext per ord">.vtt (ord)</button>
+              {/if}
             {/if}
           </div>
         </div>
@@ -538,12 +568,18 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn.primary:hover:not(:disabled) { filter: brightness(1.12); }
   .btn.block { width: 100%; }
+  .btn.mt { margin-top: 8px; }
   .btn.big { padding: 12px; font-size: 15px; margin-bottom: 22px; }
   .link { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0 2px; }
   .x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
 
   .file-chip { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 3px; padding: 9px 11px; font-size: 13.5px; }
   .file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .recording { font-size: 13.5px; color: var(--ink); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .recording .btn { margin-top: 8px; }
+  .recdot { width: 9px; height: 9px; border-radius: 50%; background: #e11d48; animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 
   .ai-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; font-size: 13px; color: var(--muted); }
   .ai-toggle em { font-style: normal; color: var(--faint); display: block; margin-top: 2px; font-size: 12px; }

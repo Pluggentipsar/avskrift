@@ -83,6 +83,9 @@ struct TranscribeArgs {
     diarize: bool,
     /// Force a speaker count, or `None` to let clustering decide.
     num_speakers: Option<usize>,
+    /// Capture word-level timestamps (slightly slower).
+    #[serde(default)]
+    word_timestamps: bool,
 }
 
 #[tauri::command]
@@ -103,7 +106,14 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     let model_path = backend.paths.whisper_file(&args.model);
     let raw = {
         let mut tr = backend.transcriber.lock().unwrap();
-        tr.transcribe(&args.model, &model_path, &audio.samples, &args.language, &progress)?
+        tr.transcribe(
+            &args.model,
+            &model_path,
+            &audio.samples,
+            &args.language,
+            args.word_timestamps,
+            &progress,
+        )?
     };
 
     let utterances = if args.diarize {
@@ -128,6 +138,21 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
     progress("Klar");
     Ok(transcript)
+}
+
+// ---- Recording ----
+
+/// Persist a recording captured in the webview (16-bit PCM WAV bytes) to a temp file and return its
+/// path, so the existing `transcribe` pipeline can pick it up like any other audio file.
+#[tauri::command]
+fn save_recording(data: Vec<u8>) -> Result<String, String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("avskrift-inspelning-{ts}.wav"));
+    std::fs::write(&path, &data).map_err(|e| format!("kunde inte spara inspelningen: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // ---- Anonymisation (reuses the Avidentifierare engine over the transcript) ----
@@ -174,6 +199,9 @@ struct ExportArgs {
     rejected: Vec<usize>,
     /// Speaker id -> display name overrides.
     speaker_labels: BTreeMap<String, String>,
+    /// For VTT only: emit one cue per word (requires a word-timestamped transcript). Raw text only.
+    #[serde(default)]
+    word_level: bool,
 }
 
 #[tauri::command]
@@ -196,6 +224,9 @@ fn export_inner(backend: &Backend, args: ExportArgs) -> anyhow::Result<()> {
 
     match ext(&out).as_deref() {
         Some("srt") => docio::save_text(&out, &transcript.to_srt(texts, labels))?,
+        Some("vtt") if args.word_level && !args.anonymize => {
+            docio::save_text(&out, &transcript.to_vtt_words(labels))?
+        }
         Some("vtt") => docio::save_text(&out, &transcript.to_vtt(texts, labels))?,
         Some("docx") => docio::save_docx(&out, &transcript.to_docx_paragraphs(texts, labels))?,
         _ => docio::save_text(&out, &transcript.to_text(texts, labels))?, // txt / default
@@ -233,6 +264,7 @@ pub fn run() {
             list_whisper_models,
             download_whisper_model,
             transcribe,
+            save_recording,
             anonymize,
             anonymized_segments,
             export_transcript,

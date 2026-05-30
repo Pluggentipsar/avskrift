@@ -67,12 +67,21 @@ Manuell verifiering:
 
 ## 5. Kända risk-/TODO-punkter
 
-- [ ] Verifiera whisper-rs- och sherpa-rs-API mot pinnade versioner (avsnitt 2).
+- [ ] Verifiera whisper-rs- och sherpa-rs-API mot pinnade versioner (avsnitt 2). Detta inkluderar
+      token-API:t för ordnivå-tidsstämplar (`full_n_tokens`, `full_get_token_text`,
+      `full_get_token_data().t0/.t1`) och `WhisperContextParameters::use_gpu`.
 - [ ] Bekräfta/ordna KB-Whisper GGML-filer + URL:er (avsnitt 3).
 - [ ] pyannote-licens/villkor för distribution.
 - [ ] Trimma diariserings-parametrar (`threshold`, `min_duration_*`) på riktigt material.
+- [ ] **GPU-byggen**: installera CUDA Toolkit (NVIDIA) resp. ha Metal (macOS) / Vulkan SDK. Bygg med
+      `--features cuda|metal|vulkan`. Verifiera att whisper-rs exponerar dessa feature-namn i din
+      version; lägg ev. till en `sherpa-rs`-GPU-feature på samma sätt.
+- [ ] **Mikrofon-behörighet**: macOS kräver `NSMicrophoneUsageDescription` i appens Info.plist
+      (lägg i `tauri.conf.json` → `bundle.macOS.infoPlist` eller motsvarande). Windows (WebView2)
+      visar en behörighetsfråga automatiskt.
+- [ ] Stora ljudfiler/inspelningar: `save_recording` tar emot WAV-bytes via IPC (nedsamplat till
+      16 kHz i webbläsaren). För mycket långa inspelningar, överväg att strömma till fil i stället.
 - [ ] Stora ljudfiler: överväg chunkad transkribering + progress i procent (whisper progress-callback).
-- [ ] GPU-acceleration (whisper-rs `cuda`/`metal`-features) som valbart bygge.
 - [ ] Ikon/branding: `src-tauri/icons/` är kopierade från Avidentifierare — byt vid behov.
 
 ## 6. Lyfta ut till ett eget repo

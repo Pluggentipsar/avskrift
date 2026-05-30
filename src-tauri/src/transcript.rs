@@ -9,6 +9,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// One word with absolute timestamps in seconds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Word {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Utterance {
     /// Start time in seconds.
@@ -19,6 +27,9 @@ pub struct Utterance {
     pub speaker: Option<String>,
     /// Recognised text (trimmed).
     pub text: String,
+    /// Word-level timings (empty unless requested).
+    #[serde(default)]
+    pub words: Vec<Word>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +114,27 @@ impl Transcript {
         out
     }
 
+    /// WebVTT with one cue per **word** (precise karaoke-style timing). Raw text only — used when
+    /// word-level timestamps were captured. Speaker, when present, prefixes the first word of a turn.
+    pub fn to_vtt_words(&self, labels: &BTreeMap<String, String>) -> String {
+        let mut out = String::from("WEBVTT\n\n");
+        let mut last_speaker: Option<&str> = None;
+        for u in &self.utterances {
+            let speaker_changed = u.speaker.as_deref() != last_speaker;
+            last_speaker = u.speaker.as_deref();
+            for (wi, w) in u.words.iter().enumerate() {
+                let prefix = if wi == 0 && speaker_changed {
+                    speaker_prefix(u, labels)
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!("{} --> {}\n", vtt_time(w.start), vtt_time(w.end)));
+                out.push_str(&format!("{prefix}{}\n\n", w.text));
+            }
+        }
+        out
+    }
+
     /// Paragraphs for .docx export: one "Name: text" line per utterance.
     pub fn to_docx_paragraphs(
         &self,
@@ -157,8 +189,8 @@ mod tests {
             model: "kb-whisper-small".into(),
             diarized: true,
             utterances: vec![
-                Utterance { start: 0.0, end: 2.5, speaker: Some("TALARE_1".into()), text: "Hej.".into() },
-                Utterance { start: 2.5, end: 5.0, speaker: Some("TALARE_2".into()), text: "Hejsan.".into() },
+                Utterance { start: 0.0, end: 2.5, speaker: Some("TALARE_1".into()), text: "Hej.".into(), words: vec![] },
+                Utterance { start: 2.5, end: 5.0, speaker: Some("TALARE_2".into()), text: "Hejsan.".into(), words: vec![] },
             ],
         }
     }

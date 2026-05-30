@@ -14,6 +14,8 @@ Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
 
 - **Transkribering** med **KB-Whisper** (KBLab) — välj modellstorlek (tiny → large) efter dator och
   noggrannhetsbehov. Modeller hämtas vid behov; den minsta kan bäddas in i installern.
+  Med **valbar GPU-acceleration** (CUDA / Metal / Vulkan) och **ordnivå-tidsstämplar**.
+- **Inspelning** direkt i appen (mikrofon) — eller öppna en befintlig ljudfil.
 - **Diarisering** med **pyannote**-segmentering + talar-embeddings (via sherpa-onnx) — varje
   yttrande märks "Talare 1/2…", som du kan döpa om.
 - **Avidentifiering** av transkriptet med samma motor som Avidentifierare:
@@ -23,7 +25,7 @@ Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
   - **Valfritt AI-lager** — lokal Qwen2.5-1.5B (candle) för kontextuella ledtrådar
   - **Granskning** — varje träff godkänns/avvisas innan export; konsekvent pseudonymisering
 - **Export**: ren text, Word (.docx), och undertexter **.srt / .vtt** med tidsstämplar — i råform
-  eller avidentifierad.
+  eller avidentifierad. Med ordnivå-tidsstämplar även **ord-VTT** (en undertext per ord).
 
 > Ingen automatik fångar 100 %. Granska alltid transkriptet och träffarna innan du delar.
 
@@ -55,7 +57,12 @@ model-tools\build-pii-ner.ps1                  # KB-BERT -> int8 ONNX
 model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF)
 
 npm run tauri dev      # utveckling
-npm run tauri build    # NSIS-installer
+npm run tauri build    # NSIS-installer (CPU)
+
+# GPU-byggen (whisper.cpp-backend):
+npm run tauri build -- --features cuda     # NVIDIA
+npm run tauri build -- --features metal    # Apple Silicon
+npm run tauri build -- --features vulkan   # plattformsoberoende GPU
 ```
 
 ## Modeller & licenser
