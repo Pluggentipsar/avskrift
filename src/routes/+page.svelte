@@ -300,6 +300,101 @@
     }
   }
 
+  async function startRecording() {
+    if (recording) return;
+    error = "";
+    try {
+      recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recCtx = new AudioContext();
+      recSampleRate = recCtx.sampleRate;
+      const source = recCtx.createMediaStreamSource(recStream);
+      recNode = recCtx.createScriptProcessor(4096, 1, 1);
+      recChunks = [];
+      recNode.onaudioprocess = (e) => {
+        recChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      };
+      source.connect(recNode);
+      recNode.connect(recCtx.destination); // required for the processor to run
+      recording = true;
+      recElapsed = 0;
+      recTimer = setInterval(() => (recElapsed += 1), 1000);
+    } catch (e) {
+      error = "Kunde inte komma åt mikrofonen: " + String(e);
+    }
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+    recording = false;
+    if (recTimer) clearInterval(recTimer);
+    recNode?.disconnect();
+    recStream?.getTracks().forEach((t) => t.stop());
+    await recCtx?.close();
+
+    // Flatten captured chunks, downsample to 16 kHz, encode a 16-bit PCM WAV (small IPC payload,
+    // matches the pipeline's target rate).
+    const total = recChunks.reduce((n, c) => n + c.length, 0);
+    const pcm = new Float32Array(total);
+    let off = 0;
+    for (const c of recChunks) { pcm.set(c, off); off += c.length; }
+    const down = downsampleTo16k(pcm, recSampleRate);
+    const wav = encodeWav(down, 16000);
+    recChunks = [];
+    recCtx = recNode = recStream = null;
+
+    try {
+      const path = await invoke<string>("save_recording", { data: Array.from(new Uint8Array(wav)) });
+      audioPath = path;
+      audioName = `Inspelning (${fmtTime(recElapsed)})`;
+      transcript = null;
+      analysis = null;
+      showToast("Inspelning klar");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Simple linear-interpolation downsample to 16 kHz. */
+  function downsampleTo16k(samples: Float32Array, srcRate: number): Float32Array {
+    if (srcRate === 16000) return samples;
+    const ratio = srcRate / 16000;
+    const outLen = Math.floor(samples.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio;
+      const j = Math.floor(pos);
+      const frac = pos - j;
+      out[i] = samples[j] * (1 - frac) + (samples[j + 1] ?? samples[j]) * frac;
+    }
+    return out;
+  }
+
+  /** Encode mono Float32 samples as a 16-bit PCM WAV (little-endian). */
+  function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeStr = (o: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);   // PCM chunk size
+    view.setUint16(20, 1, true);    // format = PCM
+    view.setUint16(22, 1, true);    // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate
+    view.setUint16(32, 2, true);    // block align
+    view.setUint16(34, 16, true);   // bits per sample
+    writeStr(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    let o = 44;
+    for (let i = 0; i < samples.length; i++, o += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
   function fmtTime(s: number): string {
     const m = Math.floor(s / 60), sec = Math.floor(s % 60);
     return `${m}:${sec.toString().padStart(2, "0")}`;
