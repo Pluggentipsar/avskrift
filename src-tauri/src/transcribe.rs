@@ -121,7 +121,10 @@ impl Transcriber {
                     if raw.starts_with("[_") {
                         continue;
                     }
-                    let data = state.full_get_token_data(i, j);
+                    let data = match state.full_get_token_data(i, j) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
                     let (start, end) = (data.t0 as f64 / 100.0, data.t1 as f64 / 100.0);
                     let piece = raw.trim_start();
                     let starts_word = raw.starts_with(' ') || ws.is_empty();

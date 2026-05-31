@@ -40,24 +40,19 @@ pub fn diarize(
     let config = DiarizeConfig {
         num_clusters: num_speakers.map(|n| n as i32),
         // Used only when num_clusters is unset; tuned for conversational Swedish audio.
-        threshold: 0.5,
-        min_duration_on: 0.3,
-        min_duration_off: 0.5,
+        threshold: Some(0.5),
+        min_duration_on: Some(0.3),
+        min_duration_off: Some(0.5),
         ..Default::default()
     };
 
-    let mut sd = Diarize::new(
-        segmentation_model.to_string_lossy().as_ref(),
-        embedding_model.to_string_lossy().as_ref(),
-        config,
-    )
-    .map_err(|e| anyhow!("kunde inte initiera diariseringen: {e}"))?;
+    let mut sd = Diarize::new(segmentation_model, embedding_model, config)
+        .map_err(|e| anyhow!("kunde inte initiera diariseringen: {e}"))?;
 
     progress("Identifierar talare…");
+    // sherpa-rs takes an optional progress callback; we don't surface clustering progress.
     let segments = sd
-        .compute(samples.to_vec(), |done: i32, total: i32| {
-            let _ = (done, total); // sherpa reports clustering progress here if needed
-        })
+        .compute(samples.to_vec(), None)
         .map_err(|e| anyhow!("diariseringen misslyckades: {e}"))?;
 
     let mut turns: Vec<SpeakerTurn> = segments
