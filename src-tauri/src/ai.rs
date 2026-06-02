@@ -1,26 +1,14 @@
-//! Optional semantic de-identification layer: a small local LLM (quantized GGUF via candle)
-//! that proposes additional verbatim substrings to mask. Its output is treated as just another
-//! candidate source that flows through the normal human review — never auto-trusted.
+//! Optional semantic de-identification layer: a small local LLM (Qwen GGUF via llama.cpp, see
+//! [`crate::llm`]) that proposes additional verbatim substrings to mask. Its output is treated as
+//! just another candidate source that flows through the normal human review — never auto-trusted.
 
 use std::path::Path;
-use std::sync::Mutex;
 
-use anyhow::{anyhow, Result};
-use candle_core::quantized::gguf_file;
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
-use candle_transformers::utils::apply_repeat_penalty;
+use anyhow::Result;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use tokenizers::Tokenizer;
 
-/// Mild penalty on recently generated tokens + low-temperature sampling to avoid repetition loops
-/// without harming the JSON structure. Seeded, so output stays reproducible.
-const REPEAT_PENALTY: f32 = 1.15;
-const REPEAT_LAST_N: usize = 64;
-const TEMPERATURE: f64 = 0.3;
-const TOP_P: f64 = 0.9;
+use crate::llm::Qwen;
 
 /// Matches a JSON string literal (handling escapes) — used to recover items from truncated output.
 static JSON_STRING: Lazy<Regex> = Lazy::new(|| Regex::new(r#""((?:[^"\\]|\\.)*)""#).unwrap());
@@ -37,92 +25,29 @@ const EXAMPLE_IN: &str = "Anna Lind bor på Storgatan 3 lgh 12 och har Concerta 
 const EXAMPLE_OUT: &str = "[\"Anna Lind\", \"Storgatan 3\", \"lgh 12\", \"Concerta\", \"ADHD\"]";
 
 pub struct LlmDetector {
-    model: Mutex<Qwen2>,
-    tokenizer: Tokenizer,
-    eos: u32,
-    device: Device,
-}
-
-/// Pick the best candle device for the build. With `--features cuda`/`metal` this returns a GPU
-/// device (falling back to CPU if no GPU is present at runtime); otherwise CPU. Mirrors the GPU
-/// flags that whisper.cpp uses, so a GPU build accelerates both tal->text and the Qwen LLM layer.
-pub(crate) fn best_device() -> Device {
-    #[cfg(feature = "cuda")]
-    {
-        if let Ok(d) = Device::new_cuda(0) {
-            return d;
-        }
-    }
-    #[cfg(feature = "metal")]
-    {
-        if let Ok(d) = Device::new_metal(0) {
-            return d;
-        }
-    }
-    Device::Cpu
+    qwen: Qwen,
 }
 
 impl LlmDetector {
-    pub fn load(gguf_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-        let device = best_device();
-        let mut file = std::fs::File::open(gguf_path)
-            .map_err(|e| anyhow!("kunde inte öppna {}: {e}", gguf_path.display()))?;
-        let content = gguf_file::Content::read(&mut file)
-            .map_err(|e| anyhow!("kunde inte läsa GGUF: {e}"))?;
-        let model = Qwen2::from_gguf(content, &mut file, &device)?;
-
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| anyhow!("kunde inte ladda tokenizer: {e}"))?;
-        let eos = *tokenizer
-            .get_vocab(true)
-            .get("<|im_end|>")
-            .ok_or_else(|| anyhow!("tokenizer saknar <|im_end|>"))?;
-
-        Ok(Self { model: Mutex::new(model), tokenizer, eos, device })
+    /// `_tokenizer_path` is unused — llama.cpp uses the tokenizer embedded in the GGUF. It is kept
+    /// so callers can pass the usual `(model, tokenizer)` path pair.
+    pub fn load(gguf_path: &Path, _tokenizer_path: &Path) -> Result<Self> {
+        Ok(Self { qwen: Qwen::load(gguf_path)? })
     }
 
-    /// Ask the model for verbatim substrings that should be masked.
+    /// Ask the model for verbatim substrings that should be masked. Greedy decoding (temperature 0)
+    /// — low-temp sampling made the quantized model parrot the example instead of reading the text.
     pub fn propose(&self, text: &str) -> Result<Vec<String>> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let output = self.generate(&build_prompt(text), 512)?;
+        let output = self.qwen.generate(&build_prompt(text), 512, 0.0)?;
         let mut seen = std::collections::HashSet::new();
         Ok(parse_json_strings(&output)
             .into_iter()
             .filter(|t| seen.insert(t.to_lowercase()))
             .take(80)
             .collect())
-    }
-
-    fn generate(&self, prompt: &str, max_new: usize) -> Result<String> {
-        let enc = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
-        let tokens = enc.get_ids().to_vec();
-
-        let mut model = self.model.lock().unwrap();
-        let mut lp = LogitsProcessor::new(42, Some(TEMPERATURE), Some(TOP_P));
-        let mut generated: Vec<u32> = Vec::new();
-
-        let input = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-        let mut logits = model.forward(&input, 0)?.squeeze(0)?;
-
-        for i in 0..max_new {
-            if !generated.is_empty() {
-                let start = generated.len().saturating_sub(REPEAT_LAST_N);
-                logits = apply_repeat_penalty(&logits, REPEAT_PENALTY, &generated[start..])?;
-            }
-            let next = lp.sample(&logits)?;
-            if next == self.eos {
-                break;
-            }
-            generated.push(next);
-            let input = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-            logits = model.forward(&input, tokens.len() + i)?.squeeze(0)?;
-        }
-        self.tokenizer.decode(&generated, true).map_err(|e| anyhow!("avkodning misslyckades: {e}"))
     }
 }
 
@@ -172,8 +97,8 @@ fn parse_json_strings(s: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Loads the bundled LLM and runs it on the sample text. Run with:
-    /// `cargo test --lib ai::tests::smoke_llm -- --ignored --nocapture`
+    /// Loads the bundled LLM (now Q8_0) and runs it on the sample text. Run with:
+    /// `cargo test --release --lib ai::tests::smoke_llm -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn smoke_llm() {
@@ -183,11 +108,14 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/veckobrev.txt"),
         )
         .unwrap();
-        let raw = d.generate(&build_prompt(&text), 1280).unwrap();
-        println!("RÅSVAR:\n{raw}\n--- slut råsvar ---");
-        let proposals = parse_json_strings(&raw);
+        let proposals = d.propose(&text).unwrap();
         println!("AI-FÖRSLAG ({}):\n{proposals:#?}", proposals.len());
-        assert!(!proposals.is_empty());
+        assert!(!proposals.is_empty(), "AI-lagret gav inga förslag");
+        // Q8_0 + greedy must read the REAL text, not reproduce the few-shot example.
+        assert!(
+            !proposals.iter().any(|p| p.contains("Anna Lind") || p.contains("Storgatan")),
+            "modellen härmade exemplet i stället för att läsa texten: {proposals:?}"
+        );
     }
 
     #[test]

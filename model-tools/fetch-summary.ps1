@@ -20,7 +20,7 @@ switch ($Size) {
     "3b"   { $id = "qwen2.5-3b";   $repo = "Qwen2.5-3B-Instruct" }
     "7b"   { $id = "qwen2.5-7b";   $repo = "Qwen2.5-7B-Instruct" }
 }
-$gguf = "https://huggingface.co/bartowski/$repo-GGUF/resolve/main/$repo-Q4_K_M.gguf"
+$gguf = "https://huggingface.co/bartowski/$repo-GGUF/resolve/main/$repo-Q8_0.gguf"
 $tok  = "https://huggingface.co/Qwen/$repo/resolve/main/tokenizer.json"
 
 Write-Host "Hämtar tokenizer ($id)..."

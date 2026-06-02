@@ -90,8 +90,10 @@ impl Transcriber {
         // Live percent progress from whisper.cpp (0–100). Verify this API name against the pinned
         // whisper-rs version (see FINISH.md); older versions use `set_progress_callback`.
         params.set_progress_callback_safe(move |p: i32| pct(p));
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        params.set_n_threads(threads.saturating_sub(1).max(1) as i32);
+        // whisper.cpp scales best up to *physical* cores; logical/SMT over-subscription (e.g. 15
+        // threads on an 8-core CPU) just adds scheduling overhead. Use the physical core count.
+        let threads = num_cpus::get_physical().max(1) as i32;
+        params.set_n_threads(threads);
 
         progress("Transkriberar…");
         state.full(params, samples).map_err(|e| anyhow!("transkriberingen misslyckades: {e}"))?;

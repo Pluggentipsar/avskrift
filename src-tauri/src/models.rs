@@ -34,16 +34,16 @@ pub struct WhisperModelInfo {
 /// published artefacts before release** (see FINISH.md) — KBLab publishes the PyTorch/CT2 weights,
 /// and the GGML files come from a community/own conversion repo.
 pub const WHISPER_MODELS: &[(&str, &str, u32, &str)] = &[
-    ("kb-whisper-tiny", "Tiny — snabbast, lägst kvalitet", 75,
-        "https://huggingface.co/KBLab/kb-whisper-tiny/resolve/main/ggml-model.bin"),
-    ("kb-whisper-base", "Base — snabb", 145,
-        "https://huggingface.co/KBLab/kb-whisper-base/resolve/main/ggml-model.bin"),
-    ("kb-whisper-small", "Small — bra balans (rekommenderad)", 480,
-        "https://huggingface.co/KBLab/kb-whisper-small/resolve/main/ggml-model.bin"),
-    ("kb-whisper-medium", "Medium — högre kvalitet, långsammare", 1530,
-        "https://huggingface.co/KBLab/kb-whisper-medium/resolve/main/ggml-model.bin"),
-    ("kb-whisper-large", "Large — bäst kvalitet, kräver kraftig dator", 3090,
-        "https://huggingface.co/KBLab/kb-whisper-large/resolve/main/ggml-model.bin"),
+    ("kb-whisper-tiny", "Tiny (q5) — snabbast, lägst kvalitet", 28,
+        "https://huggingface.co/KBLab/kb-whisper-tiny/resolve/main/ggml-model-q5_0.bin"),
+    ("kb-whisper-base", "Base (q5) — snabb", 53,
+        "https://huggingface.co/KBLab/kb-whisper-base/resolve/main/ggml-model-q5_0.bin"),
+    ("kb-whisper-small", "Small (q5) — bra balans (rekommenderad)", 167,
+        "https://huggingface.co/KBLab/kb-whisper-small/resolve/main/ggml-model-q5_0.bin"),
+    ("kb-whisper-medium", "Medium (q5) — högre kvalitet, långsammare", 514,
+        "https://huggingface.co/KBLab/kb-whisper-medium/resolve/main/ggml-model-q5_0.bin"),
+    ("kb-whisper-large", "Large (q5) — bäst kvalitet, kräver kraftig dator", 1031,
+        "https://huggingface.co/KBLab/kb-whisper-large/resolve/main/ggml-model-q5_0.bin"),
 ];
 
 /// Download URL for a Whisper model id.
@@ -64,29 +64,30 @@ pub struct SummaryModelInfo {
 
 /// Downloadable summarisation models as `(id, label, size_mb, gguf_url, tokenizer_url)`.
 ///
-/// All Qwen2.5-Instruct (Apache-2.0), GGUF Q4_K_M via bartowski. The 1.5B mirrors the bundled PII
-/// model so summarisation works out of the box; 3B/7B are opt-in for noticeably better minutes.
-/// **Verify URLs before release** (see FINISH.md).
+/// All Qwen2.5-Instruct (Apache-2.0), GGUF **Q8_0** via bartowski. Q4_K_M was too degraded for these
+/// small models — they ignored the instructions (parroted the few-shot example / echoed the input);
+/// Q8_0 follows them. The 1.5B mirrors the bundled PII model so summarisation works out of the box;
+/// 3B/7B are opt-in for noticeably better minutes. **Verify URLs before release** (see FINISH.md).
 pub const SUMMARY_MODELS: &[(&str, &str, u32, &str, &str)] = &[
     (
         "qwen2.5-1.5b",
-        "Liten (1,5B) — snabb, finns redan, lägst kvalitet",
-        940,
-        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+        "Liten (1,5B) — snabbast, finns redan",
+        1570,
+        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
         "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/main/tokenizer.json",
     ),
     (
         "qwen2.5-3b",
         "Medel (3B) — bra balans (rekommenderad)",
-        1930,
-        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        3133,
+        "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q8_0.gguf",
         "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct/resolve/main/tokenizer.json",
     ),
     (
         "qwen2.5-7b",
         "Stor (7B) — bäst kvalitet, kräver kraftig dator / GPU",
-        4680,
-        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        8100,
+        "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q8_0.gguf",
         "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/resolve/main/tokenizer.json",
     ),
 ];
@@ -115,6 +116,10 @@ pub struct ModelPaths {
     pub llm_tokenizer: PathBuf,
     /// Directory holding downloaded summarisation models (`<id>.gguf` + `<id>.tokenizer.json`).
     pub summary_dir: PathBuf,
+    /// Directory holding auto-saved job-history files (`<id>.json`, app data dir, writable).
+    pub jobs_dir: PathBuf,
+    /// Directory holding meeting recordings — two source WAVs per meeting (app data dir, writable).
+    pub meetings_dir: PathBuf,
 }
 
 impl ModelPaths {
@@ -196,8 +201,12 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     };
     let whisper_dir = writable("whisper-models");
     let summary_dir = writable("summary-models");
+    let jobs_dir = writable("jobs");
+    let meetings_dir = writable("meetings");
     let _ = std::fs::create_dir_all(&whisper_dir);
     let _ = std::fs::create_dir_all(&summary_dir);
+    let _ = std::fs::create_dir_all(&jobs_dir);
+    let _ = std::fs::create_dir_all(&meetings_dir);
 
     ModelPaths {
         whisper_dir,
@@ -209,5 +218,7 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
         llm_model: res("llm/model.gguf"),
         llm_tokenizer: res("llm/tokenizer.json"),
         summary_dir,
+        jobs_dir,
+        meetings_dir,
     }
 }

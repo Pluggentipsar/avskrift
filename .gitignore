@@ -25,6 +25,12 @@ vite.config.js.timestamp-*
 __pycache__/
 *.pyc
 
+# Native runtime DLLs copied in for the installer bundle (build artifacts, ~94 MB)
+/src-tauri/runtime/
+
+# Local sample/test transcripts — may contain real speech; keep out of the public repo
+/samples/
+
 # Generated icon raster + installers
 /src-tauri/icon-1024.png
 *-setup.exe

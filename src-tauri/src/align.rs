@@ -26,6 +26,44 @@ pub fn without_speakers(segments: Vec<RawSegment>) -> Vec<Utterance> {
         .collect()
 }
 
+/// Merge already-labelled utterances from several sources into a single timeline, stably sorted by
+/// start time. Used by the meeting feature, where the speaker is known from the capture *source*
+/// ("Jag" = mic, "Mötet" = system loopback) rather than from diarisation. Because the sort is
+/// stable, callers control ties by ordering the input (push mic utterances before meeting ones to
+/// favour "Jag" when two utterances start at the same instant).
+pub fn from_labeled(mut utterances: Vec<Utterance>) -> Vec<Utterance> {
+    utterances.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    utterances
+}
+
+/// Re-attribute the utterances currently labelled `meeting_label` (e.g. "Mötet") to diarised
+/// speakers "TALARE_1".. by dominant temporal overlap with `turns`; utterances with any other
+/// speaker (e.g. "Jag") are left untouched. First-appearance numbering, like [`with_speakers`].
+pub fn split_meeting_speakers(
+    utterances: Vec<Utterance>,
+    turns: &[SpeakerTurn],
+    meeting_label: &str,
+) -> Vec<Utterance> {
+    let mut order: HashMap<usize, usize> = HashMap::new();
+    let mut next = 1usize;
+    utterances
+        .into_iter()
+        .map(|mut u| {
+            if u.speaker.as_deref() == Some(meeting_label) {
+                if let Some(cluster) = dominant_speaker(u.start, u.end, turns) {
+                    let n = *order.entry(cluster).or_insert_with(|| {
+                        let v = next;
+                        next += 1;
+                        v
+                    });
+                    u.speaker = Some(format!("TALARE_{n}"));
+                }
+            }
+            u
+        })
+        .collect()
+}
+
 /// Build utterances, attributing each segment to its dominant overlapping speaker.
 pub fn with_speakers(segments: Vec<RawSegment>, turns: &[SpeakerTurn]) -> Vec<Utterance> {
     // Cluster index -> first-appearance order, walking segments left to right.

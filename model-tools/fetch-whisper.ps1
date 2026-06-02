@@ -16,7 +16,7 @@ $dest = Join-Path $here "..\src-tauri\resources\whisper"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $ProgressPreference = "SilentlyContinue"
 
-$url = "https://huggingface.co/KBLab/kb-whisper-$Size/resolve/main/ggml-model.bin"
+$url = "https://huggingface.co/KBLab/kb-whisper-$Size/resolve/main/ggml-model-q5_0.bin"
 $out = Join-Path $dest "kb-whisper-$Size.bin"
 
 Write-Host "Hämtar kb-whisper-$Size ..."

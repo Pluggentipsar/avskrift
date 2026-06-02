@@ -139,3 +139,26 @@ fn resample(input: &[f32], from_sr: u32, to_sr: u32) -> Result<Vec<f32>> {
     }
     Ok(out)
 }
+
+/// Mix interleaved multi-channel f32 frames down to mono by averaging channels. A trailing partial
+/// frame (fewer than `channels` samples) is dropped. Used by the live meeting capture, which gets
+/// interleaved frames straight from WASAPI rather than via [`load`].
+pub fn downmix_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
+    let ch = channels.max(1);
+    let mut out = Vec::with_capacity(interleaved.len() / ch);
+    for frame in interleaved.chunks_exact(ch) {
+        let acc: f32 = frame.iter().sum();
+        out.push(acc / ch as f32);
+    }
+    out
+}
+
+/// Resample mono f32 `input` from `src_sr` to [`TARGET_SR`] (16 kHz). One-shot over the whole
+/// buffer; returns the input unchanged when it is already at the target rate. Used by the live
+/// meeting capture to feed Whisper directly from in-memory chunks (no WAV round-trip).
+pub fn resample_to_16k(input: &[f32], src_sr: u32) -> Vec<f32> {
+    if src_sr == TARGET_SR || input.is_empty() {
+        return input.to_vec();
+    }
+    resample(input, src_sr, TARGET_SR).unwrap_or_default()
+}

@@ -12,7 +12,7 @@ Invoke-WebRequest -Uri "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolv
     -OutFile (Join-Path $dest "tokenizer.json")
 
 Write-Host "Hämtar modell (~940 MB)..."
-Invoke-WebRequest -Uri "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" `
+Invoke-WebRequest -Uri "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q8_0.gguf" `
     -OutFile (Join-Path $dest "model.gguf")
 
 Write-Host "Klart. Filer i $dest"

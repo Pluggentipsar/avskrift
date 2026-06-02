@@ -1,33 +1,25 @@
 //! Meeting summarisation: turn a (possibly long) transcript into structured Swedish minutes using a
-//! local Qwen GGUF model via candle.
+//! local Qwen GGUF model via llama.cpp (see [`crate::llm`]).
 //!
-//! Long transcripts don't fit a small model's effective context, so we use **map-reduce**: split the
-//! transcript into chunks, summarise each ("map"), then synthesise the chunk-summaries into the final
-//! templated document ("reduce"). This scales to arbitrary length and keeps every model call inside a
-//! comfortable window.
+//! Qwen2.5 has a 32k context, so a whole meeting transcript usually fits in ONE pass — that is both
+//! faster (one model call) and higher quality (nothing lost between chunks). Only transcripts longer
+//! than [`CHUNK_CHARS`] fall back to **map-reduce**: summarise each chunk ("map"), then synthesise
+//! the chunk-summaries into the final templated document ("reduce").
 //!
 //! Output is always presented to the user as an *editable draft* with an "AI-genererat — granska"
 //! warning; nothing here is treated as authoritative.
 
 use std::path::Path;
-use std::sync::Mutex;
 
-use anyhow::{anyhow, Result};
-use candle_core::quantized::gguf_file;
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
-use candle_transformers::utils::apply_repeat_penalty;
-use tokenizers::Tokenizer;
+use anyhow::Result;
 
-const REPEAT_PENALTY: f32 = 1.15;
-const REPEAT_LAST_N: usize = 64;
-const TEMPERATURE: f64 = 0.4;
-const TOP_P: f64 = 0.9;
+use crate::llm::Qwen;
 
-/// Approximate characters per chunk for the "map" stage. ~4 chars/token, so ~6 k chars ≈ 1.5 k
-/// tokens of transcript + room for prompt and output within a small model's comfort zone.
-const CHUNK_CHARS: usize = 6_000;
+/// Approximate characters per chunk. Qwen2.5 has a 32k context, so we keep the whole transcript in
+/// ONE pass when it fits (~20 k chars ≈ 6 k tokens) — that skips the map stage entirely (1 model
+/// call instead of N+1), which is both much faster on CPU and higher quality (nothing is lost
+/// across chunk boundaries). Longer transcripts still fall back to map-reduce.
+const CHUNK_CHARS: usize = 20_000;
 
 /// A summarisation template: a stable id, a label, and the section structure the model is asked to
 /// fill in. Kept server-side so the prompt is consistent and auditable.
@@ -64,35 +56,19 @@ pub fn template(id: &str) -> Option<&'static Template> {
 }
 
 /// A loaded summarisation model. Distinct from the PII `LlmDetector` so the two can use different
-/// models/sampling without interfering.
+/// models without interfering.
 pub struct Summarizer {
-    model: Mutex<Qwen2>,
-    tokenizer: Tokenizer,
-    eos: u32,
-    device: Device,
+    qwen: Qwen,
 }
 
 impl Summarizer {
-    pub fn load(gguf_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-        let device = crate::ai::best_device();
-        let mut file = std::fs::File::open(gguf_path)
-            .map_err(|e| anyhow!("kunde inte öppna {}: {e}", gguf_path.display()))?;
-        let content =
-            gguf_file::Content::read(&mut file).map_err(|e| anyhow!("kunde inte läsa GGUF: {e}"))?;
-        let model = Qwen2::from_gguf(content, &mut file, &device)?;
-
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| anyhow!("kunde inte ladda tokenizer: {e}"))?;
-        let eos = *tokenizer
-            .get_vocab(true)
-            .get("<|im_end|>")
-            .ok_or_else(|| anyhow!("tokenizer saknar <|im_end|>"))?;
-
-        Ok(Self { model: Mutex::new(model), tokenizer, eos, device })
+    /// `_tokenizer_path` is unused — llama.cpp uses the tokenizer embedded in the GGUF.
+    pub fn load(gguf_path: &Path, _tokenizer_path: &Path) -> Result<Self> {
+        Ok(Self { qwen: Qwen::load(gguf_path)? })
     }
 
     /// Summarise `transcript_text` using the chosen structure instruction (from a built-in template
-    /// or the user's own agenda/headings). `progress` reports map/reduce phases.
+    /// or the user's own agenda/headings). `progress` reports map/reduce phases. Greedy decoding.
     pub fn summarize(
         &self,
         transcript_text: &str,
@@ -102,52 +78,47 @@ impl Summarizer {
         let chunks = split_chunks(transcript_text, CHUNK_CHARS);
 
         if chunks.len() <= 1 {
-            // Short enough to do in one pass — skip the map stage.
+            // Fits in one pass — skip the map stage entirely.
             progress("Sammanfattar…");
-            return self.generate(&final_prompt(structure, transcript_text), 1024);
+            return self.qwen.generate(&final_prompt(structure, transcript_text), 1024, 0.0);
         }
 
         // Map: summarise each chunk into neutral bullet notes.
         let mut notes = String::new();
         for (i, chunk) in chunks.iter().enumerate() {
             progress(&format!("Läser del {}/{}…", i + 1, chunks.len()));
-            let partial = self.generate(&map_prompt(chunk), 512)?;
+            let partial = self.qwen.generate(&map_prompt(chunk), 512, 0.0)?;
             notes.push_str(&format!("\n[Del {}]\n{}\n", i + 1, partial.trim()));
         }
 
         // Reduce: synthesise the notes into the final templated document.
         progress("Sätter ihop sammanfattningen…");
-        self.generate(&final_prompt(structure, notes.trim()), 1024)
+        self.qwen.generate(&final_prompt(structure, notes.trim()), 1024, 0.0)
     }
 
-    fn generate(&self, prompt: &str, max_new: usize) -> Result<String> {
-        let enc = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
-        let tokens = enc.get_ids().to_vec();
+    /// Answer a free-text question **strictly from the transcript** (greedy decoding). For long
+    /// transcripts the question is answered per chunk, then the partial answers are woven together.
+    pub fn answer(
+        &self,
+        question: &str,
+        transcript_text: &str,
+        progress: &dyn Fn(&str),
+    ) -> Result<String> {
+        let chunks = split_chunks(transcript_text, CHUNK_CHARS);
 
-        let mut model = self.model.lock().unwrap();
-        let mut lp = LogitsProcessor::new(42, Some(TEMPERATURE), Some(TOP_P));
-        let mut generated: Vec<u32> = Vec::new();
-
-        let input = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
-        let mut logits = model.forward(&input, 0)?.squeeze(0)?;
-
-        for i in 0..max_new {
-            if !generated.is_empty() {
-                let start = generated.len().saturating_sub(REPEAT_LAST_N);
-                logits = apply_repeat_penalty(&logits, REPEAT_PENALTY, &generated[start..])?;
-            }
-            let next = lp.sample(&logits)?;
-            if next == self.eos {
-                break;
-            }
-            generated.push(next);
-            let input = Tensor::new(&[next], &self.device)?.unsqueeze(0)?;
-            logits = model.forward(&input, tokens.len() + i)?.squeeze(0)?;
+        if chunks.len() <= 1 {
+            progress("Svarar…");
+            return self.qwen.generate(&qa_prompt(question, transcript_text), 512, 0.0);
         }
-        self.tokenizer.decode(&generated, true).map_err(|e| anyhow!("avkodning misslyckades: {e}"))
+
+        let mut partials = String::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            progress(&format!("Läser del {}/{}…", i + 1, chunks.len()));
+            let a = self.qwen.generate(&qa_prompt(question, chunk), 384, 0.0)?;
+            partials.push_str(&format!("\n[Del {}]\n{}\n", i + 1, a.trim()));
+        }
+        progress("Sammanställer svar…");
+        self.qwen.generate(&qa_combine_prompt(question, partials.trim()), 512, 0.0)
     }
 }
 
@@ -169,6 +140,27 @@ fn final_prompt(structure: &str, body: &str) -> String {
         "<|im_start|>system\n{SYSTEM}<|im_end|>\n\
          <|im_start|>user\n{structure}\n\nUnderlag (mötestranskript eller delsammanfattningar):\
          \n\n{body}<|im_end|>\n<|im_start|>assistant\n"
+    )
+}
+
+const QA_SYSTEM: &str = "Du svarar på frågor om ett möte. Svara ENBART utifrån transkriptet nedan. \
+Hitta ALDRIG på fakta, namn eller siffror. Om svaret inte framgår av transkriptet, säg tydligt att \
+det inte framgår. Svara koncist på svenska.";
+
+fn qa_prompt(question: &str, body: &str) -> String {
+    format!(
+        "<|im_start|>system\n{QA_SYSTEM}<|im_end|>\n\
+         <|im_start|>user\nMötestranskript:\n\n{body}\n\n---\nFråga: {question}<|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}
+
+fn qa_combine_prompt(question: &str, partials: &str) -> String {
+    format!(
+        "<|im_start|>system\n{QA_SYSTEM}<|im_end|>\n\
+         <|im_start|>user\nDelsvar från olika delar av mötet:\n\n{partials}\n\n---\nVäv ihop \
+         delsvaren till ETT sammanhängande svar på frågan: {question}<|im_end|>\n\
+         <|im_start|>assistant\n"
     )
 }
 

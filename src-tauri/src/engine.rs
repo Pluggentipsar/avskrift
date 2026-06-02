@@ -119,6 +119,12 @@ impl Engine {
         spans.extend(Dictionary::new(terms, Category::Egen, true).detect(text));
 
         if use_ai {
+            if !self.paths.llm_model.exists() {
+                return Err(anyhow!(
+                    "Ladda ner sammanfattningsmodellen \"Liten (1,5B)\" i Sammanfatta-vyn först – \
+                     den används även för djupare granskning (AI)."
+                ));
+            }
             progress("Djupare granskning (AI) – kan ta ~30 s…");
             self.ensure_llm()?;
             let guard = self.llm.lock().unwrap();
