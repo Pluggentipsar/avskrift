@@ -514,6 +514,8 @@
       summaryDraft = "";
       dirty = false;
       view = "transcript";
+      // Sync the backend transcript so export uses this project, not a stale one.
+      await invoke("update_transcript", { transcript }).catch(() => {});
       showToast("Projektet öppnades");
     } catch (e) {
       error = String(e);
@@ -549,14 +551,18 @@
   function isActive(id: number): boolean {
     if (!analysis) return false;
     const span = analysis.spans[id];
-    return enabled[span.category] && !rejected.has(id);
+    // Manual masks (the user clicked the word) always apply, regardless of category toggles.
+    const allowed = span.source === "manual" || enabled[span.category];
+    return allowed && !rejected.has(id);
   }
   const activeCount = $derived(analysis ? analysis.spans.filter((s) => isActive(s.id)).length : 0);
   function countFor(key: string): number {
     return analysis ? analysis.spans.filter((s) => s.category === key).length : 0;
   }
   function toggleSpan(id: number) {
-    if (!analysis || !enabled[analysis.spans[id].category]) return;
+    if (!analysis) return;
+    const span = analysis.spans[id];
+    if (span.source !== "manual" && !enabled[span.category]) return;
     const next = new Set(rejected);
     next.has(id) ? next.delete(id) : next.add(id);
     rejected = next;
@@ -569,10 +575,41 @@
   let maskTarget = $state<{ start: number; end: number; text: string } | null>(null);
   let maskCategory = $state("ovrigt");
   let maskCustom = $state("");
+  // Pending drag-selection (byte range + viewport position for the floating "mask selection" button).
+  let selPending = $state<{ start: number; end: number; text: string; x: number; y: number } | null>(null);
   function openMask(seg: { start: number; end: number; text: string }) {
+    selPending = null;
     maskTarget = { start: seg.start, end: seg.end, text: seg.text };
     maskCategory = "ovrigt";
     maskCustom = "";
+  }
+
+  // After a drag-selection in the review document, map it to a byte range in `analysis.text` and
+  // offer a floating "mask selection" button. Relies on the rendered segments concatenating exactly
+  // to analysis.text (each segment renders its verbatim substring), so the document's text content
+  // equals the analysed text and a Range's byte length gives the offset.
+  function onDocMouseUp(e: MouseEvent) {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !analysis) { selPending = null; return; }
+    const range = sel.getRangeAt(0);
+    const doc = e.currentTarget as HTMLElement;
+    if (!doc.contains(range.startContainer) || !doc.contains(range.endContainer)) { selPending = null; return; }
+    const raw = sel.toString();
+    const trimmed = raw.trim();
+    if (!trimmed) { selPending = null; return; }
+    const enc = new TextEncoder();
+    const pre = range.cloneRange();
+    pre.selectNodeContents(doc);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const start = enc.encode(pre.toString()).length + enc.encode(raw.slice(0, raw.indexOf(trimmed))).length;
+    const end = start + enc.encode(trimmed).length;
+    const r = range.getBoundingClientRect();
+    selPending = { start, end, text: trimmed, x: r.left + r.width / 2, y: r.top };
+  }
+  function maskSelection() {
+    if (!selPending) return;
+    openMask({ start: selPending.start, end: selPending.end, text: selPending.text });
+    window.getSelection()?.removeAllRanges();
   }
   async function confirmMask() {
     if (!maskTarget) return;
@@ -645,6 +682,23 @@
           return name ? `${name}: ${body}` : body;
         })
         .join("\n");
+      await navigator.clipboard.writeText(text);
+      showToast("Kopierat till urklipp");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Copy the raw transcript (with speaker labels) to the clipboard. */
+  async function copyTranscript() {
+    if (!transcript) return;
+    const text = transcript.utterances
+      .map((u) => {
+        const name = u.speaker ? speakerLabels[u.speaker] ?? u.speaker : null;
+        return name ? `${name}: ${u.text}` : u.text;
+      })
+      .join("\n");
+    try {
       await navigator.clipboard.writeText(text);
       showToast("Kopierat till urklipp");
     } catch (e) {
@@ -896,6 +950,13 @@
     screen = s;
     error = "";
     if (s === "history") refreshJobs();
+  }
+
+  /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
+  function tab(v: "transcript" | "review" | "summary" | "qa") {
+    view = v;
+    screen = "transcribe";
+    error = "";
   }
 
   /** Clear the current working project and return Home for a fresh start. Everything is auto-saved
@@ -1173,6 +1234,9 @@
         view = "summary";
         screen = "summarize";
       }
+      // Keep the backend transcript in sync with what's shown, so export uses the right one
+      // (export reads backend.transcript; de-identify already uses the frontend transcript).
+      if (transcript) await invoke("update_transcript", { transcript }).catch(() => {});
       error = "";
       showToast("Jobb öppnat");
     } catch (e) {
@@ -1211,10 +1275,15 @@
       <span class="brand"><h1>Avskrift</h1></span>
     </button>
     <nav class="topnav">
-      <button class:on={screen === "transcribe"} onclick={() => go("transcribe")}>Transkribera</button>
-      <button class:on={screen === "meeting"} onclick={() => go("meeting")}>Möte</button>
-      <button class:on={screen === "deidentify"} onclick={() => { srcMode = transcript ? "transcript" : "paste"; go("deidentify"); }}>Avidentifiera</button>
-      <button class:on={screen === "summarize"} onclick={() => { srcMode = transcript ? "transcript" : "paste"; go("summarize"); }}>Sammanfatta</button>
+      {#if transcript}
+        <button class:on={screen === "transcribe" && view === "transcript"} onclick={() => tab("transcript")}>Transkript</button>
+        <button class:on={screen === "transcribe" && view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
+        <button class:on={screen === "transcribe" && view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
+        <button class:on={screen === "transcribe" && view === "qa"} onclick={() => tab("qa")}>Fråga</button>
+      {:else if screen === "deidentify" || screen === "summarize"}
+        <button class:on={screen === "deidentify"} onclick={() => go("deidentify")}>Avidentifiering</button>
+        <button class:on={screen === "summarize"} onclick={() => go("summarize")}>Sammanfattning</button>
+      {/if}
       <button class:on={screen === "history"} onclick={() => go("history")}>Historik</button>
     </nav>
     <div class="spacer"></div>
@@ -1407,11 +1476,17 @@
               {/if}
             </div>
           </div>
-          <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} träffar avidentifieras</div>
-          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+          <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} markeras för maskering</div>
+          <div class="legend">
+            <span class="lg-chip on">så här</span> maskas ·
+            <span class="lg-chip off">så här</span> maskas inte ·
+            klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
+          </div>
+          <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
+          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
-                  title={active ? `${info.text} → ${info.replacement}` : info.text}
+                  title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           <div class="reassure">
             <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#2440ff" stroke-width="2"/></svg>
@@ -1567,100 +1642,89 @@
   {:else}
   <div class="layout">
     <aside class="sidebar">
-      <section>
-        <h2>Ljudfil</h2>
-        {#if recording}
-          <div class="recording">
-            <span class="recdot"></span> Spelar in… {fmtTime(recElapsed)}
-            <button class="btn block" onclick={stopRecording}>Stoppa inspelning</button>
-          </div>
-        {:else if audioName}
-          <div class="file-chip">
-            <span title={audioPath}>{audioName}</span>
-            <button class="link" onclick={() => { audioPath = null; audioName = null; transcript = null; analysis = null; }}>rensa</button>
-          </div>
-        {:else}
-          <button class="btn block" onclick={openAudio}>Välj ljudfil…</button>
-          <button class="btn block mt" onclick={startRecording}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-            Spela in
-          </button>
-          <p class="hint">mp3, wav, m4a, ogg, flac … eller spela in direkt</p>
-        {/if}
-      </section>
-
-      <section>
-        <h2>Modell</h2>
-        <select class="profile" bind:value={selectedModel}>
-          {#each models as m (m.id)}
-            <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
-          {/each}
-        </select>
-        {#if !selectedDownloaded}
-          {#if downloading === selectedModel}
-            <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-            <p class="hint">Hämtar… {downloadPct}%</p>
+      {#if !transcript}
+        <section>
+          <h2>Ljudfil</h2>
+          {#if recording}
+            <div class="recording">
+              <span class="recdot"></span> Spelar in… {fmtTime(recElapsed)}
+              <button class="btn block" onclick={stopRecording}>Stoppa inspelning</button>
+            </div>
+          {:else if audioName}
+            <div class="file-chip">
+              <span title={audioPath}>{audioName}</span>
+              <button class="link" onclick={() => { audioPath = null; audioName = null; transcript = null; analysis = null; }}>rensa</button>
+            </div>
           {:else}
-            <button class="btn block" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
-              Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
+            <button class="btn block" onclick={openAudio}>Välj ljudfil…</button>
+            <button class="btn block mt" onclick={startRecording}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+              Spela in
             </button>
+            <p class="hint">mp3, wav, m4a, ogg, flac … eller spela in direkt</p>
           {/if}
-        {/if}
-      </section>
+        </section>
 
-      <section>
-        <h2>Språk</h2>
-        <select class="profile" bind:value={language}>
-          {#each LANGUAGES as l (l.code)}<option value={l.code}>{l.label}</option>{/each}
-        </select>
-      </section>
+        <section>
+          <h2>Modell</h2>
+          <select class="profile" bind:value={selectedModel}>
+            {#each models as m (m.id)}
+              <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
+            {/each}
+          </select>
+          {#if !selectedDownloaded}
+            {#if downloading === selectedModel}
+              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
+              <p class="hint">Hämtar… {downloadPct}%</p>
+            {:else}
+              <button class="btn block" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
+                Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
+              </button>
+            {/if}
+          {/if}
+        </section>
 
-      <section>
-        <h2>Talare</h2>
-        <label class="ai-toggle">
-          <input type="checkbox" bind:checked={diarize} />
-          <span>Identifiera talare (diarisering)<em>delar upp transkriptet per röst</em></span>
-        </label>
-        {#if diarize}
+        <section>
+          <h2>Språk</h2>
+          <select class="profile" bind:value={language}>
+            {#each LANGUAGES as l (l.code)}<option value={l.code}>{l.label}</option>{/each}
+          </select>
+        </section>
+
+        <section>
+          <h2>Talare</h2>
           <label class="ai-toggle">
-            <input type="checkbox" bind:checked={autoSpeakers} />
-            <span>Räkna ut antal automatiskt</span>
+            <input type="checkbox" bind:checked={diarize} />
+            <span>Identifiera talare (diarisering)<em>delar upp transkriptet per röst</em></span>
           </label>
-          {#if !autoSpeakers}
-            <label class="numrow">Antal talare
-              <input type="number" min="1" max="10" bind:value={numSpeakers} />
+          {#if diarize}
+            <label class="ai-toggle">
+              <input type="checkbox" bind:checked={autoSpeakers} />
+              <span>Räkna ut antal automatiskt</span>
             </label>
+            {#if !autoSpeakers}
+              <label class="numrow">Antal talare
+                <input type="number" min="1" max="10" bind:value={numSpeakers} />
+              </label>
+            {/if}
           {/if}
-        {/if}
-        <label class="ai-toggle">
-          <input type="checkbox" bind:checked={wordTimestamps} />
-          <span>Ordnivå-tidsstämplar<em>tid per ord — för exakta undertexter (.vtt)</em></span>
-        </label>
-        <label class="ai-toggle">
-          <input type="checkbox" bind:checked={translate} />
-          <span>Översätt till engelska<em>transkriberar och översätter i samma steg</em></span>
-        </label>
-      </section>
+          <label class="ai-toggle">
+            <input type="checkbox" bind:checked={wordTimestamps} />
+            <span>Ordnivå-tidsstämplar<em>tid per ord — för exakta undertexter (.vtt)</em></span>
+          </label>
+          <label class="ai-toggle">
+            <input type="checkbox" bind:checked={translate} />
+            <span>Översätt till engelska<em>transkriberar och översätter i samma steg</em></span>
+          </label>
+        </section>
 
-      <button class="btn primary block big" onclick={runTranscribe}
-        disabled={busy || !audioPath || !selectedDownloaded}>
-        {busy ? "Arbetar…" : "Transkribera"}
-      </button>
-      <div class="row">
-        <button class="btn grow" onclick={openProject} disabled={busy}>Öppna projekt…</button>
-        <button class="btn grow" onclick={saveProject} disabled={busy || !transcript}>
-          Spara projekt{dirty ? " •" : ""}
+        <button class="btn primary block big" onclick={runTranscribe}
+          disabled={busy || !audioPath || !selectedDownloaded}>
+          {busy ? "Arbetar…" : "Transkribera"}
         </button>
-      </div>
+        <button class="btn block mt" onclick={openProject} disabled={busy}>Öppna projekt…</button>
 
-      {#if transcript}
-        {#if meetingSysWav}
-          <section class="anon-block">
-            <h2>Mötesröster</h2>
-            <button class="btn block" onclick={separateMeetingVoices} disabled={busy}>Separera mötesröster</button>
-            <p class="hint">Delar upp ”Mötet” i Talare 1, 2 … (din röst förblir ”Jag”).</p>
-          </section>
-        {/if}
+      {:else if view === "review"}
         <section class="anon-block">
           <h2>Avidentifiering</h2>
           <select class="profile" value={selectedProfile} onchange={(e) => applyProfile(e.currentTarget.value)}>
@@ -1670,7 +1734,7 @@
             <input type="checkbox" bind:checked={useAi} />
             <span>Djupare granskning (AI)<em>långsammare, fångar fler ledtrådar</em></span>
           </label>
-          <button class="btn block" onclick={runAnonymize} disabled={busy}>
+          <button class="btn primary block" onclick={runAnonymize} disabled={busy}>
             {analysis ? "Kör om avidentifiering" : "Avidentifiera transkript"}
           </button>
         </section>
@@ -1700,6 +1764,7 @@
           </section>
         {/if}
 
+      {:else if view === "summary"}
         <section class="anon-block">
           <h2>Sammanfattning</h2>
           <select class="profile" bind:value={selectedTemplate}>
@@ -1730,11 +1795,29 @@
               <span>Sammanfatta avidentifierad text<em>använder maskerade namn/uppgifter</em></span>
             </label>
           {/if}
-          <button class="btn block mt" onclick={runSummarize} disabled={busy || !summaryDownloaded}>
+          <label class="ai-toggle">
+            <input type="checkbox" bind:checked={includeTranscript} />
+            <span>Bifoga transkript<em>protokoll + transkript i ett dokument</em></span>
+          </label>
+          <button class="btn primary block mt" onclick={runSummarize} disabled={busy || !summaryDownloaded}>
             {summaryDraft ? "Generera om" : "Skapa sammanfattning"}
           </button>
         </section>
 
+      {:else if view === "qa"}
+        <section>
+          <h2>Fråga</h2>
+          <p class="hint">Ställ frågor om transkriptet i panelen till höger. Svaren bygger bara på texten — inget hittas på.</p>
+        </section>
+
+      {:else}
+        {#if meetingSysWav}
+          <section class="anon-block">
+            <h2>Mötesröster</h2>
+            <button class="btn block" onclick={separateMeetingVoices} disabled={busy}>Separera mötesröster</button>
+            <p class="hint">Delar upp ”Mötet” i Talare 1, 2 … (din röst förblir ”Jag”).</p>
+          </section>
+        {/if}
         <section class="anon-block">
           <h2>Rätta återkommande fel</h2>
           <textarea bind:value={correctionInput} rows="3" placeholder="Ett per rad: fel=>rätt&#10;t.ex. kjol=>Tjörn"></textarea>
@@ -1742,18 +1825,19 @@
             Tillämpa på hela transkriptet
           </button>
         </section>
-
         <section class="anon-block">
-          <h2>Exportalternativ</h2>
+          <h2>Tidsstämplar</h2>
           <label class="ai-toggle">
             <input type="checkbox" bind:checked={exportTimestamps} />
-            <span>Tidsstämplar i text/Word</span>
-          </label>
-          <label class="ai-toggle">
-            <input type="checkbox" bind:checked={includeTranscript} />
-            <span>Bifoga transkript i sammanfattning<em>protokoll + transkript i ett dokument</em></span>
+            <span>Tidsstämplar i text/Word-export</span>
           </label>
         </section>
+        <div class="row">
+          <button class="btn grow" onclick={openProject} disabled={busy}>Öppna projekt…</button>
+          <button class="btn grow" onclick={saveProject} disabled={busy || !transcript}>
+            Spara projekt{dirty ? " •" : ""}
+          </button>
+        </div>
       {/if}
     </aside>
 
@@ -1782,13 +1866,7 @@
           <p class="state-sub">Välj modell och språk, slå på <strong>diarisering</strong> för att skilja talare åt, och klicka <strong>Transkribera</strong>. Sedan kan du avidentifiera och exportera.</p>
         </div>
       {:else}
-        <div class="review-head">
-          <div class="tabs">
-            <button class="tab" class:on={view === "transcript"} onclick={() => (view = "transcript")}>Transkript</button>
-            <button class="tab" class:on={view === "review"} onclick={() => (view = "review")} disabled={!analysis}>Avidentifiering</button>
-            <button class="tab" class:on={view === "summary"} onclick={() => (view = "summary")} disabled={!summaryDraft}>Sammanfattning</button>
-            <button class="tab" class:on={view === "qa"} onclick={() => (view = "qa")}>Fråga</button>
-          </div>
+        <div class="review-head actions-only">
           <div class="actions">
             {#if view === "summary" && summaryDraft}
               <button class="btn primary" onclick={copySummary}>Kopiera</button>
@@ -1801,6 +1879,7 @@
               <button class="btn" onclick={() => exportAs("srt", true)}>.srt</button>
               <button class="btn" onclick={() => exportAs("vtt", true)}>.vtt</button>
             {:else}
+              <button class="btn primary" onclick={copyTranscript}>Kopiera</button>
               <button class="btn" onclick={() => exportAs("txt", false)}>.txt</button>
               <button class="btn" onclick={() => exportAs("docx", false)}>Word</button>
               <button class="btn" onclick={() => exportAs("srt", false)}>.srt</button>
@@ -1902,20 +1981,40 @@
             </form>
             {#if !summaryDownloaded}<p class="hint">Q&amp;A använder sammanfattningsmodellen — hämta den i Sammanfattning-panelen först.</p>{/if}
           </div>
-        {:else if view === "review" && analysis}
-          <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} träffar avidentifieras</div>
-          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+        {:else if view === "review"}
+          {#if analysis}
+          <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} markeras för maskering</div>
+          <div class="legend">
+            <span class="lg-chip on">så här</span> maskas ·
+            <span class="lg-chip off">så här</span> maskas inte ·
+            klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
+          </div>
+          <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
+          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
-                  title={active ? `${info.text} → ${info.replacement}` : info.text}
+                  title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           <div class="reassure">
             <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#2440ff" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
+          {:else}
+          <div class="empty-view">
+            <h3>Avidentifiera transkriptet</h3>
+            <p class="hint">Välj kategorier (och ev. djupare AI-granskning) och klicka <strong>Avidentifiera transkript</strong> i panelen till vänster — träffarna dyker upp här för granskning.</p>
+          </div>
+          {/if}
         {:else if view === "summary"}
+          {#if summaryDraft}
           <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
           <textarea class="summary-edit" bind:value={summaryDraft} spellcheck="true"></textarea>
+          {:else}
+          <div class="empty-view">
+            <h3>Skapa en sammanfattning</h3>
+            <p class="hint">Välj mall och modell och klicka <strong>Skapa sammanfattning</strong> i panelen till vänster — utkastet dyker upp här för redigering.</p>
+          </div>
+          {/if}
         {/if}
       {/if}
     </main>
@@ -1931,7 +2030,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="modal-backdrop" onclick={() => (maskTarget = null)} role="presentation">
     <div class="modal" role="dialog" aria-modal="true" onclick={(e) => e.stopPropagation()}>
-      <h3 class="modal-title">Maskera ”{maskTarget.text}”</h3>
+      <h3 class="modal-title">Maskera ”{maskTarget.text.length > 60 ? maskTarget.text.slice(0, 60) + "…" : maskTarget.text}”</h3>
       <label class="modal-field">Typ
         <select bind:value={maskCategory}>
           {#each CATEGORIES as c (c.key)}<option value={c.key}>{c.label}</option>{/each}
@@ -1950,6 +2049,16 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if selPending}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <button
+    class="sel-mask-btn"
+    style="left:{selPending.x}px; top:{selPending.y}px"
+    onmousedown={(e) => e.preventDefault()}
+    onclick={maskSelection}
+  >Maskera markering</button>
 {/if}
 
 <style>
@@ -2024,6 +2133,7 @@
 
   .review { padding: 22px 30px; display: flex; flex-direction: column; overflow: hidden; }
   .review-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+  .review-head.actions-only { justify-content: flex-end; }
   .tabs { display: flex; gap: 4px; }
   .tab { font: inherit; font-size: 14px; font-weight: 600; border: none; background: none; color: var(--faint); cursor: pointer; padding: 6px 4px; border-bottom: 2px solid transparent; }
   .tab.on { color: var(--ink); border-bottom-color: var(--accent); }
@@ -2061,10 +2171,15 @@
   .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 76ch; padding: 4px 2px; }
   .summary-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px; max-width: 80ch; }
   .summary-edit:focus { outline: none; border-color: var(--accent); }
-  .hit { border: none; background: none; font: inherit; line-height: inherit; cursor: pointer; padding: 0 1px 1px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
-  .hit:hover { background: color-mix(in srgb, var(--c) 13%, transparent); }
-  .hit.rejected { border-bottom: 2px dotted var(--faint); text-decoration: line-through; color: var(--faint); }
-  .hit.disabled { border-bottom: none; cursor: default; }
+  .hit { border: none; background: color-mix(in srgb, var(--c) 14%, transparent); font: inherit; line-height: inherit; cursor: pointer; padding: 0 2px 1px; border-radius: 3px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
+  .hit:hover { background: color-mix(in srgb, var(--c) 30%, transparent); }
+  .hit.rejected { background: none; border-bottom: 2px dotted var(--faint); text-decoration: line-through; color: var(--faint); }
+  .hit.disabled { background: none; border-bottom: none; cursor: default; }
+  .legend { font-size: 12px; color: var(--muted); margin: 2px 0 10px; line-height: 1.8; }
+  .lg-chip { padding: 0 4px; border-radius: 3px; }
+  .lg-chip.on { background: color-mix(in srgb, var(--accent) 16%, transparent); border-bottom: 2px solid var(--accent); color: var(--ink); }
+  .lg-chip.off { text-decoration: line-through; color: var(--faint); }
+  .lg-manual { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
 
   .reassure { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 9px; }
   .reassure svg { width: 15px; height: 15px; color: var(--accent); }
@@ -2092,6 +2207,7 @@
   .topnav button { font: inherit; font-size: 13.5px; font-weight: 500; border: none; background: none; color: var(--faint); padding: 5px 11px; border-radius: 3px; cursor: pointer; transition: .14s; }
   .topnav button:hover { color: var(--ink); }
   .topnav button.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .topnav button:disabled { color: var(--faint); opacity: .5; cursor: default; background: none; }
 
   /* ---- home / history ---- */
   .home { flex: 1; overflow: auto; padding: 46px 40px 60px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
@@ -2140,7 +2256,7 @@
   .qa-input:focus { outline: none; border-color: var(--accent); }
   .maskword { display: inline; cursor: pointer; border: none; background: none; font: inherit; color: inherit; padding: 0 1px; border-radius: 3px; }
   .maskword:hover { background: #fff3cd; box-shadow: 0 0 0 1px #f59e0b; }
-  .hit.manual { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+  .hit.manual:not(.rejected) { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(17,18,20,.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
   .modal { background: #fff; border-radius: 16px; padding: 22px 24px; width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.25); display: flex; flex-direction: column; gap: 14px; }
   .modal-title { margin: 0; font-size: 17px; font-weight: 600; }
@@ -2148,6 +2264,11 @@
   .modal-field select, .modal-field input { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); }
   .modal-field select:focus, .modal-field input:focus { outline: none; border-color: var(--accent); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
+  .sel-mask-btn:hover { filter: brightness(1.08); }
+  .empty-view { max-width: 460px; margin: 48px auto; text-align: center; }
+  .empty-view h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+  .empty-view .hint { font-size: 13.5px; line-height: 1.55; }
   .job-title { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .job-date { font-size: 12px; color: var(--faint); white-space: nowrap; }
   .home-open { display: inline-block; margin-top: 30px; }
