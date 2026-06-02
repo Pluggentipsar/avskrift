@@ -121,6 +121,7 @@ impl Engine {
         spans.extend(rules::all(text));
         spans.extend(gazetteer::diagnoser(text));
         spans.extend(gazetteer::mediciner(text));
+        spans.extend(gazetteer::namn(text));
         spans.extend(Dictionary::new(terms, Category::Egen, true).detect(text));
 
         if use_ai {

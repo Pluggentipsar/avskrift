@@ -1,0 +1,83 @@
+# Svenska förnamn – gazetteer för Category::Person (källa: SCB:s namnstatistik).
+#
+# Detta är en STARTLISTA. Ersätt/utöka gärna med SCB:s fullständiga öppna data
+# (tilltalsnamn) – ju fler namn, desto högre recall. Skol- och elevhälsokontext
+# innehåller många olika namn, så ta med både traditionella och vanliga moderna
+# namn samt namn med utländskt ursprung.
+#
+# Format: ett namn per rad. Rader som börjar med # och tomma rader ignoreras.
+# Matchningen är skiftlägeskänslig (kräver inledande versal) eftersom många
+# namn även är vardagsord (Björn, Sten, My, Ros). Träffar får låg score och är
+# avsedda att granskas av användaren.
+
+# --- Flicknamn / kvinnonamn (urval vanliga) ---
+Alice
+Alma
+Alva
+Astrid
+Ebba
+Elsa
+Emma
+Ella
+Freja
+Frida
+Hanna
+Ida
+Julia
+Klara
+Linnéa
+Maja
+Maria
+Moa
+Nora
+Olivia
+Saga
+Sara
+Selma
+Signe
+Stella
+Wilma
+Agnes
+Elin
+Amanda
+Fatima
+Aisha
+Leyla
+
+# --- Pojknamn / mansnamn (urval vanliga) ---
+Adam
+Albin
+Alexander
+Anton
+Arvid
+August
+Axel
+Elias
+Emil
+Erik
+Filip
+Gustav
+Hugo
+Isak
+Johan
+Karl
+Leo
+Liam
+Lucas
+Ludvig
+Melker
+Noah
+Oliver
+Oscar
+Per
+Sixten
+Sten
+Björn
+Theo
+Vidar
+Viktor
+William
+Ali
+Mohammed
+Omar
+Hassan

@@ -13,6 +13,30 @@ static IPV4: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.
 static ICD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[A-Z][0-9]{2}(?:\.[0-9]{1,2}[A-Z]?)?").unwrap());
 static LGH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\blgh\.?\s*\d{1,4}\b").unwrap());
+// Street address: an optional directional prefix, a capitalised stem ending in a Swedish
+// street suffix, then a house number (the precision anchor). E.g. "Storgatan 12B",
+// "Norra Kungsvägen 3".
+static GATA: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"(?:(?:Norra|Södra|Östra|Västra|Gamla|Nya|Lilla|Stora|Övre|Nedre) )?",
+        r"\p{Lu}\p{Ll}*",
+        r"(?:gatan|gata|vägen|väg|gränden|gränd|stigen|stig|torget|torg|allén|allé|backen|plan)",
+        // House number; an optional single letter ("12B"/"12 B"). The \b stops it from
+        // swallowing the first letter of the next word ("Storvägen 7 och" -> "…7").
+        r"\s+\d{1,4}(?:\s?[A-Za-z]\b)?",
+    ))
+    .unwrap()
+});
+// School name: a capitalised stem ending in a Swedish school suffix, optional genitive -s.
+// E.g. "Björkskolan", "Vasagymnasiet", "Montessoriförskolans".
+static SKOLA: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(concat!(
+        r"\p{Lu}\p{Ll}+",
+        r"(?:gymnasieskolan|grundskolan|gymnasiet|förskolan|särskolan|friskolan|skolan)",
+        r"s?",
+    ))
+    .unwrap()
+});
 
 /// Swedish personnummer (10/12 digits, optional `-`/`+`), validated by date + Luhn checksum.
 /// Also accepts samordningsnummer (day +60).
@@ -120,6 +144,32 @@ pub fn lagenhet(text: &str) -> Vec<Span> {
         .collect()
 }
 
+/// Swedish street address ("Storgatan 12B"). The trailing house number keeps precision high.
+pub fn gatuadress(text: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    for m in GATA.find_iter(text) {
+        let s = m.start();
+        if char_before_is_alnum(text, s) {
+            continue;
+        }
+        out.push(Span::new(s, m.end(), m.as_str(), Category::Plats, Source::Rule, 0.85));
+    }
+    out
+}
+
+/// Swedish school name by suffix ("Björkskolan", "Vasagymnasiet").
+pub fn skolnamn(text: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    for m in SKOLA.find_iter(text) {
+        let (s, e) = (m.start(), m.end());
+        if char_before_is_alnum(text, s) || char_after_is_alnum(text, e) {
+            continue;
+        }
+        out.push(Span::new(s, e, m.as_str(), Category::Plats, Source::Rule, 0.8));
+    }
+    out
+}
+
 /// Run every rule detector over the text.
 pub fn all(text: &str) -> Vec<Span> {
     let mut v = personnummer(text);
@@ -128,6 +178,8 @@ pub fn all(text: &str) -> Vec<Span> {
     v.extend(ip_adress(text));
     v.extend(icd10(text));
     v.extend(lagenhet(text));
+    v.extend(gatuadress(text));
+    v.extend(skolnamn(text));
     v
 }
 
@@ -199,5 +251,40 @@ mod tests {
     #[test]
     fn icd_not_glued_to_word() {
         assert!(icd10("kod ABC12 finns").is_empty());
+    }
+
+    #[test]
+    fn finds_street_address() {
+        let s = gatuadress("Hen bor på Storgatan 12B numera.");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].text, "Storgatan 12B");
+        assert_eq!(s[0].category, Category::Plats);
+    }
+
+    #[test]
+    fn finds_street_address_with_directional_prefix() {
+        let s = gatuadress("Adressen är Norra Kungsvägen 3.");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].text, "Norra Kungsvägen 3");
+    }
+
+    #[test]
+    fn street_needs_a_house_number() {
+        // A street suffix alone is not an address (the model handles bare place names).
+        assert!(gatuadress("Vi gick längs gatan.").is_empty());
+    }
+
+    #[test]
+    fn finds_school_name_incl_genitive() {
+        assert_eq!(skolnamn("Hen går på Björkskolan i höst.").len(), 1);
+        let gen = skolnamn("Vasagymnasiets rektor ringde.");
+        assert_eq!(gen.len(), 1);
+        assert_eq!(gen[0].text, "Vasagymnasiets");
+        assert_eq!(gen[0].category, Category::Plats);
+    }
+
+    #[test]
+    fn bare_school_word_is_not_matched() {
+        assert!(skolnamn("Eleven trivs i skolan.").is_empty());
     }
 }

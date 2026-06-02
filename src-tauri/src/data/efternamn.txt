@@ -1,0 +1,58 @@
+# Svenska efternamn – gazetteer för Category::Person (källa: SCB:s namnstatistik).
+#
+# Detta är en STARTLISTA. Ersätt/utöka gärna med SCB:s fullständiga öppna data
+# (efternamn). De vanligaste -son-namnen täcker en stor andel av befolkningen.
+#
+# Format: ett namn per rad. Rader som börjar med # och tomma rader ignoreras.
+# Matchningen är skiftlägeskänslig (kräver inledande versal). Träffar får låg
+# score och är avsedda att granskas av användaren.
+
+Andersson
+Johansson
+Karlsson
+Nilsson
+Eriksson
+Larsson
+Olsson
+Persson
+Svensson
+Gustafsson
+Pettersson
+Jonsson
+Jansson
+Hansson
+Bengtsson
+Jönsson
+Lindberg
+Jakobsson
+Magnusson
+Olofsson
+Lindström
+Lindqvist
+Lindgren
+Axelsson
+Berg
+Bergström
+Lundberg
+Lundgren
+Lundqvist
+Lund
+Berglund
+Fredriksson
+Sandberg
+Henriksson
+Forsberg
+Sjöberg
+Wallin
+Engström
+Eklund
+Danielsson
+Håkansson
+Lindholm
+Löfgren
+Söderberg
+Nyström
+Holmberg
+Nordström
+Ali
+Khan
