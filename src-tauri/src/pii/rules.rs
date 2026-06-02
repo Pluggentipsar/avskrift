@@ -29,8 +29,12 @@ pub fn personnummer(text: &str) -> Vec<Span> {
             12 => digits[2..].try_into().unwrap(),
             _ => continue,
         };
-        if valid_pnr_date(&ten) && luhn_valid(&ten) {
-            out.push(Span::new(s, e, m.as_str(), Category::Personnummer, Source::Rule, 1.0));
+        // A de-identification tool must mask anything that *looks* like a personnummer — even if the
+        // Luhn checksum fails (made-up/test numbers, OCR or transcription slips). A plausible date
+        // keeps us from masking arbitrary digit runs; Luhn only adjusts the confidence score.
+        if valid_pnr_date(&ten) {
+            let score = if luhn_valid(&ten) { 1.0 } else { 0.6 };
+            out.push(Span::new(s, e, m.as_str(), Category::Personnummer, Source::Rule, score));
         }
     }
     out
@@ -145,8 +149,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_checksum() {
-        assert!(personnummer("811228-9870").is_empty());
+    fn masks_pnr_shape_even_if_checksum_fails() {
+        // Format + a plausible date is enough to mask (don't leak made-up/OCR-broken numbers),
+        // but at lower confidence than a Luhn-valid number.
+        let s = personnummer("811228-9870");
+        assert_eq!(s.len(), 1);
+        assert!(s[0].score < 1.0);
+        // The example that slipped through before this fix:
+        assert_eq!(personnummer("(personnummer 120504-1234,").len(), 1);
+    }
+
+    #[test]
+    fn ignores_digit_runs_without_a_valid_date() {
+        // 10–12 digits but month "99" → not personnummer-shaped, leave it alone.
+        assert!(personnummer("ordernr 999999-0000 bokfört").is_empty());
     }
 
     #[test]

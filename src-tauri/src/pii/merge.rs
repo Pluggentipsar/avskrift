@@ -9,6 +9,7 @@ use super::{Category, Source, Span};
 
 fn priority(s: &Span) -> u8 {
     match s.source {
+        Source::Manual => 5,     // explicit user click — always wins
         Source::Rule => 4,       // validated, structured PII
         Source::Dictionary => 3, // explicit user terms / built-in gazetteers
         Source::Model => 2,      // NER (carries a real category)
@@ -68,7 +69,7 @@ pub fn apply(text: &str, spans: &[Span], pseudo: &mut Pseudonymizer) -> AppliedR
             continue; // defensive: skip any residual overlap
         }
         out.push_str(&text[cursor..span.start]);
-        let label = pseudo.label_for(span.category, &span.text);
+        let label = span.custom.clone().unwrap_or_else(|| pseudo.label_for(span.category, &span.text));
         out.push_str(&label);
         replacements.push(Replacement {
             start: span.start,

@@ -1,0 +1,16 @@
+# whisper.cpp (whisper-rs-sys) and llama.cpp (llama-cpp-sys-2) each vendor their own copy of ggml.
+# Even with llama built as a DLL (the `dynamic-link` feature), llama's ggml import library still
+# exports the ggml_*/gguf_* symbols, which collide with whisper's statically-linked ggml at link
+# time (LNK2005). /FORCE:MULTIPLE keeps the first definition (whisper's static ggml, linked first);
+# llama.dll is self-contained and uses its own ggml internally, so at runtime each library calls its
+# own copy. Verified by exercising both transcription (whisper) and the LLM layers (llama).
+#
+# Placed at the repo root so it is found whether cargo runs from here (direct builds) or from
+# src-tauri (tauri dev/build), since cargo searches the cwd and all parent directories.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/FORCE:MULTIPLE"]
+
+# NOTE on build output dir: ggml-vulkan's nested vulkan-shaders-gen build paths can exceed Windows'
+# 260-char MAX_PATH (MSB3491). The fix is a SHORT `CARGO_TARGET_DIR` (e.g. C:/avb), but that is set
+# in the local build-env wrapper (avskrift-buildenv/run.cmd) — NOT pinned here — so this committed
+# config stays machine-agnostic and the repo builds anywhere. See HANDOVER / build notes.

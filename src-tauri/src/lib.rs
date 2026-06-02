@@ -692,6 +692,28 @@ fn anonymized_segments(backend: State<Backend>, rejected: Vec<usize>) -> Result<
     backend.engine.anonymized_segments(rejected).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualSpanArgs {
+    start: usize,
+    end: usize,
+    /// Category key (snake_case, e.g. "personnummer", "ovrigt").
+    category: String,
+    custom: Option<String>,
+}
+
+/// Add a manual mask the user created by clicking a word. Returns the rebuilt analysis (span ids
+/// are renumbered, so the frontend resets its rejected set).
+#[tauri::command]
+fn add_manual_span(backend: State<Backend>, args: ManualSpanArgs) -> Result<AnalyzeResult, String> {
+    let category: Category = serde_json::from_value(serde_json::Value::String(args.category))
+        .map_err(|_| "okänd kategori".to_string())?;
+    backend
+        .engine
+        .add_manual_span(args.start, args.end, category, args.custom)
+        .map_err(|e| e.to_string())
+}
+
 // ---- Standalone de-identify (arbitrary pasted text or a loaded .txt/.md/.docx, no transcript) ----
 
 #[derive(serde::Deserialize)]
@@ -934,6 +956,7 @@ pub fn run() {
             open_project,
             anonymize,
             anonymized_segments,
+            add_manual_span,
             analyze_document,
             load_document,
             copy_anonymized,

@@ -15,7 +15,7 @@
   type Utterance = { start: number; end: number; speaker: string | null; text: string; words?: Word[] };
   type Transcript = { utterances: Utterance[]; language: string; model: string; diarized: boolean };
   type SpanInfo = { id: number; category: string; source: string; text: string; replacement: string };
-  type Segment = { text: string; span: number | null };
+  type Segment = { text: string; span: number | null; start: number; end: number; word: boolean };
   type AnalyzeResult = {
     text: string;
     segments: Segment[];
@@ -565,6 +565,33 @@
     return analysis ? analysis.spans.filter((s) => !isActive(s.id)).map((s) => s.id) : [];
   }
 
+  // ---- Manual masking: click an undetected word in the review to mask it ----
+  let maskTarget = $state<{ start: number; end: number; text: string } | null>(null);
+  let maskCategory = $state("ovrigt");
+  let maskCustom = $state("");
+  function openMask(seg: { start: number; end: number; text: string }) {
+    maskTarget = { start: seg.start, end: seg.end, text: seg.text };
+    maskCategory = "ovrigt";
+    maskCustom = "";
+  }
+  async function confirmMask() {
+    if (!maskTarget) return;
+    try {
+      analysis = await invoke<AnalyzeResult>("add_manual_span", {
+        args: {
+          start: maskTarget.start,
+          end: maskTarget.end,
+          category: maskCategory,
+          custom: maskCustom.trim() || null,
+        },
+      });
+      rejected = new Set(); // span ids were renumbered → reset (safe: defaults to fully masked)
+      maskTarget = null;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   function addTerms() {
     const incoming = termInput.split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
     if (!incoming.length) return;
@@ -871,6 +898,41 @@
     if (s === "history") refreshJobs();
   }
 
+  /** Clear the current working project and return Home for a fresh start. Everything is auto-saved
+   *  in Historik, so nothing is lost — reopen a job there to resume it. */
+  function newProject() {
+    // Don't wipe a capture/job that's still running; just navigate home.
+    if (recording || meetingActive || meetingBusy || busy) {
+      go("home");
+      return;
+    }
+    transcript = null;
+    analysis = null;
+    summaryDraft = "";
+    audioPath = null;
+    audioName = null;
+    speakerLabels = {};
+    srcMode = "paste";
+    srcText = "";
+    srcPath = null;
+    srcName = null;
+    srcHasTables = false;
+    deidentDoc = false;
+    editingIdx = null;
+    dirty = false;
+    rejected = new Set();
+    useAi = false;
+    qaQuestion = "";
+    qaHistory = [];
+    meetingSysWav = null;
+    meetingMicWav = null;
+    liveUtterances = [];
+    currentJobId = null;
+    currentJobCreatedAt = null;
+    view = "transcript";
+    go("home");
+  }
+
   // ---- Standalone source for de-identify / summarize (no transcript needed) ----
   // "paste" = use srcText · "file" = a loaded .txt/.md/.docx · "transcript" = the in-app transcript.
   let srcMode = $state<"paste" | "file" | "transcript">("paste");
@@ -1138,7 +1200,7 @@
 
 <div class="app">
   <header>
-    <button class="brandbtn" onclick={() => go("home")} title="Hem">
+    <button class="brandbtn" onclick={newProject} title="Hem — börja nytt">
       <svg class="logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
         <rect x="9" y="10" width="20" height="28" rx="2" fill="#fff" stroke="#111214" stroke-width="2" />
         <rect x="13" y="17" width="12" height="2.6" fill="#111214" />
@@ -1346,8 +1408,8 @@
             </div>
           </div>
           <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} träffar avidentifieras</div>
-          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{seg.text}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
-                  class="hit" class:active class:rejected={!active && !off} class:disabled={off}
+          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+                  class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement}` : info.text}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
@@ -1842,8 +1904,8 @@
           </div>
         {:else if view === "review" && analysis}
           <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} träffar avidentifieras</div>
-          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{seg.text}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
-                  class="hit" class:active class:rejected={!active && !off} class:disabled={off}
+          <div class="document">{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+                  class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement}` : info.text}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
@@ -1863,6 +1925,31 @@
 
 {#if toast}
   <div class="toast"><span class="accentbar"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M5 13l4 4L19 7"/></svg>{toast}</div>
+{/if}
+
+{#if maskTarget}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="modal-backdrop" onclick={() => (maskTarget = null)} role="presentation">
+    <div class="modal" role="dialog" aria-modal="true" onclick={(e) => e.stopPropagation()}>
+      <h3 class="modal-title">Maskera ”{maskTarget.text}”</h3>
+      <label class="modal-field">Typ
+        <select bind:value={maskCategory}>
+          {#each CATEGORIES as c (c.key)}<option value={c.key}>{c.label}</option>{/each}
+        </select>
+      </label>
+      <label class="modal-field">Ersätt med (valfritt)
+        <input
+          bind:value={maskCustom}
+          placeholder={"Lämna tomt → " + (CATEGORIES.find((c) => c.key === maskCategory)?.label ?? "") + " N"}
+          onkeydown={(e) => { if (e.key === "Enter") confirmMask(); if (e.key === "Escape") maskTarget = null; }}
+        />
+      </label>
+      <div class="modal-actions">
+        <button class="btn" onclick={() => (maskTarget = null)}>Avbryt</button>
+        <button class="btn primary" onclick={confirmMask}>Maskera</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -2051,6 +2138,16 @@
   .qa-form { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 6px 0; }
   .qa-input { flex: 1; padding: 11px 14px; border: 1px solid var(--line-2); border-radius: 10px; font: inherit; }
   .qa-input:focus { outline: none; border-color: var(--accent); }
+  .maskword { display: inline; cursor: pointer; border: none; background: none; font: inherit; color: inherit; padding: 0 1px; border-radius: 3px; }
+  .maskword:hover { background: #fff3cd; box-shadow: 0 0 0 1px #f59e0b; }
+  .hit.manual { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(17,18,20,.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  .modal { background: #fff; border-radius: 16px; padding: 22px 24px; width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.25); display: flex; flex-direction: column; gap: 14px; }
+  .modal-title { margin: 0; font-size: 17px; font-weight: 600; }
+  .modal-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .modal-field select, .modal-field input { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); }
+  .modal-field select:focus, .modal-field input:focus { outline: none; border-color: var(--accent); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
   .job-title { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .job-date { font-size: 12px; color: var(--faint); white-space: nowrap; }
   .home-open { display: inline-block; margin-top: 30px; }

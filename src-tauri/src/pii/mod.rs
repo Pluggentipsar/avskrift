@@ -71,6 +71,7 @@ pub enum Source {
     Rule,
     Dictionary,
     Ai,
+    Manual,
 }
 
 /// A detected span, with byte offsets into the original UTF-8 text.
@@ -82,11 +83,19 @@ pub struct Span {
     pub category: Category,
     pub source: Source,
     pub score: f32,
+    /// User-supplied replacement that overrides the automatic pseudonym (manual masks only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<String>,
 }
 
 impl Span {
     pub fn new(start: usize, end: usize, text: &str, category: Category, source: Source, score: f32) -> Self {
-        Span { start, end, text: text.to_string(), category, source, score }
+        Span { start, end, text: text.to_string(), category, source, score, custom: None }
+    }
+
+    /// A span the user created by clicking a word, with an optional free-text replacement.
+    pub fn manual(start: usize, end: usize, text: &str, category: Category, custom: Option<String>) -> Self {
+        Span { start, end, text: text.to_string(), category, source: Source::Manual, score: 1.0, custom }
     }
 }
 

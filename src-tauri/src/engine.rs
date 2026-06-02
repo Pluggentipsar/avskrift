@@ -52,6 +52,11 @@ pub struct Engine {
 pub struct Segment {
     pub text: String,
     pub span: Option<usize>,
+    /// Byte range of this segment in the analysed text (used to add manual masks by clicking).
+    pub start: usize,
+    pub end: usize,
+    /// True for a clickable plain word (manual-mask target); false for detected spans / whitespace.
+    pub word: bool,
 }
 
 #[derive(Serialize)]
@@ -210,6 +215,33 @@ impl Engine {
         Ok(result)
     }
 
+    /// Add a span the user created by clicking an (undetected) word, optionally with a free-text
+    /// replacement. Overrides any overlapping detected span; returns the rebuilt result. Span ids
+    /// are renumbered, so the caller should reset its rejected set.
+    pub fn add_manual_span(
+        &self,
+        start: usize,
+        end: usize,
+        category: Category,
+        custom: Option<String>,
+    ) -> Result<AnalyzeResult> {
+        let mut guard = self.last.lock().unwrap();
+        let analysis = guard.as_mut().ok_or_else(|| anyhow!("det finns ingen analys"))?;
+        if start >= end
+            || end > analysis.text.len()
+            || !analysis.text.is_char_boundary(start)
+            || !analysis.text.is_char_boundary(end)
+        {
+            return Err(anyhow!("ogiltigt textintervall"));
+        }
+        let surface = analysis.text[start..end].to_string();
+        let custom = custom.filter(|c| !c.trim().is_empty());
+        analysis.spans.retain(|s| !(start < s.end && s.start < end));
+        analysis.spans.push(Span::manual(start, end, &surface, category, custom));
+        analysis.spans.sort_by_key(|s| s.start);
+        Ok(build_result(&analysis.text, &analysis.spans, Vec::new()))
+    }
+
     /// The masked text of each stored paragraph (utterance), skipping rejected spans, with
     /// pseudonyms kept consistent across the whole transcript.
     pub fn anonymized_segments(&self, rejected: Vec<usize>) -> Result<Vec<String>> {
@@ -327,7 +359,7 @@ fn build_result(text: &str, spans: &[Span], warnings: Vec<String>) -> AnalyzeRes
                 category: s.category,
                 source: s.source,
                 text: s.text.clone(),
-                replacement: pseudo.label_for(s.category, &s.text),
+                replacement: s.custom.clone().unwrap_or_else(|| pseudo.label_for(s.category, &s.text)),
             }
         })
         .collect();
@@ -340,15 +372,57 @@ fn build_segments(text: &str, spans: &[Span]) -> Vec<Segment> {
     let mut cursor = 0usize;
     for (i, s) in spans.iter().enumerate() {
         if s.start > cursor {
-            segs.push(Segment { text: text[cursor..s.start].to_string(), span: None });
+            push_plain(&text[cursor..s.start], cursor, &mut segs);
         }
-        segs.push(Segment { text: text[s.start..s.end].to_string(), span: Some(i) });
+        segs.push(Segment {
+            text: text[s.start..s.end].to_string(),
+            span: Some(i),
+            start: s.start,
+            end: s.end,
+            word: false,
+        });
         cursor = s.end;
     }
     if cursor < text.len() {
-        segs.push(Segment { text: text[cursor..].to_string(), span: None });
+        push_plain(&text[cursor..], cursor, &mut segs);
     }
     segs
+}
+
+/// Split a run of undetected text into word vs whitespace segments, each carrying its absolute byte
+/// range, so the frontend can make individual words clickable for manual masking.
+fn push_plain(run: &str, base: usize, segs: &mut Vec<Segment>) {
+    let mut tok_start = 0usize;
+    let mut cur_ws: Option<bool> = None;
+    for (off, ch) in run.char_indices() {
+        let ws = ch.is_whitespace();
+        match cur_ws {
+            None => cur_ws = Some(ws),
+            Some(prev) if prev != ws => {
+                segs.push(Segment {
+                    text: run[tok_start..off].to_string(),
+                    span: None,
+                    start: base + tok_start,
+                    end: base + off,
+                    word: !prev,
+                });
+                tok_start = off;
+                cur_ws = Some(ws);
+            }
+            _ => {}
+        }
+    }
+    if let Some(prev) = cur_ws {
+        if tok_start < run.len() {
+            segs.push(Segment {
+                text: run[tok_start..].to_string(),
+                span: None,
+                start: base + tok_start,
+                end: base + run.len(),
+                word: !prev,
+            });
+        }
+    }
 }
 
 fn category_key(c: Category) -> String {
