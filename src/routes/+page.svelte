@@ -2,6 +2,7 @@
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { open, save, ask } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import "@fontsource/instrument-serif/400.css";
   import "@fontsource/instrument-serif/400-italic.css";
   import "@fontsource/archivo/400.css";
@@ -90,6 +91,37 @@
   let selectedTemplate = $state("protokoll");
   let customHeadings = $state("## Närvarande\n## Dagordning\n## Beslut\n## Åtgärder");
   let summaryFromAnon = $state(false);
+
+  // ---- Copy for AI (prompt + transcript/de-identified text, for an external chat AI) ----
+  const DEFAULT_AI_PROMPTS = [
+    { id: "sammanfatta", label: "Sammanfatta", body: "Sammanfatta mötet/texten nedan på svenska, tydligt och strukturerat: kort bakgrund, de viktigaste punkterna, fattade beslut, och åtgärder (vem – vad – när) om det framgår. Var saklig och håll dig strikt till innehållet. Saknas något: skriv \"framgår ej\". Hitta inte på." },
+    { id: "atgarder", label: "Åtgärder & beslut", body: "Lista på svenska alla beslut och åtgärder från texten nedan som en punktlista, var och en med: åtgärd, ansvarig och deadline/uppföljning. Ta bara med det som faktiskt sägs. Står ansvarig eller tid inte uttryckligen: skriv \"framgår ej\". Hitta inte på." },
+    { id: "analysera", label: "Analysera", body: "Analysera texten nedan på svenska: vilka teman och mönster återkommer, vilka behov och eventuella risker framträder, och vad är oklart eller motsägelsefullt? Skilj tydligt på vad som faktiskt sägs i texten och dina egna tolkningar. Hitta inte på fakta." },
+    { id: "foraldrabrev", label: "Föräldrabrev", body: "Skriv ett vänligt, tydligt och respektfullt brev på svenska till en vårdnadshavare utifrån texten nedan: vad som tagits upp, vad som beslutats och nästa steg. Undvik fackjargong och förkortningar. Lägg inte till något som inte framgår av texten." },
+    { id: "anteckning", label: "Tjänste-/journalanteckning", body: "Skriv en saklig och formell anteckning på svenska utifrån texten nedan: sammanhang och datum om det framgår, närvarande och roller, vad som behandlades, fattade beslut och planerad uppföljning. Neutral ton, inga värderingar, endast det som framgår." },
+    { id: "egen", label: "Egen prompt", body: "" },
+  ];
+  const AI_PROMPTS_KEY = "avskrift.aiPrompts.v1";
+  // Targets for "Öppna i …". `q` = URL that prefills the composer (ChatGPT/Claude); null = no
+  // reliable prefill, so we just open the chat and rely on the clipboard + paste.
+  const AI_TARGETS = [
+    { id: "chatgpt", label: "ChatGPT", url: "https://chatgpt.com/", q: "https://chatgpt.com/?q=" },
+    { id: "claude", label: "Claude", url: "https://claude.ai/new", q: "https://claude.ai/new?q=" },
+    { id: "gemini", label: "Gemini", url: "https://gemini.google.com/app", q: null },
+    { id: "copilot", label: "Copilot", url: "https://copilot.microsoft.com/", q: null },
+  ];
+  // Encoded-URL length above which we skip prefill (long text won't fit / gets truncated) and
+  // just open the chat for a paste. Keeps sensitive-ish text out of very long URLs too.
+  const AI_PREFILL_MAX = 6000;
+  let aiOpen = $state(false);
+  let aiSource = $state<"anon" | "summary" | "transcript">("anon");
+  let aiText = $state("");
+  let aiDeid = $state(false);
+  let aiUseOriginal = $state(false);
+  let aiPromptBank = $state<{ id: string; label: string; body: string }[]>([]);
+  let aiPromptId = $state("sammanfatta");
+  let aiPromptDraft = $state("");
+  let aiContext = $state("");
   let summaryDraft = $state("");
   const summaryDownloaded = $derived(summaryModels.find((m) => m.id === selectedSummaryModel)?.downloaded ?? false);
 
@@ -317,6 +349,124 @@
         return name ? `${name}: ${body}` : body;
       })
       .join("\n");
+  }
+
+  function loadAiPrompts() {
+    let bank: { id: string; label: string; body: string }[] | null = null;
+    try {
+      const raw = localStorage.getItem(AI_PROMPTS_KEY);
+      if (raw) bank = JSON.parse(raw);
+    } catch {
+      /* ignore corrupt storage */
+    }
+    aiPromptBank = Array.isArray(bank) && bank.length ? bank : DEFAULT_AI_PROMPTS.map((p) => ({ ...p }));
+  }
+
+  function saveAiPrompts() {
+    try {
+      localStorage.setItem(AI_PROMPTS_KEY, JSON.stringify(aiPromptBank));
+    } catch {
+      /* storage may be unavailable; editing still works for this session */
+    }
+  }
+
+  function selectAiPrompt() {
+    aiPromptDraft = aiPromptBank.find((p) => p.id === aiPromptId)?.body ?? "";
+  }
+
+  function saveAiPromptDraft() {
+    const i = aiPromptBank.findIndex((p) => p.id === aiPromptId);
+    if (i < 0) return;
+    aiPromptBank[i] = { ...aiPromptBank[i], body: aiPromptDraft };
+    aiPromptBank = [...aiPromptBank];
+    saveAiPrompts();
+    showToast("Prompt sparad");
+  }
+
+  function resetAiPrompt() {
+    const def = DEFAULT_AI_PROMPTS.find((p) => p.id === aiPromptId);
+    aiPromptDraft = def?.body ?? "";
+    const i = aiPromptBank.findIndex((p) => p.id === aiPromptId);
+    if (i >= 0) {
+      aiPromptBank[i] = { ...aiPromptBank[i], body: aiPromptDraft };
+      aiPromptBank = [...aiPromptBank];
+      saveAiPrompts();
+    }
+  }
+
+  /** Open the "copy for AI" dialog for a text source, defaulting to the de-identified text. */
+  async function openAiCopy(source: "anon" | "summary" | "transcript") {
+    aiSource = source;
+    aiUseOriginal = false;
+    error = "";
+    try {
+      if (source === "anon") {
+        aiText = await invoke<string>("copy_anonymized", { rejected: rejectedIds() });
+        aiDeid = true;
+      } else if (source === "summary") {
+        aiText = summaryDraft;
+        aiDeid = summaryFromAnon && !!analysis;
+      } else {
+        aiText = await summaryInputText();
+        aiDeid = false;
+      }
+    } catch (e) {
+      error = String(e);
+      return;
+    }
+    if (!aiPromptBank.length) loadAiPrompts();
+    if (!aiPromptBank.find((p) => p.id === aiPromptId)) aiPromptId = aiPromptBank[0].id;
+    selectAiPrompt();
+    aiOpen = true;
+  }
+
+  /** Assemble prompt + (pseudonym note) + context + the text, ready to paste into any AI. */
+  function aiPayload(): string {
+    const note = aiDeid
+      ? "Texten nedan är avidentifierad: namn, platser m.m. är ersatta med pseudonymer (t.ex. Person 1, Plats 1) där samma pseudonym avser samma person/plats genomgående. Behåll pseudonymerna exakt — gissa eller hitta inte på riktiga identiteter."
+      : "";
+    const ctx = aiContext.trim() ? `Kontext: ${aiContext.trim()}` : "";
+    const head = [aiPromptDraft.trim(), note, ctx].filter(Boolean).join("\n\n");
+    return `${head}\n\n---\n\n${aiText}`;
+  }
+
+  async function copyForAi() {
+    if (!aiDeid && !aiUseOriginal) return; // privacy gate: original text needs explicit confirmation
+    try {
+      await navigator.clipboard.writeText(aiPayload());
+      showToast("Kopierat för AI");
+      aiOpen = false;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Copy the payload, then open the chosen AI — prefilling its composer when the text is short
+   *  enough, otherwise just opening the chat so the user pastes (Ctrl+V). */
+  async function openInAi(target: { id: string; label: string; url: string; q: string | null }) {
+    if (!aiDeid && !aiUseOriginal) return;
+    const payload = aiPayload();
+    try {
+      await navigator.clipboard.writeText(payload);
+    } catch {
+      /* clipboard may be unavailable; we still open the site */
+    }
+    let url = target.url;
+    let prefilled = false;
+    if (target.q) {
+      const enc = encodeURIComponent(payload);
+      if (enc.length <= AI_PREFILL_MAX) {
+        url = target.q + enc;
+        prefilled = true;
+      }
+    }
+    try {
+      await openUrl(url);
+      showToast(prefilled ? `Öppnar ${target.label}…` : `Kopierat – öppnar ${target.label}, klistra in (Ctrl+V)`);
+      aiOpen = false;
+    } catch (e) {
+      error = "Kunde inte öppna webbläsaren: " + String(e);
+    }
   }
 
   async function runSummarize() {
@@ -883,6 +1033,39 @@
     }
   }
 
+  /** Re-run Whisper on the saved meeting WAVs with the chosen model — a full batch pass, usually
+   *  better than the live result (pick a larger model for best quality). Resets to Jag/Mötet. */
+  async function retranscribeMeeting() {
+    if (!meetingMicWav || !meetingSysWav || busy || !selectedDownloaded) return;
+    busy = true;
+    error = "";
+    transcribePct = 0;
+    progressMsg = "Transkriberar om mötet…";
+    try {
+      const t = await invoke<Transcript>("retranscribe_meeting", {
+        args: { micWavPath: meetingMicWav, systemWavPath: meetingSysWav, model: selectedModel, language },
+      });
+      transcript = t;
+      // Re-transcribing resets speakers to the stream labels; map each to itself for the rename UI.
+      const labels: Record<string, string> = {};
+      for (const u of t.utterances) {
+        if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
+      }
+      speakerLabels = labels;
+      analysis = null;
+      summaryDraft = "";
+      dirty = false;
+      await saveCurrentJob("meeting");
+      showToast("Mötet transkriberat om");
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+      transcribePct = null;
+      progressMsg = "";
+    }
+  }
+
   /** Simple linear-interpolation downsample to 16 kHz. */
   function downsampleTo16k(samples: Float32Array, srcRate: number): Float32Array {
     if (srcRate === 16000) return samples;
@@ -1176,6 +1359,7 @@
       transcript: type === "transcribe" || type === "meeting" ? transcript : null,
       speakerLabels,
       audioPath: type === "transcribe" || type === "meeting" ? audioPath : null,
+      micWavPath: type === "meeting" ? meetingMicWav : null,
       sourceText: type !== "transcribe" && srcMode !== "transcript" && srcMode !== "file" ? srcText : null,
       sourcePath: type !== "transcribe" && srcMode === "file" ? srcPath : null,
       enabled: ALL_KEYS.filter((k) => enabled[k]),
@@ -1220,6 +1404,7 @@
         audioPath = j.audioPath ?? null;
         audioName = audioPath ? audioPath.split(/[\\/]/).pop() ?? audioPath : null;
         meetingSysWav = j.jobType === "meeting" ? j.audioPath ?? null : null;
+        meetingMicWav = j.jobType === "meeting" ? j.micWavPath ?? null : null;
         summaryDraft = j.summaryDraft ?? "";
         view = j.summaryDraft ? "summary" : "transcript";
         screen = "transcribe";
@@ -1468,6 +1653,7 @@
             <div class="tabs"><span class="tab on">Avidentifiering</span></div>
             <div class="actions">
               <button class="btn primary" onclick={() => (deidentDoc ? copyAnonDoc() : copyAnon())}>Kopiera</button>
+              <button class="btn" onclick={() => openAiCopy("anon")}>Kopiera för AI</button>
               {#if deidentDoc}
                 <button class="btn" onclick={() => exportAnonDoc("txt")}>.txt</button>
                 <button class="btn" onclick={() => exportAnonDoc("docx")}>Word</button>
@@ -1548,6 +1734,7 @@
             <div class="tabs"><span class="tab on">Sammanfattning</span></div>
             <div class="actions">
               <button class="btn primary" onclick={copySummary}>Kopiera</button>
+              <button class="btn" onclick={() => openAiCopy("summary")}>Kopiera för AI</button>
               <button class="btn" onclick={() => saveSummary("txt")}>.txt</button>
               <button class="btn" onclick={() => saveSummary("docx")}>Word</button>
             </div>
@@ -1812,6 +1999,27 @@
         </section>
 
       {:else}
+        {#if meetingMicWav && meetingSysWav}
+          <section class="anon-block">
+            <h2>Transkribera om</h2>
+            <select class="profile" bind:value={selectedModel}>
+              {#each models as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
+            </select>
+            {#if !selectedDownloaded}
+              {#if downloading === selectedModel}
+                <div class="dl mt"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
+                <p class="hint">Hämtar modell… {downloadPct}%</p>
+              {:else}
+                <button class="btn block mt" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
+                  Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
+                </button>
+              {/if}
+            {:else}
+              <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy}>Kör om med vald modell</button>
+            {/if}
+            <p class="hint">Kör Whisper igen på hela inspelningen — oftast bättre än live, särskilt med en större modell. Talaruppdelningen återställs (kör ”Separera mötesröster” igen efteråt).</p>
+          </section>
+        {/if}
         {#if meetingSysWav}
           <section class="anon-block">
             <h2>Mötesröster</h2>
@@ -1871,16 +2079,19 @@
           <div class="actions">
             {#if view === "summary" && summaryDraft}
               <button class="btn primary" onclick={copySummary}>Kopiera</button>
+              <button class="btn" onclick={() => openAiCopy("summary")}>Kopiera för AI</button>
               <button class="btn" onclick={() => saveSummary("txt")}>.txt</button>
               <button class="btn" onclick={() => saveSummary("docx")}>Word</button>
             {:else if view === "review" && analysis}
               <button class="btn primary" onclick={copyAnon}>Kopiera</button>
+              <button class="btn" onclick={() => openAiCopy("anon")}>Kopiera för AI</button>
               <button class="btn" onclick={() => exportAs("txt", true)}>.txt</button>
               <button class="btn" onclick={() => exportAs("docx", true)}>Word</button>
               <button class="btn" onclick={() => exportAs("srt", true)}>.srt</button>
               <button class="btn" onclick={() => exportAs("vtt", true)}>.vtt</button>
             {:else}
               <button class="btn primary" onclick={copyTranscript}>Kopiera</button>
+              <button class="btn" onclick={() => openAiCopy("transcript")}>Kopiera för AI</button>
               <button class="btn" onclick={() => exportAs("txt", false)}>.txt</button>
               <button class="btn" onclick={() => exportAs("docx", false)}>Word</button>
               <button class="btn" onclick={() => exportAs("srt", false)}>.srt</button>
@@ -2025,6 +2236,63 @@
 
 {#if toast}
   <div class="toast"><span class="accentbar"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M5 13l4 4L19 7"/></svg>{toast}</div>
+{/if}
+
+{#if aiOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="modal-backdrop" onclick={() => (aiOpen = false)} role="presentation">
+    <div class="modal ai-modal" role="dialog" aria-modal="true" onclick={(e) => e.stopPropagation()}>
+      <h3 class="modal-title">Kopiera för AI</h3>
+
+      {#if aiDeid}
+        <p class="ai-status ok">✓ Avidentifierad text – trygg att klistra in i en extern AI-tjänst.</p>
+      {:else}
+        <div class="banner warn">
+          Den här texten är <strong>inte avidentifierad</strong>. Klistrar du in den i en extern AI-tjänst
+          skickas personuppgifter dit. Avidentifiera först om du kan.
+        </div>
+        <label class="ai-confirm">
+          <input type="checkbox" bind:checked={aiUseOriginal} />
+          Jag förstår och vill kopiera originaltexten ändå
+        </label>
+      {/if}
+
+      <label class="modal-field">Uppgift
+        <select bind:value={aiPromptId} onchange={selectAiPrompt}>
+          {#each aiPromptBank as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
+        </select>
+      </label>
+
+      <label class="modal-field">Prompt (redigerbar)
+        <textarea bind:value={aiPromptDraft} rows="5" placeholder="Skriv din egen instruktion till AI:n…"></textarea>
+      </label>
+      <div class="ai-prompt-actions">
+        <button class="link" onclick={resetAiPrompt}>Återställ</button>
+        <button class="link" onclick={saveAiPromptDraft}>Spara som standard</button>
+      </div>
+
+      <label class="modal-field">Kontext (valfritt)
+        <input bind:value={aiContext} placeholder="t.ex. Elevhälsomöte om läs- och skrivstöd" />
+      </label>
+
+      <p class="hint">
+        Prompt{aiDeid ? " + avidentifierad text" : " + text"} kopieras ({aiText.length.toLocaleString("sv-SE")} tecken).
+        Klistra sedan in i valfri AI (ChatGPT, Claude, Gemini, Copilot …).
+      </p>
+
+      <div class="ai-open">
+        <span class="ai-open-label">Öppna direkt i:</span>
+        {#each AI_TARGETS as t (t.id)}
+          <button class="btn small" onclick={() => openInAi(t)} disabled={!aiDeid && !aiUseOriginal}>{t.label}</button>
+        {/each}
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" onclick={() => (aiOpen = false)}>Avbryt</button>
+        <button class="btn primary" onclick={copyForAi} disabled={!aiDeid && !aiUseOriginal}>Kopiera</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 {#if maskTarget}
@@ -2265,6 +2533,15 @@
   .modal-field select, .modal-field input { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); }
   .modal-field select:focus, .modal-field input:focus { outline: none; border-color: var(--accent); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .modal-field textarea { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); resize: vertical; }
+  .modal-field textarea:focus { outline: none; border-color: var(--accent); }
+  .modal.ai-modal { width: min(560px, 92vw); }
+  .ai-status.ok { margin: 0; font-size: 13px; color: #047857; font-weight: 500; }
+  .ai-confirm { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #92400e; font-weight: 500; }
+  .ai-prompt-actions { display: flex; gap: 16px; margin-top: -6px; }
+  .ai-open { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+  .ai-open-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 2px; }
+  .btn.small { padding: 6px 10px; font-size: 13px; }
   .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
   .empty-view { max-width: 460px; margin: 48px auto; text-align: center; }
