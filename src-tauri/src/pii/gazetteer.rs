@@ -74,9 +74,9 @@ pub fn namn(text: &str) -> Vec<Span> {
     dedup_spans(v)
 }
 
-/// Detect place names from the built-in lists: all 290 municipalities plus the (initially
-/// empty) school and locality scaffolds. Complements the NER model and the suffix-based
-/// street/school rules. Capitalisation is required to avoid everyday-word collisions.
+/// Detect place names from the built-in lists: all 290 municipalities, multi-word school names
+/// (Skolverket), and larger localities/tätorter (SCB). Complements the NER model and the
+/// suffix-based street/school rules. Capitalisation is required to avoid everyday-word collisions.
 pub fn platser(text: &str) -> Vec<Span> {
     let mut v = KOMMUN_WORDS.detect(text);
     v.extend(SKOLA_WORDS.detect(text));
@@ -134,5 +134,12 @@ mod tests {
         // "Vara" the municipality is masked; "vara" the verb is left alone.
         assert_eq!(platser("Hen bor i Vara.").len(), 1);
         assert!(platser("Hen vill vara hemma.").is_empty());
+    }
+
+    #[test]
+    fn finds_school_and_locality_from_lists() {
+        // A multi-word school name (Skolverket) and a tätort (SCB) are detected as Plats.
+        assert!(platser("Hen går på Adolf Fredriks musikklasser.").iter().any(|s| s.category == Category::Plats));
+        assert!(platser("Familjen bor i Åhus sedan i somras.").iter().any(|s| s.category == Category::Plats));
     }
 }

@@ -1,14 +1,69 @@
-# Ortnamn (tätorter, byar, stadsdelar) – gazetteer för Category::Plats.
-# TOM SCAFFOLD – fyll på själv.
+# Ortnamn (tätorter) – gazetteer för Category::Plats.
+# Källa: SCB, "Folkmängd i tätorter per tätort" (2023, MI0810). Tätorter som delar
+# namn med en kommun är utelämnade (täcks av kommuner.txt).
+# Genererad av model-tools/build-gazetteers.py (tröskel: minst 5000 invånare).
 #
-# Kommuner täcks redan av `kommuner.txt`. Den här listan är för mindre orter,
-# tätorter och stadsdelar som NER-modellen lätt missar.
-#
-# Datakälla: SCB:s tätortsregister eller Lantmäteriets ortnamn (öppna data).
-# Klistra in ett namn per rad. #-rader och tomma rader ignoreras. Matchning är
-# skiftlägeskänslig (kräver inledande versal) – många ortnamn är även vardagsord.
-#
-# OBS: ju större lista, desto högre risk för övermaskering av vanliga ord.
-# Börja gärna med orterna i de kommuner ni faktiskt arbetar med.
-#
-# Tills listan fylls på görs inga träffar härifrån.
+# OBS: ju större lista (lägre tröskel), desto högre risk för övermaskering av
+# vardagsord. Börja smått. #-rader/tomma rader ignoreras. Matchningen är
+# skiftlägeskänslig (kräver inledande versal).
+
+Alsike
+Anderstorp
+Bankeryd
+Bjärred
+Brunna
+Bunkeflostrand
+Bålsta
+Dalby
+Falsterbo
+Fisksätra
+Fristad
+Färjestaden
+Gråbo
+Gustavsberg
+Hjärup
+Holmsund
+Höllviken
+Hönö
+Järna
+Kinna
+Krokek
+Kungsängen
+Kvissleby
+Landvetter
+Lindsdal
+Lindö
+Ljunghusen
+Ljungsbro
+Löddeköpinge
+Märsta
+Mölnlycke
+Nordöstra Göteborg
+Nödinge-Nol
+Onsala
+Oxie
+Påarp
+Rimbo
+Rydebäck
+Saltsjöbaden
+Skanör
+Skoghall
+Skutskär
+Skåre
+Storvreta
+Surte
+Sävja
+Södra Sandby
+Taberg
+Torshälla
+Tumba
+Veberöd
+Visby
+Västerhaninge
+Älvängen
+Åby
+Åhus
+Åkarp
+Åkersberga
+Ödåkra
+Öjersjö

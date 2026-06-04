@@ -1,14 +1,3096 @@
-# Skolnamn – gazetteer för Category::Plats. TOM SCAFFOLD – fyll på själv.
+# Skolnamn (flerordsnamn på aktiva skolenheter) – gazetteer för Category::Plats.
+# Källa: Skolverkets skolenhetsregister (öppna API, v1/skolenhet).
+# Genererad av model-tools/build-gazetteers.py.
 #
-# Suffix-baserade skolnamn ("Björkskolan", "Vasagymnasiet") fångas redan av
-# regeln `rules::skolnamn`. Den här listan är för EXAKTA namn som inte följer
-# suffix-mönstret, t.ex. "Engelska skolan", "Kunskapsskolan", "IES Bromma",
-# eller en specifik kommuns alla skolenheter.
+# Bara FLERORDS-namn tas med ("Internationella Engelska Skolan Bromma", "IES Bromma").
+# Enordsnamn utelämnas: de fångas antingen redan av rules::skolnamn ("Björkskolan",
+# "Kunskapsskolan") eller är generiska ord med hög risk för övermaskering
+# ("Elevhälsan", "Introduktionsprogrammet").
 #
-# Datakälla: Skolverkets skolenhetsregister (öppna data) –
-#   https://www.skolverket.se/skolutveckling/skolenhetsregistret
-# Exportera enheterna och klistra in ett namn per rad. #-rader och tomma rader
-# ignoreras. Matchning är skiftlägeskänslig (kräver inledande versal).
-#
-# Tills listan fylls på görs inga träffar härifrån (regeln räcker för de
-# vanliga suffix-namnen).
+# Format: ett namn per rad. #-rader och tomma rader ignoreras. Skiftlägeskänslig.
+
+AG Lyckeskolan
+AG Stommenskolan
+AU Utbildning AB
+Abisko skola
+Academy X Economy and Business Kristianstad
+Academy X Music and Business Tingsryd
+Academy X Music and Business Vara
+Adelövs friskola
+Adolf Fredriks musikklasser
+Adolfsbergsskolan anpassad grundskola
+Adolfsfors skola
+Affärsgymnasiet Gävle
+Affärsgymnasiet Helsingborg
+Affärsgymnasiet Jönköping
+Affärsgymnasiet Malmö
+Affärsgymnasiet Sports Academy Karlstad
+Affärsgymnasiet Sports Academy Umeå
+Affärsgymnasiet Stockholm
+Affärsgymnasiet Uppsala
+Affärsgymnasiet Västerås
+Affärsgymnasiet Örebro
+Agila Institutet VUX
+Agnesfrids gymnasium
+Ahlafors Fria skola
+Akademi Båstad Gymnasium
+Akademi Båstad Vuxenutb Komvux
+Akademi Båstad Vuxenutb SFI
+Akademi Båstad komvux som anpassad utbildning
+Akers Friskola
+Aktiviaskolan Enhet Eken
+Akutskolan Alfa
+Ala skola
+Albatross Montessoriskola
+Alborga skola
+Alfred Dalinskolan
+Alice Lundsgymnasiet
+Alingsås Yrkesgymnasium
+Alingsås kommun - central insamlingsenhet
+Alla Nationers Fria Skola
+Allerums skola
+Allsta skola
+Alléskolan Vintrie
+Alléskolan skolenhet Ask
+Alléskolan skolenhet Bok
+Almaröd Resursskola
+Almbro skola
+Almunge skola
+Almåsgymnasiet A
+Almåsgymnasiet B
+Almåsgymnasiet C
+Almåsgymnasiet E
+Alsike skola
+Alstad skola
+Alsterbro skola
+Alströmergymnasiet Anpassad gymnasieskola
+Altorpskolan A C
+Altorpskolan Anpassad Grundskola
+Altorpskolan B D
+Alvesta Gymnasieskola
+Amerikanska Gymnasiet Göteborg
+Amerikanska Gymnasiet Halmstad
+Amerikanska Gymnasiet Stockholm
+Amerikanska Gymnasiet Stockholm Campus Frescati Hage
+Amerikanska Gymnasiet Uppsala
+Ammarnäs skola
+Amsbergs skola
+Anders Ljungstedts- anpassad grundskola
+Anderstorpsgymnasiet Hammarängen
+Andénska gymnasiet
+Angereds Gård - yrkesvux
+Annebergs skola
+Anpassad grund- och gymnasieskola Nygårdsskolan
+Anpassad grundskola Central
+Anpassad grundskola Djurgården
+Anpassad grundskola Edvinshem
+Anpassad grundskola Egebyskolan
+Anpassad grundskola Fredriksdalskolan
+Anpassad grundskola Haraldsbo
+Anpassad grundskola Hjortsberg
+Anpassad grundskola Hörby kommun
+Anpassad grundskola Idun
+Anpassad grundskola Knappekulla
+Anpassad grundskola Lagmansskolan
+Anpassad grundskola Lejonström
+Anpassad grundskola Leksand
+Anpassad grundskola Nolhaga
+Anpassad grundskola Noltorp
+Anpassad grundskola Nyhedsskolan
+Anpassad grundskola Nyhem
+Anpassad grundskola Orsa
+Anpassad grundskola Partille
+Anpassad grundskola Rydsberg
+Anpassad grundskola Rättviksskolan
+Anpassad grundskola Scheeleskolan
+Anpassad grundskola Skogsbrynskolan
+Anpassad grundskola Slätta
+Anpassad grundskola Sockerbruket
+Anpassad grundskola Spiken
+Anpassad grundskola Stenportskolan
+Anpassad grundskola Tegelbruket
+Anpassad grundskola Tullbro
+Anpassad grundskola Älvkarleby
+Anpassad grundskola Ärsta
+Anpassad grundskola Årby
+Anpassad grundskolan Kristineberg
+Anpassad grundskolan Rödsle
+Anpassad gymnasieskola DH
+Anpassad gymnasieskola Grillska Liljeholmen
+Anpassad gymnasieskola Leksands kommun
+Anpassad gymnasieskola Partille
+Anpassad gymnasieskola Platen
+Anpassad gymnasieskola Rönne
+Anpassad gymnasieskola Ullvigymnasiet
+Anpassad gymnasieskola Viktoria
+Anpassade Gymnasieskolan Vipan
+Anpassade gymnasieskolan i Eksjö
+Anpassade skolan Strömsnäsbruk
+Ansgarskolorna Emanuelskolan
+Antonskolan Blekedamm
+Antonskolan Österäng
+Apelrydsskolan i Båstad
+Arbetsmarknad och vuxenutbildning
+Arena Utbildning
+Arena resursskola
+Arenaskolan grundskola
+Arenaskolans anpassade grundskola
+Arentorps skola
+Arlanda Anpassade Gymnasieskola
+Arlanda Komvux
+Artediskolan Anpassad grundskola
+Arthur Engbergskolan
+Askeby skola
+Askers skola
+Asklanda skola
+Asmundtorps skola
+Aspen Montessori
+Aspstrandens skola
+Aspuddens skola
+Aspås skola
+Axel Weüdelskolan
+Axevalla Hästcentrum
+Axevalla Hästcentrum - yrkesvux
+Azbuka Lyceum Grundskola
+Backa Friskola
+Backa skola
+Backens skola
+Bagarmossens skola
+Baggeboskolan anpassad grundskola
+Baldergymnasiet introduktionsprogrammet
+Bandhagens skola
+Bankekinds skola
+Barn- och elevhälsa
+Barn- och elevhälsan
+Barsebäcks Montessoriskola
+Bastasjö Friskola AB
+Bastuträsk skola
+Bellevue gymnasium
+Berga anpassad grundskola
+Berga naturbruksgymnasium
+Bergaskolan - Anpassad grundskola
+Bergatrollet fritidshem
+Bergeforsen grundskola
+Bergeforsens anpassade grundskola
+Bergfotens skola
+Berghedens skola
+Bergkvara skola
+Bergs skola
+Bergshammars skola
+Bergska gymnasiet
+Bergslenagymnasiet A
+Bergslenagymnasiet B
+Bergslenagymnasiet C
+Bergslunds föräldrakooperativ fritidshem
+Bergstrands Gymnasium Märsta
+Bergstrands Gymnasium Stockholm
+Bergstrands Gymnasium Uppsala
+Bergstrands vuxenutbildning
+Bergsåkers skola
+Bergvretens anpassade grundskola
+Bettna skola
+Betty Petterssons gymnasium
+Bie skola
+Bildningscentrum Facetten
+Bjurtjärns skola
+Bjuvs lärcentrum
+Bjälbotullskolan LM
+Bjäre skola
+Björkbergs skola
+Björke skola
+Björkhaga Skola
+Björkhaga skola
+Björkhaga skola AGR
+Björkhagens skola
+Björklinge skola
+Björknäs anpassade grund- och gymnasieskola
+Björkviks skola
+Björkängen anpassad grundskola
+Björkås skola
+Björkö friskola
+Björkö skola
+Björngårdens fritidshem
+Björsäters skola
+Blackstad skola
+Bladins International School of Malmö
+Bladins grundskola
+Bladins gymnasium
+Blattnicksele skola
+Blekinge Naturbruksgymnasium
+Blichers friskola
+Blidsbergs skola
+Blomenbergska skolan
+Blästad resursskola
+Blästad resursskola flex
+Blästadsskolan- anpassad grundskola
+Blåklockans fritidshem
+Blåsut skola
+Blötbergets skola
+Bo skola
+Bobygda skola
+Boda skola
+Bodals skola
+Bodbysunds fritidshem
+Bodbysunds miljöskola
+Bokenäs skola
+Bollebygds anpassad grundskola
+Bollebygds gymnasieskola
+Bollerups Lantbruksinstitut
+Bollnäs anpassade grundskola
+Bollstanäs skola
+Bondsjöhöjdens skola
+Bondstorps skola
+Boo Gårds skola
+Borgmästarskolans anpassade gymnasieskola
+Borgviks skola
+Borns Friskola
+Borrby skola
+Bors skola
+Borås Kristna skola
+Botilsäter skola
+Botsmarks skola
+Boukefs Privatskola
+Boukefs Småskola
+Bovallstrands skola
+Brandströmska skolan Nylöse
+Brattfors skola
+Bredaryds skola
+Bredsands skola
+Brenäs skola
+Brickebackens anpassade grundskola
+Brickebackens skola
+Brickebackens skola F-klass resursskola
+Brickebackens skola resursskola
+Brinell anpassad grundskola
+Brinells högstadium
+Bringåsens skola
+British International School
+Bro Mälarstrand
+Bro skola
+Broarps skola
+Brogårdaskolans anpassade grundskola
+Broholmskolan Jung
+Broholmskolan Lidköping
+Broholmskolan Vara
+Brokinds skola
+Bromma kyrkskola
+Bromölla Komvux
+Bromölla gymnasium
+Broskolan Ö-viks Kristna skola
+Brukets skola
+Bruksvallarnas skola
+Brunne Resursskola
+Brunne skola
+Brunns skola
+Bryggans skola
+Bryggeriets Gymnasium
+Bräcke Bygg - komvux
+Bräcke skola
+Brännlands skola
+Bräntbergsskolan AST
+Bråthults Friskola
+Brösarps skola
+Bullmarks skola
+Bulten Fritids
+Burgården Frisör- komvux
+Buskhyttans skola
+By skola
+Byarums skola
+Bygdeå skola
+Bäckahagens skola
+Bäckseda skola
+Bäckskolan- anpassad grundskola
+Bäckängsgymnasiet A
+Bäckängsgymnasiet B
+Bäckängsgymnasiet C
+Bäckängsgymnasiet D
+Bäckängsgymnasiet E
+Bälinge skola
+Bärnstenen - Vellinge resursskola
+Bäsna skola
+Bårslövs skola
+Båstad Montessoriskola Asken
+Böle Byskola AB
+Böle skola
+Börje skola
+Böskolans friskola
+Calmare Internationella Skola
+Campeon Frigymnasium
+Campus Gislaved
+Campus Manilla
+Campus Manilla Gymnasium
+Campus Nynäshamn
+Campus Oxelösund SFI
+Campus Oxelösund komvux
+Campus Västra Skaraborg Vara
+Capellaskolan gy
+Carl Engström anpassad vuxenutbildning
+Carl Engström skolan anpassad gymnasieskola
+Carl Engström vuxenutbildning
+Carl Engström vuxenutbildning SFI
+Carl Engströmgymnasiet
+Carl Johanskolan
+Carl Wahren Gymnasium
+Carlforsska Gymnasiet Anpassad gymnasieskola
+Carlforsska gymnasiet
+Carlssons skola
+Casa Montessori
+Central Insamlingsenhet
+Central Insamlingsenhet  Modersmålslärare
+Central Insamlingsenhet  Resurscentrum
+Central Insamlingsenhet - kommunal verksamhet centrum för flerspråkighet
+Central Insamlingsenhet - kommunal verksamhet övrigt
+Central Insamlingsenhet BUF
+Central Insamlingsenhet Elevhälsan
+Central Insamlingsenhet Enskild verksamhet
+Central Insamlingsenhet Kommunal verksamhet
+Central Insamlingsenhet Modersmålsavdelningen Karlskoga
+Central Insamlingsenhet-Skolmottagningsenheten
+Central anpassad grundskola
+Central elevvårdsenhet
+Central enhet modersmål
+Central insamlingsenhet
+Central insamlingsenhet -centralt
+Central insamlingsenhet Centrala elevhälsan
+Central insamlingsenhet Enskild verksamhet
+Central insamlingsenhet modersmål
+Central rapportering av modersmålspersonal
+Centrala Elevhälsan
+Centrala elevhälsan
+Centrala mottagningsenheten
+Centrala stödenheten
+Centralskolan Hoting
+Centralskolan LM
+Centralt rektorsområde
+Centralt stöd
+Centrum Vux
+Centrum för flerspråkighet
+Centrum för lärande
+Centrum för vuxenutbildning
+Centrumskolan - Glänninge resursskola
+Centrumskolan - Lagaholm resursskola
+Centrumskolan - Lagahöjd anpassad grundskola
+Centrumskolan - Lagahöjd resursskola
+Centrumskolan anpassat gymnasium
+Centrumskolan i Hbg
+Christinaskolan Anpassad Grundskola
+Communityskolan Gårdsten
+Communityskolan Tynnered
+Corpore Byskola
+Cuben Utbildning
+Cuben Utbildning Alvik
+Cuben Utbildning Högdalen
+Cultura Gymnasium
+Cultus gymnasium
+Curt Nicolin Gymnasiet
+Cybergymnasiet Stockholm
+Da Vinciskolan
+Daggkåpan resursskola
+Dagsbergs skola
+Dahlander kunskapscentrum
+Dahlstiernska gymnasiet
+Dalarö skola
+Dalaskolan Norra
+Dalaskolan Södra
+Dalbackens Friskola
+Dalhem skola
+Dalums skola
+Dammfriskolan - Anpassad grundskola
+Dammsdalskolan anpassad grundskola
+Dammsdalskolan anpassad gymnasieskola
+Dammsdalskolan grundskola
+Dammsdalskolan gymnasieskola
+Danderyds Gymnasium
+Danderyds Montessoriskola
+Danderyds gymnasium Anpassad gymnasieskola
+Danmarks skola
+Dar Al Uloum skola
+De Geers skola
+Degebergaskolan L
+Degebergaskolan MH
+Delsbo Waldorffritds
+Delsbo waldorfskola
+Desideria anpassad grundskola
+Designgymnasiet Göteborg
+Designgymnasiet Kungsholmen
+Designgymnasiet Malmö
+Designgymnasiet Sickla
+Designgymnasiet Västerås
+Dibber Capella anpassad grundskola
+Dibber International School Helsingborg
+Dibber International School Sollentuna
+Dibber Nacka anpassad grundskola
+Dibber Rullen anpassad grundskola
+Dibber Rullen anpassad gymnasieskola
+Dibber Snäckbacken anpassad grundskola
+Dibber Stora Essingen anpassad grundskola
+Digerbergets skola
+Dikanäs skola
+Dille Gård Naturbruksgymnasium
+Dingtuna skola
+Diseröds skola
+Distra Gymnasium
+Distra IRS
+Diö skola
+Djurgymnasiet Stockholm
+Djursdala skola
+Djurö skola
+Djäkneboda skola
+Docksta Friskola
+Domarringens skola
+Domnarvets skola
+Dormsjöskolan Anpassad Gymnasieskola
+Dragonskolan AGy
+Drottning Blankas Gymnasieskola Borås
+Drottning Blankas Gymnasieskola Falkenberg
+Drottning Blankas Gymnasieskola Gävle
+Drottning Blankas Gymnasieskola Göteborg Centrum
+Drottning Blankas Gymnasieskola Göteborg Karlastaden
+Drottning Blankas Gymnasieskola Göteborg Odin
+Drottning Blankas Gymnasieskola Halmstad
+Drottning Blankas Gymnasieskola Helsingborg
+Drottning Blankas Gymnasieskola Jakobsberg
+Drottning Blankas Gymnasieskola Jönköping
+Drottning Blankas Gymnasieskola Kungsbacka
+Drottning Blankas Gymnasieskola Lund
+Drottning Blankas Gymnasieskola Malmö City
+Drottning Blankas Gymnasieskola Malmö Lilla Torg
+Drottning Blankas Gymnasieskola Norrköping
+Drottning Blankas Gymnasieskola Skövde
+Drottning Blankas Gymnasieskola Stockholm Södra
+Drottning Blankas Gymnasieskola Stockholm Vasastan
+Drottning Blankas Gymnasieskola Sundsvall
+Drottning Blankas Gymnasieskola Uddevalla
+Drottning Blankas Gymnasieskola Uppsala
+Drottning Blankas Gymnasieskola Örebro
+Drottningdals skola
+Duvnäs skola
+Dvärsätts skola
+Dädesjö skola
+ESF Skarpnäck AB
+Ebba Brahe Gymnasium
+Ebba Braheskolan
+Ebba Petterssons Privatskola
+Edane skola
+Edenryds skola
+Edens skola
+Edsbro skola
+Edsta skola
+Edströmska Gymnasiet Anpassad Gymnasieskola
+Egebyskolan L
+Eggvena skola
+Ehrensvärdska gymnasiet
+Einar Hansengymnasiet
+Ekbackens skola
+Ekebo anpassad grundskola
+Ekeby skola
+Ekens skola
+Ekenässjöns skola
+Ekerö anpassade gymnasieskola
+Ekerö komvux
+Ekets skola
+Eketånga Montessoriskola
+Ekgårdens anpassade gymnasieskola
+Ekholmen resursskola
+Ekholmsskolan- anpassad grundskola
+Eklidens skola
+Ektorps anpassade grundskola
+Ektorps skola
+Ekängens skolor
+Eleonoraskolan AGR
+Elevhälsan Ansvarig Peter Andersson
+Elevhälsans ro
+Elias Fries skola
+Elinebergsskolans anpassade grundskola
+Ellen Fries gymnasium
+Ellen Key skolan
+Ellen Keyskolan
+Ellös skola
+Elmsta skola
+Elsa Brändströms skola
+Elteknikbranschens gymnasium
+Emmaboda komvux
+Emmaboda komvux som anpassad utbildning
+Enbacka skola
+Endre skola
+Enebybergs skola
+Enehagens skola
+Engelska Skolan Norr
+Engelska Skolan Novia
+Engelska Språkskolan
+Enhet Flerspråkigt lärande - Central Insamlingsenhet
+Enhet flerspråkighet
+Enheten för Särskilt Samordnande Insatser
+Enheten för flerspråkighet
+Enskede skola
+Enskedefältets skola
+Entréskolan Eskilstuna
+Entréskolan Stockholm
+Entréskolan Västerås
+Entréskolan Örebro
+Enångers skola
+Enögla anpassade grundskola
+Eriksbergs skola
+Ersdungens skola
+Ersmarks skola
+Ervalla skola
+Eskelhem skola
+Essunga anpassad gymnasieskola
+Essviks skola
+Estniska Skolan i Stockholm
+Estrid Ericsonskolan
+Estrid Ericsonskolan anpassad grundskola
+Etec Teknikutbildning AB
+Europaportens grundskola
+Europaskolan Rogge
+Europaskolan Strängnäs
+Everöds skola LM
+Eviaskolan Söder
+Extern komvuxutbildning
+FRI att VÄXA Växsjö Byskola
+Fagerhults skola
+Fagernäs skola
+Fagerviks skola
+Falkenbergs Montessoriskola
+Falu Frigymnasium
+Falu vuxenutbildning
+Farsta Strandsskolan
+Farsta grundskola
+Fengersfors fritidshem
+Filbornaskolans anpassade gymnasieskola
+Finnbacksskolans resursskola
+Finnerödja skola
+Finspångs vuxenutbildning
+Fischerströmska gymnasiet
+Fittjaskolan AGR
+Fjälkestads skola M
+Fjälkinge skola H
+Fjälkinge skola L
+Fjälkinge skola M
+Fjällbacka skola
+Fjärås Bräckaskolan Gaia
+Fjärås Bräckaskolan Tellus
+Flen komvux
+Flens kristna skola
+Flerohopp skola
+Flerspråkigt center GR
+Flerspråkligt center GY
+Fliseryds skola
+Floraskolan A
+Flurkmarks skola
+Flyinge Hästsportgymnasium
+Fokusskolan Landskrona
+Fole skola
+Folkuniversitetets gymnasium i Trollhättan
+Fornuddens skola
+Fornåsa skola
+Fors skola
+Forsbacka skola
+Forsen anpassad grundskola
+Forshaga Lärcenter H-stadiet
+Forshaga Lärcenter LM-stadiet
+Forslundagymnasiet AGy
+Forslundagymnasiet GY
+Forslundagymnasiet komvux
+Forssjö skola
+Forsviks friskola
+Fotö skola
+Franklins gymnasium
+Fredkullaskolan Waldorfskola
+Fredrika Bremergymnasiet Högskoleförberedande program
+Fredrika Bremergymnasiet Yrkesprogram
+Fredrika Bremerskolan
+Fredrika skola
+Fredrikshovs slotts skola
+Fredsbergs Friskola
+Freinetskolan Hugin
+Freinetskolan Kastanjen
+Freinetskolan Mimer
+Freinetskolan Mimer Tingshuset
+Freinetskolan Tallbacken
+Freinetskolan i Lund
+Fria Emilia
+Fria Läroverken Karlstad
+Fria Läroverken Linköping
+Fria Läroverken Malmö
+Fria Läroverken Norrköping
+Fria Läroverken i Karlshamn
+Fria Läroverken i Ystad
+Fria Maria Barnskolas ekonomiska förening
+Fridagymnasiet i Mölnlycke
+Fridas Hage
+Fridas hage anpassad grundskola
+Fridaskolan Helsingborg
+Fridaskolan Kallebäck
+Fridaskolan Kvillebäcken
+Fridegårdsgymnasiet- AST-programmen
+Fridegårdsgymnasiet- anpassad gymnasieskola
+Fridhems friskola
+Fridhemsskolan grund
+Fridtjuv Bergskolan
+Friskolan Asken
+Friskolan Boken
+Friskolan Karlavagnen
+Friskolan Kvarnhjulet
+Friskolan Metis
+Friskolan Mosaik
+Friskolan Nytorp
+Friskolan Stellatus
+Friskolan Svettpärlan
+Friskolan Vintergatan
+Friskolan i Kärna
+Fritidshem Bredöl
+Fritidshem Hjortkvarn
+Fritidshem Jonslund
+Fritidshem Nossebro
+Fritidshemmet Hackspetten
+Fritidshemmet Prästkragen
+Fruängens skola
+Fryele skola
+Fryshuset Grundskola Akalla
+Fryshuset Grundskola Hammarby Sjöstad
+Fryshuset Grundskola Husby
+Fryshuset Gymnasium
+Fryxellska skolan
+Frödinge skola
+Frödingskolan AG
+Fröjereds grundskola
+Fröknegårdskolan H
+Fröknegårdskolan M
+Frösve skola
+Frötuna skola
+Funbo skola
+Funäsdalens skola
+Furuboda Gymnasieskola
+Furuby skola
+Furudals centralskola
+Furulundsskolan A
+Futuraskolan International Bergtorp
+Futuraskolan International Gåshaga
+Futuraskolan International Hertig Karl
+Futuraskolan International Kottla
+Futuraskolan International Rådan
+Futuraskolan International School of Stockholm
+Futuraskolan International Stockholm
+Futurum Södra
+Fylsta skola
+Fyren Ekalmens skola
+Fyrklövern Dibber
+Färe Montessoriskola
+Färentuna skola
+Färila skola
+Färjestadens högstadium
+Färjestadens skola
+Färlövs skola LM
+Fågelbärets anpassade grundskola
+Fågelbärets skola
+Fågelsta skola
+Fågelsångens anpassade grundskola
+Fågelsångens skola
+Fågelvik skola
+Fågelvikskolan anpassad grundskola
+Fågelvikskolans gymnasie
+Fågelås skola
+Fåker skola
+Fårdala skola
+Förskolan Klinten fritidshem
+Föräldrakooperativet Framtiden fritidshem
+Föräldrakooperativet Gadden
+Föräldrakooperativet Gläntan Fritidshem
+G-klavens fristående skola
+GRAN Prästholmsskolan
+GRAN Stureskolan
+GTIs gymnasieskola
+GYAN Björknäsgymnasiet
+Gamla Uppsala skola
+Gamlebyvikens friskola
+Gantofta skola
+Garda skola
+Garphyttans skola
+Gemla skola
+Genarps skola
+Gislaveds gymnasium Innovationssektor
+Gislaveds gymnasium Samhällssektor
+Gislaveds gymnasium Utvecklingssektor
+Glanshammars skola
+Glava skola
+Glumslövs skola
+Gluntens Montessoriskola
+Glänningeskolan F-klass och fritidshem
+Gnarps skola
+Gnesta Waldorfskola
+Godegårds skola
+Gotlands folkhögskola
+Gotlands resursskola Visby
+Gottne Byskola
+Gottskär Grundskola
+Gottsta Skola
+Gottsunda anpassad grundskola
+Granbergsdals ekonomiska förening
+Granbergsskolan västra
+Granbergsskolan östra
+Grangärdets skola
+Grans naturbruksgymnasium
+Grantomta Montessoriskola
+Granö småbarnsskola
+Grebo skola
+Grevhagsskolan B
+Grevhagsskolans anpassade grundskola
+Grevåkerskolan Hammerdal
+Grillska Gymnasiet Eskilstuna
+Grillska Gymnasiet Kungsholmen
+Grillska Gymnasiet Liljeholmen
+Grillska Gymnasiet Uppsala
+Grillska Gymnasiet Västerås
+Grillska Gymnasiet Örebro
+Gripenbergs skola
+Grisslehamns skola
+Grundskola Överkalix kommun
+Grundskolan Metapontum
+Grundskolan Äventyret
+Grytgöls skola
+Grythyttans skola
+Grytnäs friskola
+Gränums skola
+Gräsmarks skola
+Gräsmyr skola
+Gråbo Anpassad grundskola
+Gröna dalen
+Gualövs skola
+Gudmuntorps skola
+Guldkroksskolan anpassad grundskola
+Guldstadsgymnasiet i Skellefteå
+Gullabo skola
+Gullregnsskolan A
+Gullregnsskolan B
+Gullspångs kommuns anpassade grundskola
+Gumaeliusskolan resursskola
+Gunnarns skola
+Gunnarsbo ABC
+Gunnebo skola
+Gustav Adolfsskolan
+Gustav Vasa skola
+Gustav Vasaskolan
+Gustavsbergs gymnasium
+Gusums skola
+Gymnasieakademin Göteborg
+Gymnasieskolan Gripen
+Gymnasieskolan Spyken
+Gymnasieskolan Vipan
+Gymnasieutbildning i Lekeberg
+Gymnasieutbildningen Hallstahammar
+Gymnasieutbildningen i Bjuv
+Gymnasieutbildningen i Burlöv
+Gymnasieutbildningen i Gagnef
+Gymnasieutbildningen i Höör
+Gyttorps skola
+Gällaryds skola
+Gällivare Lärcentra
+Gällivare Lärcentra anpassad utbildning
+Gällstads skola
+Gällö skola
+Gärde skola
+Gärdslösa skola
+Gärsnäs skola
+Gångvikens skola
+Gåvsta skola
+Göranssonska skolan
+Götafors skola
+Göteborgsregionens tekniska gymnasium
+Götlunda skola
+Hackås skola
+Haga VIP  anpassad gymnasieskola
+Haga VIP anpassad grundskola
+Hagabackens skola
+Hagagymnasiet skolenhet Blå
+Hagagymnasiet skolenhet grön
+Hagagymnasiet skolenhet gul
+Hagagymnasiet skolenhet röd
+Haganässkolan vuxenutbildning
+Haganässkolan vuxenutbildning-SFI
+Hagaskolan anpassad grundskola
+Hagaströms skola
+Hagge skola
+Hagmarkens skola
+Hahrska Gymnasiet Anpassad Gymnasieskola
+Hahrska gymnasiet
+Hakkas Centralskola
+Hallsta skola
+Halmstad Lärcentrum
+Halvarsgårdars skola
+Hammarbyskolan Norra
+Hammarbyskolan Södra
+Hammars skola
+Hammars skola A
+Hammars skola L
+Hammarskolan AB
+Hammarskolan CD
+Hammenhögs Friskola
+Hamnabro anpassad grundskola
+Hamnabro anpassad gymnasieskola
+Hampetorps skola
+Hampnäs gymnasium
+Hanemålaskolan anpassad grundskola
+Haninge Montessoriskola
+Haninges anpassade gymnasieskola individuella program
+Hannäs fritidshem
+Hanvikens skola
+Harads skola
+Harlösa skola
+Hasslerörs skola
+Hasslövs Skola Ideell Förening
+Havdhem skola
+Havelidens skola
+Heby anpassad grundskola
+Hedda Anderssongymnasiet
+Hedda Wising Resursskola
+Hedda Wisingskolan
+Hedekas skola
+Hedemora Vuxenutbildning
+Hedens skola
+Hedeskoga skola
+Hedesunda skola
+Hedskolan L
+Hedskolan M
+Hedvig Eleonora skola
+Helgedalskolan L
+Helgedalskolan M
+Helgums skola
+Heliås Kunskapscentrum AB
+Helleborusskolan Täby AB
+Helleborusskolan Österåker
+Helsingborgs Lärlingsgymnasium
+Helsingborgs Sportgymnasium
+Hemlingborgs skola
+Hemsjö Kyrkskola
+Hermods Distansgymnasium
+Hermodsdalsskolan - Anpassad grundskola
+Herrgårdsgymnasiet anpassad gymnasieskola
+Herrhagsskolan AG
+Herrängens skola
+Hersby gymnasium
+Hidinge skola
+Hietaniemi Friskoleförening
+Hillareds skola
+Himmelstalunds Utbildningscentrum komvux
+Himmelstalunds utbildningscentrum
+Hindby Dibber
+Hissjö skola
+Hitachigymnasiet Ludvika
+Hitachigymnasiet Västerås
+Hjalmar Strömerskolan
+Hjorthagens skola
+Hjärups skola
+Hogstorps skola
+Hoks skola
+Holavedsgymnasiet AGY
+Holmaskolan - Anpassad grundskola
+Holmedals skola
+Hols skola
+Holsby skola
+Horda skola
+Horn skola
+Hortlax skola
+Hovs skola
+Huddinge vuxenutbildning
+Huddunge Byskola
+Hudene skola
+Hudiksvalls anpassade grundskola
+Hudiksvalls resursskola
+Hultsbergsskolan AG
+Hultsfred Lärcenter
+Hunnebostrands skola
+Husensjö skola
+Hyddans anpassade gymnasieskola
+Hyddans skola
+Hyllie Park Grundskola
+Hyllinge skola
+Hylte gymnasieskola
+Hägerstenshamnens skola
+Hägerstensåsens skola
+Häggdånger byskola
+Häggenås skola
+Häggvallskolan Väst
+Häggvallskolan anpassad grundskola
+Häggvallskolan Öst
+Häggvik- Skälbyskolan
+Häggviks Gymnasium
+Häggviks anpassade gymnasium
+Häglinge förskola och fritidshem
+Hällaryds skola
+Hälledals skola
+Hällestads skola
+Hällevadsholms skola
+Hällfors friskola
+Hällnäs skola
+Hällsboskolan Kungsholmen
+Hällsboskolan Mälarhöjden
+Hällsboskolan Umeå
+Härjedalens gymnasium
+Härnevi förskola fritidshem
+Härnösands gymnasium Anpassad Gymnasieskola
+Härslövs skola
+Hässelby Villastads skola
+Hässleholms Tekniska Skola
+Håbo vuxenutbildning
+Hålabäcksskolan A
+Hålabäcksskolan B
+Hållnäs skola
+Hålta skola
+Hånger skola
+Hånåkni förskola
+Håslövs byaskola
+Håsta skola
+Håstads skola
+Höga kustens teoretiska gymnasium
+Högavångs anpassade grundskola
+Högbergsskolans anpassade gymnasieskola
+Högelidsskolan anpassad grundskola
+Höglundaskolan anpassad gymnasieskola
+Högoms skola
+Högsby Lärcenter
+Högsjö skola
+Högstadium Centrum
+Högstadium Centrum anpassad grundskola
+Högstadium Odenvi
+Högstorps skola
+Högsäter skola
+Högsätra skola
+Högtofta skola
+Hökerums skola
+Hököpinge skola
+Hörby Yrkesgymnasium
+Hörviks skola
+Hössna skola
+I Ur och Skur Mullebo Mårtensbergsskolan
+I Ur och Skur Mullekojan
+I Ur och Skur Skabersjöskolan
+I Ur och Skur Utsikten fritidshem
+I Ur och Skur Utsikten skola
+I Ur och Skur sk Skattkammarön
+I ur och skur - Forsen
+IES International School Skellefteå
+IKASUS gy
+IM Grums
+IM-programmet i Nora
+IQRA Skolan
+Idenors skola
+Idrottsgymnasiet Dragonskolan
+Idun anpassad grundskola inriktning ämnesområden
+Idun anpassad gymnasieskola individuellt program
+Idunskolan Östra Stockholms Waldorfskola
+Igelsta grundskola
+Iggesunds skola
+Ilandaskolan AG
+Ilsbo skola
+Impius gymnasium
+Individuella programmet
+Ingels skola
+Ingelstad skola
+Ingrid Segerstedts gymnasium
+Innanbäckens skola
+Innertavle skola
+Innovitaskolan Banérporten
+Innovitaskolan Enskede
+Innovitaskolan Falun
+Innovitaskolan Farstaäng
+Innovitaskolan Helsingborg
+Innovitaskolan Johanneberg
+Innovitaskolan Joriel
+Innovitaskolan Joriels Anpassade gymnasium
+Innovitaskolan Kalix
+Innovitaskolan Karlskrona
+Innovitaskolan Landskrona
+Innovitaskolan Luleå
+Innovitaskolan Motala
+Innovitaskolan Motalas Högstadium
+Innovitaskolan Myrängen
+Innovitaskolan Mölndal
+Innovitaskolan Norrtälje
+Innovitaskolan Nyköping
+Innovitaskolan Rudan
+Innovitaskolan Rönninge
+Innovitaskolan Segeltorp
+Innovitaskolan Söderby
+Innovitaskolan Södertälje
+Innovitaskolan Vendelsö
+Innovitaskolan Visby
+Innovitaskolan Vällingby Park
+Innovitaskolan Östersund
+Insjöns skola
+International School of Karlskrona
+International School of Kungsholmen
+International School of the Stockholm Region
+Internationella Engelska Gymnasiet Södermalm
+Internationella Engelska Skolan Borås
+Internationella Engelska Skolan Bromma
+Internationella Engelska Skolan Enskede
+Internationella Engelska Skolan Eskilstuna
+Internationella Engelska Skolan Falun
+Internationella Engelska Skolan Gävle
+Internationella Engelska Skolan Halmstad
+Internationella Engelska Skolan Helsingborg
+Internationella Engelska Skolan Huddinge
+Internationella Engelska Skolan Hässleholm
+Internationella Engelska Skolan Johanneberg
+Internationella Engelska Skolan Järfälla
+Internationella Engelska Skolan Jönköping
+Internationella Engelska Skolan Karlstad
+Internationella Engelska Skolan Kista
+Internationella Engelska Skolan Kungsbacka
+Internationella Engelska Skolan Landskrona
+Internationella Engelska Skolan Liljeholmen
+Internationella Engelska Skolan Linköping
+Internationella Engelska Skolan Lund
+Internationella Engelska Skolan Länna
+Internationella Engelska Skolan Nacka
+Internationella Engelska Skolan Norrtälje
+Internationella Engelska Skolan Sigtuna
+Internationella Engelska Skolan Skellefteå
+Internationella Engelska Skolan Solna
+Internationella Engelska Skolan Staffanstorp
+Internationella Engelska Skolan Sundbyberg
+Internationella Engelska Skolan Sundsvall
+Internationella Engelska Skolan Södertälje
+Internationella Engelska Skolan Södra Änggården
+Internationella Engelska Skolan Trelleborg
+Internationella Engelska Skolan Tyresö
+Internationella Engelska Skolan Täby
+Internationella Engelska Skolan Umeå
+Internationella Engelska Skolan Upplands Väsby
+Internationella Engelska Skolan Uppsala
+Internationella Engelska Skolan Värmdö
+Internationella Engelska Skolan Västerås
+Internationella Engelska Skolan Växjö
+Internationella Engelska Skolan Älvsjö
+Internationella Engelska Skolan Årsta
+Internationella Engelska Skolan Örebro
+Internationella Engelska Skolan Östersund
+Internationella Engelska Skolan Österåker
+Internationella Engelska skolan Hässelby
+Internationella Hotell- och Restaurangskolan
+Internationella gymnasiet
+Iris Flemingsberg
+Iris Hadar AB
+JENSEN Education
+JENSEN Gymnasium Eskilstuna
+JENSEN Gymnasium Gamla stan
+JENSEN Gymnasium Göteborg
+JENSEN Gymnasium Helsingborg
+JENSEN Gymnasium Jönköping
+JENSEN Gymnasium Kristianstad
+JENSEN Gymnasium Linköping
+JENSEN Gymnasium Lund
+JENSEN Gymnasium Malmö
+JENSEN Gymnasium Norrköping
+JENSEN Gymnasium Uppsala
+JENSEN Gymnasium Vasastan
+JENSEN Gymnasium Västerås
+JENSEN Gymnasium Wenngarn
+JENSEN Gymnasium Örebro
+JENSEN grundskola Bro-Mälarstrand
+JENSEN grundskola Göteborg
+JENSEN grundskola Helsingborg
+JENSEN grundskola Kvarnsjön
+JENSEN grundskola Linköping
+JENSEN grundskola Långholmen
+JENSEN grundskola Norrköping
+JENSEN grundskola Sickla
+JENSEN grundskola Tungelsta
+JENSEN grundskola Uppsala
+JENSEN grundskola Västerås
+JENSEN grundskola Örebro
+JENSEN gymnasium Haninge
+JENSEN gymnasium Nacka strand
+Jarlabergs skola
+Jenny Nyströmskolan A
+Jenny Nyströmskolan B
+Jens Billeskolan
+Johan Movingers Gymnasium
+Johan Skytteskolan
+Johannaskolan Örebro Waldorfskola
+Johannes Hedberggymnasiet
+Johannes skola
+Johannesbäck anpassad grundskola
+Johannesskolan Norrkpg Kr Sk
+John Blund Fritids
+Jokkmokk Lärcentra
+Jokkmokk Lärcentra anpassad utbildning
+Jormvattnets skola
+Jukkasjärvi skola
+Julita skola
+Jumkils skola
+Junibackens skola
+Junsele skola
+Jämshögs skola
+Jämtlands Vux Berg
+Jämtlands Vux Bispgården
+Jämtlands Vux Bräcke
+Jämtlands Vux Östersund
+Jämtlands anpassade gymnasieskola
+Järbo friskola
+Järdala resursskola
+Järfälla Lärcentrum
+Järfälla Språkcentrum
+Järfälla gymnasium Barkarby
+Järfälla gymnasium Jakobsberg
+Järla skola
+Järlåsa skola
+Järna Naturbruksgymnasium
+Järna friskola
+Järnboås skola
+Järpås skola
+Järva Gymnasium
+Järva VIP anpassad grundskola
+Järva VIP anpassad gymnasieskola
+Järvastadens skola
+Järven anpassad skola
+Jävre skola
+Jönköpings musikgymnasium
+Jönsbergska Idrottsskolan Norrköping
+Jönåkers skola
+Jössefors skola
+KLARA Teoretiska Gymnasium Göteborg Postgatan
+KLARA Teoretiska Gymnasium Göteborg Vallgatan
+KLARA Teoretiska Gymnasium Linköping
+KLARA Teoretiska Gymnasium Malmö
+KLARA Teoretiska Gymnasium Sollentuna
+KLARA Teoretiska Gymnasium Stockholm Norra
+KLARA Teoretiska Gymnasium Stockholm Södra
+KLARA Teoretiska Gymnasium Stockholm Östra
+KLARA Teoretiska Gymnasium Sundsvall
+KLARA Teoretiska Gymnasium Västerås
+KMS Kullaviks Montessoriskola
+Kajan anpassad grund och gymnasieskola
+Kalknäs skola
+Kallingeskolan AG
+Kalmar Centrumskola
+Kalmar Waldorfskola
+Kalvsvik skola
+Kangos Kultur- o ekologiskola
+Kapareskolan A-D
+Kapareskolan E-H
+Kardemumma Anpassad Grundskola
+Kareby skola
+Karesuando skola
+Karl Johansskolan
+Karlberg anpassad grund- och gymnasieskola
+Karlbergs skola
+Karlbo skola
+Karlshamns Montessoriskola
+Karlskoga Idrottsgymnasium
+Karlskrona Montessorifriskola
+Karlskrona Resursskola Aklejaskolan
+Karlskrona anpassade grundskola
+Karlstads Globala Gymnasium
+Karlstads gymnasieingenjörsutbildning
+Karolinska gymnasiet ES
+Karolinska gymnasiet NA
+Karolinska gymnasiet NB
+Karolinska gymnasiet SA
+Karsby International School
+Karungi skola
+Kasamarks skola
+Kassmyraskolan AGR
+Katarina Norra skola
+Katarina Södra skola
+Katolska skolan av Notre Dame
+Kattarps skola
+Kaxås skola
+Kevinge anpassad skola
+Kiaby skola LM
+Kila skola
+Kilbo skola
+Killhult skola
+Kingelstad Byskola
+Kinnareds skola
+Kiruna Lärcentra
+Kista International School
+Kista grundskola
+Kitas Ekonomi
+Kitas Gymnasium
+Kitas Natur
+Klagstorps skola
+Klaragymnasiet med internat
+Klevshults skola
+Klippans anpassade gymnasieskola
+Klockargårdens skola
+Klockarhagsskolan Rosen
+Klockrike skola
+Klämmestorpsskolan LM
+Klässbols skola
+Klöverbackens skola
+Klövsjö skola
+Knivsta Anpassad Grundskola
+Knut Lundmarkskolan
+Knutby skola
+Knåda skola
+Kode skola
+KomVux Nora
+Kometskolan Introduktionsprogram
+Kommunal Vuxenutbildning Simrishamn
+Kommunal vuxenutbildning i Härnösand
+Kommunala aktivitetsansvaret
+Kommunövergripande särskilda undervisningsgrupper
+Kompetenscentrum SFI
+Kompetenscentrum Vuxnas Lärande
+Kompetenscentrum anpassad utbildning för vuxna
+Kompetenscentrum för flerspråkighet
+Kompetensutvecklingsinstitutet vux grund och gy
+Komvux Bråvalla
+Komvux Burlöv
+Komvux Dals-Ed Utsikten
+Komvux GR
+Komvux GY
+Komvux Grundvux
+Komvux Helsingborg
+Komvux Helsingborg Lärvux
+Komvux Kista
+Komvux Lekebergsskolan
+Komvux Liljeholmen
+Komvux LÄ
+Komvux Malmö ABF
+Komvux Malmö Agnesfrid
+Komvux Malmö Astar
+Komvux Malmö Hvilan
+Komvux Malmö Jensen
+Komvux Malmö Life Science
+Komvux Malmö Merit
+Komvux Malmö Movant
+Komvux Malmö Restaurangskola
+Komvux Norra Västmanland
+Komvux Rinkeby
+Komvux SFI Dals-Ed Utsikten
+Komvux SFI Hässleholms Kommun
+Komvux Sjöbo
+Komvux Skärholmen
+Komvux Södermalm
+Komvux Tjörn
+Komvux Värmdö
+Komvux Västervik
+Komvux Vård och omsorg
+Komvux grundläggande egen
+Komvux gymnasiala kurser egen
+Komvux gymnasiala kurser extern
+Komvux i Höör
+Komvux i Norrköping
+Komvux i Älvkarleby
+Komvux i Österåkers kommun
+Komvux i Österåkers kommun    SFI
+Komvux i Österåkers kommun    Särvux
+Komvux sfi egen
+Komvux som anpassad utbildning Partille
+Komvux stödjande kurser
+Komvux Örebro - Talenti Vux extern distans
+Kordelia Friskola AB
+Korsberga skola
+Kraftverkets fritidshem
+Kramfors anpassade gymnasium
+Kramfors gymnasium
+Krika Bygdeskola
+Kristinebergskolan anpassad grundskola
+Kristinedalskolan AGR Anpassad Grundskola
+Kristinedalskolan AGR Resursskola
+Kristineskolan Säter
+Kristna skolan
+Kristna skolan Oasen
+Kristvallabrunn skola
+Krokoms komvux
+Krokoms som anpassad utbildning
+Kroksbäcksskolan - Anpassad grundskola
+Kronoberg Skola
+Kronobergshed skola
+Kronoparksskolan AG
+Krusboda skola
+Krylbo skola
+Kräklingbo skola
+Kubelidens Montessoriskola
+Kubikskolan Dibber
+Kuggebodaskolan AG
+Kugghjulets resursskola
+Kullens skola
+Kullsvedsskolans anpassade gymnasieskola
+Kulltorpskolan L
+Kulltorpskolan M
+Kulturama Gymnasium Natur
+Kulturama gymnasium
+Kulturskolan Raketen
+Kumla anpassade gymnasium
+Kumla gymnasium
+Kumla skola
+Kung Karls skola
+Kung Saga Gymnasium
+Kungliga Svenska Balettskolan
+Kungsgårdens skola
+Kungshamns skola
+Kungsholmens friskola
+Kungsholmens grundskola
+Kungsörs Gymnasium
+Kungsörs anpassade grundskola
+Kunskapscentrum Nordost
+Kunskapscentrum Nordost SFI
+Kunskapscompaniets Gymnasium i Eskilstuna
+Kunskapsgymnasiet Göteborg
+Kunskapsgymnasiet Malmö
+Kunskapsgymnasiet Norrköping
+Kunskapsgymnasiet Stockholm
+Kunskapsgymnasiet Stockholm Södermalm
+Kunskapsgymnasiet Uppsala
+Kunskapsgymnasiet Västerås
+Kunskapsnavet Kalmar kommun
+Kunskapsparken SFI
+Kunskapsparken Vuxenutbildning
+Kunskapsskolan Borlänge
+Kunskapsskolan Borås
+Kunskapsskolan Enköping
+Kunskapsskolan Enskede
+Kunskapsskolan Fruängen
+Kunskapsskolan Gävle
+Kunskapsskolan Helsingborg
+Kunskapsskolan Jönköping
+Kunskapsskolan Katrineholm
+Kunskapsskolan Krokslätt
+Kunskapsskolan Landskrona
+Kunskapsskolan Lund
+Kunskapsskolan Motala
+Kunskapsskolan Nacka
+Kunskapsskolan Norrköping
+Kunskapsskolan Nyköping
+Kunskapsskolan Saltsjöbaden
+Kunskapsskolan Spånga
+Kunskapsskolan Trelleborg
+Kunskapsskolan Tumba
+Kunskapsskolan Tyresö
+Kunskapsskolan Täby
+Kunskapsskolan Uppsala
+Kunskapsskolan Uppsala Norra
+Kunskapsskolan Varberg
+Kunskapsskolan Västerås
+Kunskapsskolan Ystad
+Kunskapsskolan Örebro
+Kunskapsskolans Resursskola
+Kvalitet och utveckling
+Kvarnbackskolan Hissmoskolan
+Kvarnhagsskolan AGR
+Kvarnstenens skola
+Kvarnsvedens skola
+Kvarsebo skola
+Kvidinge skola
+Kvillsfors skola
+Kyrkbyns skola
+Kyrkheddinge skola
+Kyrkhults skola
+Kyrkmons skola
+Kyrktåsjö skola
+Kälarne skola
+Källan skola
+Källbackens Fritidshem
+Källby gård
+Källdal anpassad grundskola
+Källängens skola
+Käppala skola
+Kärda skola
+Kärlekens skola ag
+Kärna skola
+Kärnhuset Dibber
+Kärnpunkten resursskola
+Kättinge skola
+Kävlinge Lärcentrum SFI
+Kållekärr skola
+Kårsta skola
+Köpinge skola LM
+Köpingebro skola
+Köpings skola
+Köpmanholms skola
+Kövra Byskola
+LBS Kreativa Gymnasiet Borås
+LBS Kreativa Gymnasiet Göteborg
+LBS Kreativa Gymnasiet Halmstad
+LBS Kreativa Gymnasiet Helsingborg
+LBS Kreativa Gymnasiet Jönköping
+LBS Kreativa Gymnasiet Kungsbacka
+LBS Kreativa Gymnasiet Linköping
+LBS Kreativa Gymnasiet Lund
+LBS Kreativa Gymnasiet Malmö
+LBS Kreativa Gymnasiet Nyköping
+LBS Kreativa Gymnasiet Stockholm Norra
+LBS Kreativa Gymnasiet Stockholm Södra
+LBS Kreativa Gymnasiet Trollhättan
+LBS Kreativa Gymnasiet Växjö
+LBS Kreativa Gymnasiet Örebro
+LIA-skolan Örebro
+LM Engströms gymnasium
+LTG Komvux
+Labanskolan anpassad grundskola
+Labanskolan anpassad gymnasieskola
+Lagga skola
+Laggarbergs skola
+Lagmansskolan Alfa MH
+Lagmansskolan Beta MH
+Lammhults skola
+Landeryds skola
+Landskrona School of Sports AB
+Landskronas anpassade gymnasieskola
+Lane Ryrs skola
+Lapplands Gymnasium Jokkmokk
+Lapplands Gymnasium Pajala
+Lars Kaggskolan
+Lars-Erik Larssongymnasiet
+Larv Tråvad skola
+Laröds skola
+Latorps skola
+Laxsjö skola
+Lekebergsskolan SFI
+Leksands gymnasium
+Lekstorpsskolan A
+Lekstorpsskolan B
+Lena skola
+Lerdala skola
+Lessebo Gymnasium
+Levene skola
+Liatorps skola
+Lichron Teknikgymnasium Skövde
+Lidens skola
+Lidhults skolan
+Lidingö - Anpassad grundskola
+Lidingö komvux
+Lidingö komvux SFI
+Lidingö komvux som anpassad utbildning
+Lilla Adolf Fredriks skola
+Lilla Alby skola
+Lilla Edets anpassade grundskola
+Lilla Kulturama
+Lilla Nacka Skola
+Lilla Parkskolan
+Lilla Sätraskolan
+Lillerudsgymnasiet AB
+Lilleskogs skola
+Lillmons skola
+Lillängets skola
+Lillåkers skola
+Lillåns Södra skola
+Limhamnsskolan Sjöstaden
+Lina grundskola
+Linblommans skola
+Lindbacka anpassad grundskola
+Lindbackens skola
+Lindbladsskolan LM
+Lindens skola
+Lindeparkens anpassade gymnasieskola
+Linderås skola
+Linderöds skola L
+Lindeskolan anpassad gymnasieskola
+Lindängeskolan - Anpassad grundskola
+Lindénska skolan
+Lingbygdens Friskola
+Lingenässkolan A
+Lingenässkolan F
+Lingenässkolan L
+Lingenässkolan M
+Lingua Montessoriskola
+Linköpings idrottsgymnasium
+Ljungbackens fritidshem
+Ljungbackens skola
+Ljungdalens skola
+Ljunghaga resursskola
+Ljunghaga skola
+Ljungsbro resursskola
+Ljungviksskolan skolenhet A
+Ljungviksskolan skolenhet B
+Ljusdals anpassade grundskola
+Ljusfalls skola
+Ljustadalens skola
+Ljusterö skola
+Ljustorps skola
+Lofsdalens skola
+Loftahammars skola
+Lorensborgsskolan - Anpassad grundskola
+Los skola
+Lotorps skola
+Lucksta skola
+Ludvigsborgs anpassade grundskola
+Ludvigsborgs friskola
+Lugnets skola
+Luleå Internationella grundskola
+Lummerskolan ag
+Lunaskolan Bromma
+Lunaskolan Södra
+Lunaskolan anpassad grundskola
+Lund International School
+Lundellska skolan
+Lunds Dans- o Musikalgymnasium
+Lunds Montessorigrundskola
+Lunds Waldorfskola
+Lunds skola
+Lundsbergs grundskola
+Lundsbergs gymnasieskola
+Lurs skola
+Lustigkulla skola
+Lyktans fritidshem
+Lyrestads skola
+Lysviks skola
+Länna skola
+Lärande Grundskola Fresta
+Lärande Grundskola Magneten
+Lärande Grundskola Oden
+Lärande Grundskola Skapa
+Lärande Grundskola Södra
+Lärande Grundskola Vira
+Lärande Grundskola Östra
+Lärbro skola
+Lärcentrum Anpassad utbildning
+Lärcentrum Malung
+Lärcentrum SFI
+Lärcentrum komvux
+Läroviken - Lärvux
+Läroviken - SFI
+Läsebo föräldrakooperativ Nallen
+Långareds skola
+Långaröd skola
+Långbergsskolan Anpassad grundskola
+Långhundra skola
+Långsele skola
+Långseruds Friskola
+Långsättersskolan Anpassad grundskola
+Långvinkeln Dibber
+Löa skola
+Löderups skola
+Lögdeå skola
+Lövestads skola
+Lövsta Anpassad grundskola
+Magelungens Grundskola Gävle
+Magelungens Grundskola Helsingborg
+Magelungens Grundskola Jönköping
+Magelungens Grundskola Karlaskolan Göteborg
+Magelungens Grundskola Långbropark
+Magelungens Grundskola Solna
+Magelungens Grundskola Södermalm
+Magelungens Grundskola Södertälje
+Magelungens Grundskola Uppsala
+Magelungens Grundskola Västerås
+Magelungens Grundskola Älvsjö
+Magelungens Grundskola Örebro
+Magelungens Gymnasium Danvikstull
+Magelungens Gymnasium Göteborg
+Magelungens Gymnasium Jönköping
+Magelungens Gymnasium Liljeholmen
+Magelungens Gymnasium Uppsala
+Magelungens gymnasium Södermalm
+Magnus Ladulåsskolan
+Magra skola
+Maja Beskowskolan
+Malma resursskola
+Malmbäck skola
+Malmen Montessori
+Malmens friskola
+Malmens skola
+Malmsjö skola
+Malmö Citadellsgymnasium
+Malmö Friskola
+Malmö Idrottsgrundskola
+Malmö Idrottsgymnasium anpassad
+Malmö International School
+Malmö Magistratsgymnasium
+Malmö Montessoriskola
+Malmö Neptunigymnasium
+Malmö Restaurangskola
+Malmö Restaurangskola anpassad
+Malsta skola
+Malung-Sälens gymnasieskola
+Malungsfors skola
+Malå gymnasieskola
+Marbäcks skola
+Maria Elementarskola
+Maria Parkskolan
+Maria Parkskolans anpassade grundskola
+Marieby skola
+Mariedalskolan Anpassad Grundskola
+Mariefreds skola
+Marielund- Språkskolan
+Marina läroverket i Danderyd
+Marmorbyns skola
+Marstrands skola
+Martin Koch-gymnasiet
+Martinskolan Söders waldorfskola
+Maskinentreprenörerna Vuxenutbildning
+Matfors skola
+Matteusskolans anpassade grundskola
+Medåkers Friskola
+Mega Musik gymnasium
+Mehede skola
+Mellanhedsskolan - Anpassad grundskola
+Mellansjö grundsärskola
+Mellansjö skola
+Mellersta Förstadsskolan
+Mellersta Förstadsskolan - Anpassad grundskola
+Melleruds anpassade grundskola
+Midgårds skola
+Midgårdsskolan AGy
+Midgårdsskolan GY
+Midsommarkransens skola
+Milnerskolan MH
+Mimers Brunn Vittjärv
+Mimers Gymnasium Täby
+Min skola Norsborg
+Min skola Östermalm
+Misterhult skola
+Mjällby skola
+Mjölby vuxenutbildningen
+Mo Gård anpassad gymnasieskola
+Mo skola
+MoA Lärcentrum
+Modersmålscentrum i Lund
+Modersmålsundervisning och studiehandledning
+Mogata skola
+Mogärdeskolan anpassad grundskola
+Moholms skola
+Molla skola
+Montessori Bjerred
+Montessori Friskola Gotland
+Montessori Mondial Kista
+Montessori Mondial Kristianstad
+Montessori Mondial Kungsholmen
+Montessori Mondial Lidingö
+Montessori Mondial Linköping
+Montessori Mondial Lund
+Montessori Mondial Malmö
+Montessori Mondial Mälarhöjden
+Montessori Mondial Nacka
+Montessori Mondial Sandskogen
+Montessori Mondial Sjöstaden
+Montessorifriskolan i Eslöv
+Montessorifriskolan i Gislaved
+Montessoriskolan - Gustafslund
+Montessoriskolan Alexandra
+Montessoriskolan Casa
+Montessoriskolan Centrum
+Montessoriskolan Droppen
+Montessoriskolan Floda Säteri
+Montessoriskolan Fredsduvan
+Montessoriskolan Fyrkappan
+Montessoriskolan Globen
+Montessoriskolan Lindängen
+Montessoriskolan Pärlan
+Montessoriskolan Regnbågen
+Montessoriskolan Skäret
+Montessoriskolan Tellus
+Montessoriskolan Trilobiten
+Montessoriskolan Vigelsjö
+Montessoriskolan Växthuset
+Montessoriskolan i Falun
+Montessoriskolan i Skövde
+Montessoriskolan Älvkullen
+Mora Park Hölö
+Mora Parks skola
+Mora anpassad gymnasieskola
+Morabergs studiecentrum
+Morups friskola
+Morö backe skola
+Mosjö skola
+Motorbranschens Tekniska Gymnasium - Komvux
+Motorsportsgymnasiet i Anderstorp
+Movant vuxenutbildning - Göteborg
+Mullhyttans skola
+Mullsjö anpassad grundskola
+Munkedals anpassade grundskola
+Munkhätteskolan - Anpassad grundskola
+Munksunds skola
+Munspelets skola
+Munsö skola
+Musikgrundskolan Synkopen
+Musikkonservatoriet Falun
+Musikskolan Lilla Akademien
+Muskö skola
+Myggenäs skola
+Myranskolan LM
+Myrbacka skola
+Myresjö skola
+Myrsjö anpassade grund- och gymnasieskola
+Myrsjö resursskola
+Myrstugubergets Friskola
+Mälardalens Ridgymnasium Gustavsberg
+Mälardalens Ridgymnasium Västerås
+Mälardalens Tekniska Gymnasium
+Mälarhöjdens skola
+Målilla skola
+Mångkulturella enheten
+Möja skola
+Möklinta skola
+Möllebackens fritidshem
+Möllegårdens skola
+Mörarps skola
+Mörrums skola
+Mörsils skola Anpassad grundskola
+NTI Gymnasiet Borlänge
+NTI Gymnasiet Eskilstuna
+NTI Gymnasiet Helsingborg
+NTI Gymnasiet Johanneberg
+NTI Gymnasiet Karlstad
+NTI Gymnasiet Kristianstad
+NTI Gymnasiet Kronhus
+NTI Gymnasiet Luleå
+NTI Gymnasiet Lund
+NTI Gymnasiet Malmö
+NTI Gymnasiet Skövde
+NTI Gymnasiet Sollentuna
+NTI Gymnasiet Stockholm
+NTI Gymnasiet Sundsvall
+NTI Gymnasiet Södertälje
+NTI Gymnasiet Södertörn
+NTI Gymnasiet Umeå
+NTI Gymnasiet Uppsala
+NTI Gymnasiet Västerås
+NTI Gymnasiet Örebro
+NTI Handelsgymnasiet Göteborg
+NTI Handelsgymnasiet Stockholm
+NTI Vetenskapsgymnasiet Gävle
+NTI Vetenskapsgymnasiet Helsingborg
+NTI Vetenskapsgymnasiet Stockholm
+Nacka Enskilda Gymnasium
+Nacka Gymnasium
+Nacka Idrottsgrundskola
+Nacka Idrottsgymnasium
+Nacka Strands Gymnasium
+Nacka språk och utbildningsenhet
+Nacka vuxenutbildning
+Nanny Palmkvist skola
+Natur och Miljöskolan i Åmål
+Naturbruksgymnasiet i Burträsk
+Naturbruksskolan Svenljunga
+Naturbruksskolan Svenljunga - yrkesvux
+Naturbruksskolan Sötåsen
+Naturbruksskolan Sötåsen - yrkesvux
+Naturbruksskolan Uddetorp
+Naturbruksskolan Uddetorp - yrkesvux lantbruk
+Naturbruksskolan Uddetorp - yrkesvux trädgård och djur
+Naturlära i Hälsingland
+Nederborgs skola
+Neglinge skola
+Nibbleskolan anpassad grundskola
+Nicolaiskolans anpassade gymnasieskola
+Nikkala skola
+Nilaskolan Fritidshem
+Nils Fredriksson Gymnasium
+Nils Fredriksson Vuxenutbildning
+Nils Holgersson vuxenutbildning
+Nils Holgerssongymnasiet i Skurup
+Nils Holgerssonskolan
+Nils Månssons Friskola
+Njupkärrs skola
+Njurunda Friskola
+Njutångers skola
+Noas Ark
+Noblaskolan Boden
+Noblaskolan Brevik
+Noblaskolan Hagaberg
+Noblaskolan Hemdal
+Noblaskolan Kviberg
+Noblaskolan Lindholmen
+Noblaskolan Lännersta
+Noblaskolan Löddeköpinge
+Noblaskolan Mariastaden
+Noblaskolan Nacka Strand
+Noblaskolan Rönninge
+Noblaskolan Saltsjö-Boo
+Noblaskolan Solna
+Noblaskolan Sundbyberg
+Noblaskolan Täby
+Noblaskolan Vellinge
+Noblaskolan Västra Ingelstad
+Nordanstigs gymnasium
+Nordanö skola
+Nordic International School Kalmar
+Nordic International School Karlstad
+Nordic International School Nacka
+Nordic International School Norrköping
+Nordic International School Trollhättan
+Nordic International School Ystad
+Nordiska Musikgymnasiet
+Nordmalings gymnasieskola
+Nordmalings vuxenutbildning
+Nordmarkens skola Anpassad grundskola
+Nordmarkens skola H
+Nordmarkens skola L
+Nordmarkens skola M
+Nordmarks skola
+Nordskogens skola
+Norgården anpassad grundskola
+Norje skola
+Normlösa skola
+Norra Björke fritidshem
+Norra Lyckanskolan
+Norra Skolan
+Norra Vallbyskolan
+Norra Ängby skola
+Norretullskolan A
+Norretullskolan H
+Norrtullskolan B
+Norrtälje Kompetenscentrum
+Norrtälje anpassad grundskola
+Norrtälje anpassad gymnasieskola
+Norsjö anpassad gymnasieskola
+Norsjö gymnasium
+Norsjöskolan anpassad grundskola
+Norsjöskolan fritidshem
+Nosabyskolan H
+Nosabyskolan MH
+Nossebro anpassad grundskola
+Nova Montessoriskola
+Nova gymnasium
+Nya Centralskolan i Virserum AB
+Nya Elementar
+Nya Läroverket
+Nya Läroverket Bergnäset
+Nya Läroverket Svartöstaden
+Nya Munken
+Nya Rydsskolan
+Nya Rydsskolan- anpassad grundskola
+Nya Rösparksskolan
+Nya Rösparksskolan anpassad grundskola
+Nya Skolan Egna Hem
+Nyanländas lärande GR
+Nyboda anpassad grundskola
+Nyboda skola
+Nybro Montessoriskola
+Nye skola
+Nyeds skola
+Nygårdskolan A
+Nyhammars skola
+Nyhedens skola
+Nyhemsskolan Varbergs Krist sk
+Nykils skola
+Nykroppa skola
+Nykyrka skola
+Nyköpings Enskilda Grundskola
+Nyköpings Enskilda Gymnasium
+Nyköpings gymnasium Gripen
+Nyköpings gymnasium Nico
+Nyköpings gymnasium Skavsta
+Nyköpings högstadium Alpha
+Nyköpings högstadium Omega
+Nyköpings högstadium anpassad grundskola
+Nyköpings resursskola
+Nynäshamns anpassade gymnasieskola
+Nynäshamns gymnasium
+Nyponets skola
+Nyströmska anpassad grundskola
+Nyströmska anpassad gymnasieskola
+Nyströmska skolan - SFI
+Nyströmska skolan - vux
+Nyströmska skolan anpassad utbildning för vuxna
+Nysäters skola
+Nytorps Hästgymnasium
+Nyvångs skola
+Näktergalens skola
+Närkes Kils skola
+Näsbypark resursskola
+Näshulta friskola
+Nässjö lärcenter
+Nässjö lärcenter SFI
+Nässjö lärcenter anpassad utbildning för vuxna
+Näsums skola
+Näsvikens skola
+Näsåkers skola
+Nävekvarns skola
+Nävertorp anpassad skola
+Nårunga skola
+Nöbbele skola
+Oasens skola
+Obbola skola
+Observatorielundens skola
+Od skola
+Odensala skola
+Odensalaskolans anpassad grundskola
+Odensalaskolans grundskola
+Odensvi skola
+Okome skola
+Ol Andersskolan
+Olaus Petriskolan
+Oleby skola
+Olinsgymnasiet Sparresäter
+Olinsgymnasiet Tibro
+Olinsgymnasiet i Götene
+Olinsgymnasiet i Skara
+Olsboskolan anpassad grundskola
+Olsboskolan anpassad gymnasieskola
+Olympicaskolan Hedemora
+Olympicaskolan Håksberg
+Olympicaskolan Skålö
+OneSchool Global Nyby Campus Grundskola
+OneSchool Global Nyby Campus Gymnasium
+Orminge skola
+Ornäs skola
+Ornö skola
+Orrefors skola
+Orrvikens skola
+Orust Montessoriskola
+Orust Waldorfskola
+Oscarsgymnasiet Anpassad Gymnasieskola
+Oscarsgymnasiet E
+Otterstad skola
+Oxievångsskolan - Anpassad grundskola
+Pajala Centralskola
+Pajala Lärcentra
+Pajala Lärcentra SFI
+Pajala Lärcentra anpassad utbildning
+Paradisskolan anpassad grundskola
+Paradisskolans fritidshem
+Parkskolan L
+Parkskolan M
+Partille Gymnasium
+Paulinska skolan
+Peabskolan Göteborg
+Peabskolan Malmö
+Peabskolan Solna
+Pedagogiskt stödcentrum
+Per Olsskolan
+Persbergs skola
+Perstorp Tekniska Gymnasium
+Petrus Magni skola
+Pihlskolan gymnasium
+Pihlskolan vuxenutbildning
+Pilens Montessoriskola
+Pilkrogs friskola
+Polhem anpassad grundskola
+Polhem anpassad gymnasieskola
+Polhems anpassade gymnasieskola
+Pontos Grundskola
+Pops Academy Karl Johan
+Pops Academy Östermalm
+Potentia Education
+Praktiska Gymnasiet Borås
+Praktiska Gymnasiet Bromma
+Praktiska Gymnasiet Falun
+Praktiska Gymnasiet Gamlestaden
+Praktiska Gymnasiet Gävle
+Praktiska Gymnasiet Halmstad
+Praktiska Gymnasiet Helsingborg
+Praktiska Gymnasiet Jönköping
+Praktiska Gymnasiet Kalmar
+Praktiska Gymnasiet Karlstad
+Praktiska Gymnasiet Kristianstad
+Praktiska Gymnasiet Kungsbacka
+Praktiska Gymnasiet Liljeholmen
+Praktiska Gymnasiet Linköping
+Praktiska Gymnasiet Luleå
+Praktiska Gymnasiet Majorna
+Praktiska Gymnasiet Malmö City
+Praktiska Gymnasiet Malmö Limhamn
+Praktiska Gymnasiet Märsta
+Praktiska Gymnasiet Nacka
+Praktiska Gymnasiet Norrköping
+Praktiska Gymnasiet Nykvarn
+Praktiska Gymnasiet Nyköping
+Praktiska Gymnasiet Skellefteå
+Praktiska Gymnasiet Skövde
+Praktiska Gymnasiet Sundsvall
+Praktiska Gymnasiet Södertälje
+Praktiska Gymnasiet Täby
+Praktiska Gymnasiet Uppsala
+Praktiska Gymnasiet Västerås
+Praktiska Gymnasiet Växjö
+Praktiska Gymnasiet Ystad
+Praktiska Gymnasiet Örebro
+Praktiska Gymnasiet Örnsköldsvik
+Prins Wilhelm Yrkesgymnasium
+Prins Wilhelm anpassade Yrkesgymnasium
+ProCivitas Privata Gymnasium Helsingborg
+ProCivitas Privata Gymnasium Karlberg
+ProCivitas Privata Gymnasium Lund
+ProCivitas Privata Gymnasium Malmö
+ProCivitas Privata Gymnasium Stockholm
+ProCivitas Privata Gymnasium Uppsala
+ProCivitas Privata Gymnasium Växjö
+Processtekniska Gymnasiet
+Profilskolan Excel
+Prolympia Göteborg
+Prolympia Växjö
+Prästbols skola
+Prästbordets skola
+Prästängsskolan A
+Prästängsskolan B
+Prästängsskolans anpassade grundskola
+Pusselbitens anpassade skola Dalby
+Pusselbitens skola Dalby
+Påarp skolas anpassade grundskola
+Påarps skola
+Påhlmans gymnasium
+Påskagängets skola
+Rabbalshede skola
+Ramkvilla skola
+Ramlösa friskola
+Ramsele skola
+Ramsta skola
+Ranagårdsskolan ag
+Ransbergs skola
+Ransta skola
+Raoul Wallenbergskolan Bagartorp
+Raoul Wallenbergskolan Bromma
+Raoul Wallenbergskolan Jungfrusund
+Raoul Wallenbergskolan Järvastaden
+Raoul Wallenbergskolan Källberga
+Raoul Wallenbergskolan Lidköping
+Raoul Wallenbergskolan Skövde
+Raoul Wallenbergskolan Uppsala
+Raus Planterings skola
+Realgymnasiet  Västerås
+Realgymnasiet Borlänge
+Realgymnasiet Borås
+Realgymnasiet Eskilstuna
+Realgymnasiet Gävle
+Realgymnasiet Göteborg
+Realgymnasiet Halmstad
+Realgymnasiet Helsingborg
+Realgymnasiet Karlstad
+Realgymnasiet Linköping
+Realgymnasiet Luleå
+Realgymnasiet Lund
+Realgymnasiet Malmö
+Realgymnasiet Norrköping
+Realgymnasiet Nyköping
+Realgymnasiet Stockholm
+Realgymnasiet Trollhättan
+Realgymnasiet Uppsala
+Realgymnasiet i Skövde
+Realgymnasiet i Sundbyberg
+Realgymnasiet i Sundsvall
+Realgymnasiet i Växjö
+Realgymnasiet Örebro
+Regnbågens fritidshem
+Regnbågens skola
+Rejmyre skola
+Resarö skola
+Resele skola
+Resurscentrum modersmålsenheten
+Resursskola Marieberg
+Resursskola Norrhammar
+Resursskola Orrholmen
+Resursskola Rud
+Resursskola Sjungande dalen
+Resursskola Örsholmen
+Resursskolan UngArt
+Resursskolan i Strängnäs
+Resursskolan vid Martinskolan
+Revinge skola
+Riala skola
+Rickarums skola
+Riksgymnasiet DH
+Rikstens skola
+Rindö skola
+Ringarums skola
+Ringeltaubska skolan
+Rinkaby skola LM
+Rinmangymnasiet Anpassad gymnasieskola
+Rinnagårdens förskola och fritidshem
+Rinnens skola
+Ro integrerade elever anpassad grundskola
+Robinson Fanna
+Robinson Husberg
+Robinson Svedia
+Robinson Valsjön
+Robinson Vårfru
+Rodrets friskola
+Rosendals skola
+Rosengårdsskolan - Anpassad grundskola
+Rosholmen Education Academy AB
+Roslags Kulla skola
+Rosviks skola
+Rot skola
+Rotebergs skola
+Rudbeck AST-enheten
+Rudbeck Ekonomiprogrammet
+Rudbeck El- och Teknikprogrammet
+Rudbeck Humanistiska och Estetiska programmet
+Rudbeck Introduktionsprogrammet och Löpargymnasiet
+Rudbeck Naturvetenskapsprogrammet
+Rudbeck Samhällsvetenskapsprogrammet
+Rudbeckianska gymnasiet
+Rudbecksgymnasiet EK
+Rudbecksgymnasiet FS
+Rudbecksgymnasiet IB
+Rudbecksgymnasiet NA
+Rudbecksgymnasiet SA
+Rudbecksgymnasiet VO
+Rudboda skola
+Rudolf Steinerskolan Göteborg
+Rumskulla skola
+Runby skola
+Runemo skola
+Runmarö skola
+Runnerydsskolan F
+Runstyckets skola
+Rydaholms skola
+Rydbo friskola
+Rydbo skola
+Rydsbergsskolan Norr
+Rydsbergsskolan Söder
+Ryfors skola
+Rytmus Borlänge
+Rytmus Göteborg
+Rytmus Malmö
+Rytmus Stockholm
+Rytmus Örebro
+Rälla skola
+Rälsen AB i Norrviken
+Rälsen AB i Viby
+Rätans skola
+Rävemåla Friskola
+Råby skola
+Råbyskolan Anpassad skola
+Råda skola
+Rådmansvångens skola
+Rådmansvångens skola Källängen
+Rådmansö skola
+Rågsveds grundskola
+Rånäs skola
+Råsunda Centralskola
+Råsunda skola
+Råå Södra skola
+Röbäcks skola
+Röda Berga
+Rödsta skola
+Rödåsels skola
+Rödöns skola
+Rök skola
+Rönnbäcksskolan anpassad gymnasieskola
+Rönnbäcksskolans grundsärskola
+Rönneshytta skola
+Rönninge gymnasium
+Rönninge skola
+Rönnowska skolan
+Rönnäng skola
+Rörbäcksnäs skola
+Rörviks skola
+Rörö skola
+Rösebo skola
+Röselidsskolan skolenhet A
+Röselidsskolan skolenhet B
+SFI Kristianstad
+SFI Salem
+SFI Trelleborg
+SFI Varberg
+SKF Tekniska Gymnasium
+SSK Stöd
+SYAB Transportgymnasium
+Sally Bauerskolans Högstadium
+Saltsjöbadens samskola
+Saltängens skola
+Sameskolan Gällivare
+Sameskolan Jokkmokk
+Sameskolan Karesuando
+Sameskolan Kiruna
+Sanda högstadium
+Sanda skola
+Sandalidens skola
+Sandarne skola
+Sandbacka skola
+Sandbergska skolan
+Sandfors fritidshem
+Sandsbro skola
+Sandsjöfors skola
+Sanduddens skola
+Sandvalla skola
+Sandvikens Internationella Montessoriskola
+Sangis skola
+Sankt Anna skola
+Sankt Olofs skola
+Sankt Thomas Skola
+Sannerudsskolan APG
+Sattajärvi skola
+Saxnäs skola
+Segersta skola
+Segragymnasiet Klippan
+Selja-Långlets friskola
+Senapskornet Skrea fritidshem
+Sexdrega skola
+Sickla anpassade grundskola
+Sickla skola
+Sidsjö Fristående Grundskola
+Sigfridsborgs skola
+Signebyns Friskola
+Sigrid Rudebecks gymnasium
+Sigtuna kompetenscenter
+Siljansnäs skola
+Silverbäcken Dibber
+Silverdalens skola
+Silverdansens anpassade grundskola
+Silverdansens skola
+Silvertärnan Väster
+Silvertärnan Öster
+Sjulsmarks skola
+Sjungande dalens skola
+Sjögrenska gymnasiet
+Sjölins Gymnasium Göteborg
+Sjölins Gymnasium Malmö
+Sjölins Gymnasium Nacka
+Sjölins Gymnasium Södermalm
+Sjölins Gymnasium Vasastan
+Sjölunda skola
+Sjösa skola
+Sjöviksskolans anpassade grundskola
+Skaftö skola
+Skalmans Hus
+Skandinaviska Skolan Maputo
+Skandinaviska Skolan i Madrid
+Skandinaviska skolan Costa Blanca
+Skandinaviska skolan Hamburg
+Skanörs skola
+Skarphagsskolans anpassade grundskola
+Skarpnäcks skola
+Skattunge Friskola
+Skebo skola
+Skeda skola
+Skederids skola
+Skegrie skola
+Skellefteå fjärrgymnasium
+Skeppet GRAN
+Skepptuna skola
+Skogsbacksskolan Trampolinen
+Skogsbacksskolans AGR
+Skogsbo skola
+Skogsduvan Mossebo
+Skogshagas anpassade grundskola
+Skogshöjdens skolas fritidshem
+Skogså fritidshem
+Skolan Bergius
+Skolan LÄR
+Skolan på Ön
+Skrea skola
+Skrylleängs Montessoriskola
+Skultuna gymnasieenhet
+Skuru-Duvnäs resursskola
+Skuttunge skola
+Skvaderns gymnasieskola
+Skyttbrinks gymnasium
+Skytteanska skolan
+Skyttorps skola
+Skärgårdsgymnasiet Norrtälje
+Skärhamns skola
+Skärsta Friskola
+Skärstad skola
+Skärsätra skola
+Skå skola
+Skårbyskolan Norr
+Skårbyskolan Söder
+Sköldinge skola
+Sköllersta skola
+Skönsmons skola
+Slaka skola
+Slestad resursskola
+Slimmingeby skola
+Slottsbrons skola
+Slottshöjdens Skola
+Slottsjords Norr ag
+Slussen resursskola
+Slussfors skola
+Slättängsskolan LM
+Smedingeskolan Norr
+Smedingeskolan Söder
+Smedsby skola
+Smedstorps skola
+Smultronstället fritidshem
+Smögens skola
+Snitz Grundskola
+Snitz Gymnasium
+Sockerbruksskolans - Anpassad grundskola
+Sofia skola
+Sofiaskolan Gävle AB
+Sofiaängens skola
+Solbackeskolan med plac Klara
+Solberga anpassad grundskola
+Solberga by anpassad grundsskola
+Solede skola
+Solgårdens fritidshem
+Solhaga anpassade gymnasieskola
+Solhemsängens skola
+Sollefteå Anpassad Grundskola
+Sollefteå gymnasium
+Sollentuna musikklasser
+Solna Enskilda Skola
+Solna Gymnasium
+Solna anpassad grundskola
+Solna anpassad gymnasieskola
+Solna anpassad gymnasieskola nationellt program
+Solna skolor modersmålsenheten
+Solna vuxenutbildning
+Solna vuxenutbildning SFI
+Solstadens skola
+Solängen anpassad grundskola
+Sommarskola Stockholm stad
+Sommens skola
+Sotenäs Gymnasieskola
+Sotenäs Symbioscentrum SFI
+Sotenäs Symbioscentrum VUX
+Sparre Gymnasium
+Sparreholms skola
+Specialpedagogisk resursgrupp
+Spira Teoretiska Gymnasium Lund
+Spira Teoretiska Gymnasium Stora Essingen
+Spirande lärande i Täby AB
+Språk- och kompetenscentrum
+Språk- och mottagningsenheten
+Språkcentrum Modersmålsenheten
+Spängerskolan LMH
+Spånga grundskola
+St Olofsskolan
+Staffan anpassad grundskola
+Staffanstorps Montessoriskola
+Stallets Skola
+Stavby skola
+Stegehus resursskola
+Stenbergaskolan anpassad grundskola
+Stenbockskolan AGR
+Stene skola
+Stenhammarskolans anpassade grundskola
+Steningehöjdens skola
+Stenkulaskolan Linden
+Stenkyrka skola
+Stensbo skola
+Stensele skola
+Stensätter anpassad skola
+Stenungsunds Montessoriskola
+Sthlms intensivsv f akadem
+Sticklinge skola
+Stiernhööks anpassade gymnasieskola
+Stiftelsen BMSL
+Stiftelsen Backatorpsskolan
+Stiftelsen Dunkers förskola och skola
+Stiftelsen Lagnövallen
+Stiftelsen Rudolf Steinerskolan
+Stiftelsen The English School Gothenburg
+Stiftelsen Önums friskola
+Stige skola
+Stigens Friskola AB
+Stigslunds skola
+Stigtomta skola
+Stimmets anpassad grundskola
+Stimmets skola
+Stocka skola
+Stockaryds skola
+Stockholm International Academy Hägersten
+Stockholm International Academy Häggvik
+Stockholms Estetiska Gymnasium
+Stockholms Idrottsgymnasium
+Stockholms Montessoriskola Anne Frank
+Stockholms Montessoriskola Färgargårdstorget
+Stora Hammars skola
+Stora Mellby skola
+Stora Mellösa skola
+Stora Segerstad Naturbrukscentrum
+Stora Skedvi skola
+Stora Sätra anpassad grundskola
+Stora Sätraskolan
+Stora Vallaskolan
+Stordammens skola
+Storebro skola
+Storumans lärcentrum
+Strandbackens resursskola
+Strandskolan Montessoriföreningen i Kungälv
+Strängnäs Montessoriskola
+Stråket anpassad grundskola
+Stråtjära skola
+Strömbacka Hugin
+Strömbacka Magne
+Strömbacka Magne Anpassad gymnasieskola
+Strömbacka Mimer
+Strömbacka Mjölner
+Strömbacka Munin
+Strömma Naturbrukscentrum
+Strömnäs skola
+Strömsbergs Friskola
+Strömsbro skola
+Strömsholms skola
+Studium Anpassad Vuxenutbildning
+Studium Bageri
+Studium Barn och Fritid
+Studium Fristående gymnasiala ämnen
+Studium Restaurang
+Studium Trädgård
+Studium Vård och Omsorg
+Stugsunds skola
+Stånga skola
+Stöcke skola
+Stöcksjö skola
+Stöde skola
+Stödenheten Skanslyckan
+Sulviks skola
+Sundby skola
+Sundbybergs Globala
+Sundbybergs vuxenutbildning
+Sundsvalls Montessoriskola
+Sunhult skola
+Sunnansjö skola
+Sunnemo skola
+Sunnerbogymnasiet gysär
+Svalnäs skola
+Svalöfs anpassade gymnasieskola
+Svalöfs gymnasium
+Svalövs Montessoriskola
+Svanberga skola
+Svanskogs skola
+Svanstein skola Diamanten
+Svappavaara skola
+Svartbjörnsbyns skola
+Svartsö skola
+Svea Gymnasium Sollentuna
+Sveaskolan LIMHAMN
+Svedenskolan Bergshamra
+Svedenskolan Bergshamras anpassade gymnasium
+Sven Eriksonsgymnasiet A
+Sven Eriksonsgymnasiet B
+Sven Eriksonsgymnasiet C
+Sven Eriksonsgymnasiet D
+Svensby skola
+Svensbyn skola
+Svenska Skolan Lissabon
+Svenska Skolan i Berlin
+Svenska Skolan i Nairobi
+Svenska Skolan i Wien
+Svenska Skolan på Costa del Sol
+Svenska Skolan på Mallorca
+Svenska Skolan på Teneriffa
+Svenska för invandrare
+Svenska skolan i London
+Svenska skolan i Marbella
+Svenska skolan i Paris
+Svenska skolan på Gran Canaria
+Sventorps skola
+Sverigefinska Språkskolan
+Sverigefinska skolan Sthlm
+Sverigefinska skolan i Kista
+Sveriges Ridgymnasium Flyinge
+Sveriges Ridgymnasium Kungsbacka
+Sveriges Ridgymnasium Svedala
+Sveriges Ridgymnasium Varberg
+Svärtinge Skogsbacke skola
+Svågadalens skola
+Syrholns skola
+Säbyholms Montessoriskola
+Sälens skola
+Särö Montessoriskola Daggdroppen
+Sätra skola
+Sävsjö kristna skola
+Sånghusvallens skola
+Sånnaskolan F
+Sånnaskolan L
+Sånnaskolan M
+Söderby friskola
+Söderhamns Friskola och Fritids
+Söderköpings Waldorfskola
+Södermalms skola
+Söderportgymnasiet A
+Söderslättsgymnasiets anpassade Gymnasieskola
+Södertälje friskola
+Södertörns Gymnasium
+Södertörns friskola
+Södervikskolan AB
+Söderåkra skola
+Söderås skola
+Södra Råtorps skola
+Södra Skolan
+Södra Skolan anpassad grundskola
+Södra Vi skola
+Södra skolan
+Södra Ängby skola
+Sölvesborgs Vuxenutbildning
+Sölvesborgs Vuxenutbildning SFI
+Sölvesborgs Vuxenutbildning som anpassad utbildning
+Söraby skola
+Sörby anpassad grundskola
+Sörfors skola
+Sörgärdets skola
+Sörmjöle skola
+Sörviks skola
+Sörängs skola
+Söråkers skola
+Sövestads skola
+Talenti Sverige AB i Landskrona
+Tallbackens skola
+Tallbo anpassad grundskola
+Tallboda resursskola
+Tallidsskolan AGR
+Tallkrogens skola
+Tallängens skola
+Tallåsens skola
+Tamburinens skola
+Tankeborgen Svartlå Fria
+Tanums Gymnasium
+Tavelsjö skola
+Tegelhagens skola
+Tegnérskolan anpassad grundskola
+Tegs centralskola
+Tekniska Gymnasiet Helsingborg
+Tekniska Gymnasiet Lund
+Tekniska Gymnasiet Solna
+Tekniska Gymnasiet Uddevalla
+Tellusskolan Thea Bromma
+Tellusskolan Thea Linköping
+Tenhults naturbruksgymnasium
+Terra Novaskolan
+The International High School of the Gothenburg Region
+The Tanto International School
+Tibble Gymnasium Campus Kista
+Tibble Gymnasium Campus Täby
+Tidavads skola
+Tierps anpassade grundskola
+Timmele skola
+Timmersdala skola
+Timsfors skola
+Tingbergsskolan A-C
+Tingbergsskolan B
+Tingsholmsgymnasiets nationella program
+Tingsryds anpassade grundskola
+Tinnerbäcken resursskola
+Tjautjasjaure skola
+Tjällmo skola
+Tjörnarps skola
+Tjörns Montessori skola ekonomiskförening
+Tolg skola
+Tollarps skola H
+Tollarps skola L
+Tollarps skola M
+Tolvmans Friskola
+Tolvåkerskolan- anpassad grundskola
+Tomaslundsskolan anpassad grundskola
+Tomtebogårds skola
+Torbjörntorps förskola och fritidshem Gottepåsen
+Torlyckans personalkooperativ fritidshem
+Torna Hällestads skola
+Tornedalsskolan vuxenutb
+Torpaskolan Norr
+Torpaskolan Söder
+Torps skola
+Torpshammars skola
+Torskolan H
+Torskolan LM
+Torsviks skola
+Torsångs skola
+Torsö Skärgårdsskola
+Torups skola
+Tottarps skola
+Tranellska Gymnasiet Anpassad Gymnasieskola
+Tranellska gymnasiet
+Tranemo Anpassade Gymnasieskola
+Tranemo gymnasieskola
+Tranmursskolan GKS
+Tranås anpassad grundskola
+Traryds skola
+Treklangens skola
+Trekungagymnasiet Individuella och nationella
+Trojenborgsskolan MH
+Trollbackens förskola - fritidshem
+Trolle Ljungby skola
+Trollungarna fritidshem
+Trosa Gymnasium
+Tryde Friskola
+Tryserums friskola
+Trädgårdsstadens skola
+Träkvista skola
+Träutbildningar i Hälsingland
+Trångsvikens skola
+Trödje skola
+Trönö skola
+Tullinge gymnasium
+Tullingebergsskolan AGR
+Tullängsgymnasiet BA
+Tullängsgymnasiet EE
+Tullängsgymnasiet FT
+Tullängsgymnasiet IN
+Tullängsgymnasiet TE
+Tullängsgymnasiet VF
+Tumba gymnasium
+Tuna skola
+Tunets skola
+Tunge skola
+Tungelsta skola
+Tuns skola
+Tuolluvaara skola
+Tveta friskola ekonomisk förening
+Tvärreds skola
+Tvärålunds skola
+Tycho Braheskolan
+Tygelsjöskolan - Anpassad grundskola
+Tyresö Montessoriskola
+Tyresö anpassad gymnasieskola
+Tyresö gymnasium
+Tyresö kommun särvux
+Tyresö skola
+Tyska skolan
+Tystberga skola
+Täby Enskilda gymnasium
+Täby Friskola-Enhagen
+Täby Friskola-Hägernäs
+Täby Friskola-Ljungmyr
+Täby Lärvux
+Täby språkintroduktion
+Täfteå skola
+Tällberg skola
+Tärendö Centralskola
+Tärnaby Alpina Gymnasium
+Tävelsås skola
+Tåby skola
+Tånnö skola
+Töcksfors skola LM
+Töre skola
+Töreboda Centralskola
+Törnströmska anpassade gymnasieskola
+Törnströmska gymnasiet
+Tösse skola
+UBF Språkcentrum Göteborg
+Ugglan- anpassad grundskola
+Ullervads skola
+Ullevi resursskola
+Ulleviskolan- anpassad grundskola
+Ullvi skola
+Ulrika skola
+Ulvsäter anpassad grundskola
+Umevux SFI
+Umeå Elitidrottsgymnasium
+Umeå Montessoriskola
+Unbyns skola
+Ungärde skola
+Universitetsholmens gymnasium
+Unnaryds skola
+Upplands-Bro SFI-enheten
+Upplands-Bro vuxenutbildning
+Uppsala AG Fyris
+Uppsala AG Jälla
+Uppsala Enskilda Skola
+Uppsala Montessoriskola
+Uppsala Musikklasser
+Uppsala estetiska gymnasium
+Uppsala waldorfskola
+Uppsala yrkesgymnasium Ekeby
+Uppsala yrkesgymnasium Jälla
+Uppvidinge Lärcenter
+Uranienborgs skola
+Urfjälls Montessoriskola
+Uråsa skola
+Uslands skola
+Utö skola
+VBU Högbergsskolan anpassad gymnasieskola
+VBU Komvux
+VBU Lärvux
+VBU Malmen
+VBU SFI
+VBU Smeden
+VFG Jönköping
+VUX Tranås
+Vad skola
+Vaggeryds kommun central insamlingsenhet
+Valdemarsro gymnasium
+Valdemarsro gymnasium anpassad
+Valla skola
+Vallargärdets skola
+Vallastaden resursskola
+Vallastadens skola
+Vallastadens skola- anpassad grundskola
+Vallback anpassad grundskola
+Vallens skola
+Vallentuna Friskola
+Vallentuna gymnasium
+Vallentuna internationella montessoriskola
+Vallkärra skola
+Valsjöbyns skola
+Valstads grundskola
+Vansbro Lärcentrum
+Varagårdsskolans anpassade grundskola
+Varbergs Montessoriskola
+Varekils skola
+Varlaskolan Nord
+Varlaskolan Syd
+Varlaskolan Sydväst
+Varmsätra skola
+Vasa International School of Stockholm
+Vasa Real
+Vasaskolan L
+Vasastans Montessoriskola
+Vattentornets resursskola
+Vaxö skola
+Vebomarks Byaskola
+Vebomarks fritidshem
+Vedby skola
+Vederslövs skola
+Vedevågs skola
+Vedums skola
+Vega skola
+Vegaskolan Förskoleklass
+Vegby skola
+Vellinge Lärcenter
+Vemdalens skola
+Vena skola
+Vendels skola
+Vendestigens skola
+Veta skola LM
+Vetlanda Friskola
+Vetlanda Lärcentrum Komvux GRUND
+Vetlanda Lärcentrum Komvux GY
+Vetlanda Lärcentrum Lärvux
+Vetlanda Lärcentrum SFI
+Vetlanda Lärcentrum YH
+Vettergymnasiet Jönköping
+Viby friskola
+Viby skola LM
+Vibyskolan ekonomisk förening
+Victum Gymnasium
+Videdals privatskolor
+Videdalsskolan - Anpassad grundskola
+Vidingsjö resursskola
+Vikarbyns skola
+Vikens Montessori
+Vikingstads skolor
+Vikmanshyttans skola
+Viks skola
+Viksjöfors skola
+Viktor Rydbergs samskola Djursholm
+Viktor Rydbergs skola Jarlaplan
+Viktor Rydbergs skola Nacka
+Viktor Rydbergs skola Sundbyberg
+Vilans skola
+Vilbokens anpassade grundskola
+Vilhelm Mobergsgymnasiet
+Vilhelmina Lärcentrum SFI
+Vilhelmina Lärcentrum komvux
+Vilhelmina Lärcentrum särvux
+Viljan Friskola
+Viljaskolan Angered
+Viljaskolan Sollentuna
+Villaskolan L
+Villaskolan M
+Vimarskolan Anpassad grundskola
+Vindelälvsskolan SFI
+Vindelälvsskolan komvux
+Vindängens anpassad grundskola
+Vinsta grundskola västra
+Vinsta grundskola östra
+Vintertullsskolan i Stockholm
+Vintrosa skola
+Vireda skola
+Virestads Friskola
+Virginska gymnasiet BF
+Virginska gymnasiet EK
+Virginska gymnasiet FR
+Virginska gymnasiet HT
+Virginska gymnasiet NA
+Virginska gymnasiet RL
+Virginska gymnasiet SA
+Virginska gymnasiets vuxenutbildning
+Viskastrandsgymnasiet A
+Viskastrandsgymnasiet B
+Viskastrandsgymnasiet C
+Viskastrandsgymnasiet D
+Viskastrandsgymnasiet F
+Vist skola
+Vistaholms föräldrakooperativ
+Vita skolan
+Vita vidderna
+Vittangi skola
+Vittra Adolfsberg
+Vittra Brotorp
+Vittra Forsgläntan
+Vittra Frösunda
+Vittra Gerdsken
+Vittra Gävle
+Vittra Halmstad
+Vittra Jakobsberg
+Vittra Kronhusparken
+Vittra Kungshagen
+Vittra Lambohov
+Vittra Landborgen
+Vittra Luma Park
+Vittra Röda stan
+Vittra Rösjötorp
+Vittra Samset
+Vittra Sollentuna
+Vittra Södermalm
+Vittra Telefonplan
+Vittra Vallentuna
+Vittra Väsby
+Vittra Örebro
+Vittra Östertälje
+Vittskövle skola L
+Vitådalens skola
+Vollsjö Resursskola
+Vollsjö skola
+Volvogymnasiet Skövde
+Vrena friskola
+Vreta Kloster skola
+Vreta utbildningscentrum
+Vreta utbildningscentrum komvux
+Vrigstad skola
+Vuollerims Centralskola
+Vuollerims Friskola
+Vux Huddinge
+Vuxenlärande SFI
+Vuxenutbildning Campus Åre
+Vuxenutbildning Hallstahammar
+Vuxenutbildning Helsingborg externa anordnare
+Vuxenutbildning Lomma
+Vuxenutbildning Trosa
+Vuxenutbildningen Falkenberg
+Vuxenutbildningen Gagnef
+Vuxenutbildningen Gotland
+Vuxenutbildningen Härryda
+Vuxenutbildningen Härryda Yrkesvux
+Vuxenutbildningen Landskrona
+Vuxenutbildningen Leksand-Rättvik
+Vuxenutbildningen Luleå SFI
+Vuxenutbildningen Luleå komvux
+Vuxenutbildningen Luleå särvux
+Vuxenutbildningen Masugnen
+Vuxenutbildningen Masugnen SFI
+Vuxenutbildningen Perstorp
+Vuxenutbildningen Skara SFI
+Vuxenutbildningen Skara komvux
+Vuxenutbildningen Storfors
+Vuxenutbildningen Tingsryd
+Vuxenutbildningen Trelleborg
+Vuxenutbildningen Trollhättan Lärvux
+Vuxenutbildningen Trollhättan sfi
+Vuxenutbildningen Töreboda
+Vuxenutbildningen Varbergs kommun
+Vuxenutbildningen Vänersborg Lärvux
+Vuxenutbildningen i Bengtsfors
+Vuxenutbildningen i Karlsborg och Karlsborgs gymnasieskola
+Vuxenutbildningen i Kil
+Vuxenutbildningen i Kungälv
+Vuxenutbildningen i Mark
+Vuxenutbildningen i Ovanåker
+Vuxenutbildningen i Piteå
+Vuxenutbildningen i Svenljunga
+Vuxenutbildningen i Ängelholm
+Vuxenutbildningen Åmål
+Vuxenutbildningen Ånge
+Vuxenutbildningscentrum IM
+Vuxenutbildningscentrum Stockholm
+Vuxenutbildningsenheten Värmdö
+Vuxnas lärande
+Väderstad skola LM
+Vägledning och pedagogisk stöd
+Vänersnäs skola
+Vänge skola
+Värgårdsskolans anpassade skola
+Värings skola
+Värmdö Yrkesgymnasium
+Värmdö gymnasium
+Värmlandsbro skola
+Värmskogs Friskola
+Värsås skola
+Väsby Nya Gymnasium
+Väsby Vuxenutbildning SFI
+Väsby skola
+Väse skola
+Väskinde skola
+Väskolan L
+Väskolan MH
+Västanbyns skola
+Västansjö skola
+Västerby skola
+Västerfärnebo skola
+Västerhaninge Montessoriskola
+Västerhejde skola
+Västerholms friskola
+Västervångskolans anpassade grundskola
+Västerängsskolan anpassad grundskola
+Västerås Idrottsgymnasium
+Västerås Internationella Skola
+Västerås Montessoriskola
+Västra Berga skola
+Västra Berga skolas anpassade grundskola
+Västra Bodarna skola
+Västra Ekoskolan
+Västra Engelbrektsskolan
+Västra Hamnens skola
+Västra Hargs skola LM
+Västra Husby skola
+Västra Ramlösa skola
+Västra Skolan
+Västra Skolan Kalmar
+Västra Stenhagenskolan
+Västra skolan
+Västsvenska Gymnasiet
+Vätö skola
+Växjö Fria Fordongymnasium
+Växjö Fria Gymnasium
+Växjö Islamiska skola
+Växjö Montessoriskola
+Växthusets skola
+Vård- och omsorgsgymnasiet Sollentuna AB
+Vårfruberga friskola
+Waldorfbarnträdgården Solvinden
+Waldorfskolan Kastanjen
+Waldorfskolan i Karlshamn
+Wallerska skolan
+Wallåkrabygdens skola
+Wendela Hellmanskolan
+Wendesgymnasiet A
+Westerlundska gymnasiet
+Widerströmska gymnasiet
+Widénska gymnasiet
+Wilhelm Haglunds Gymnasium
+Wisby anpassad gymnasieskola
+Withalaskolan anpassad grundskola
+Yngsjö skola LM
+Yrkesgymnasiet  Täby
+Yrkesgymnasiet  Väsby
+Yrkesgymnasiet Ale
+Yrkesgymnasiet Borås
+Yrkesgymnasiet Gävle
+Yrkesgymnasiet Göteborg
+Yrkesgymnasiet Huddinge
+Yrkesgymnasiet Linköping
+Yrkesgymnasiet Malmö
+Yrkesgymnasiet Munkedal
+Yrkesgymnasiet Norrköping
+Yrkesgymnasiet Skarpnäck
+Yrkesgymnasiet Skellefteå
+Yrkesgymnasiet Sollentuna
+Yrkesgymnasiet Solna
+Yrkesgymnasiet Umeå
+Yrkesgymnasiet Uppsala
+Yrkesgymnasiet Västerås
+Yrkesgymnasiet Örebro
+Yrkesutbildningscenter - AU utbildning
+Yrkesutbildningscenter - Kunskapscompaniet
+Yrkesutbildningscenter - Movant
+Yrkesutbildningscenter - Nercia
+Yrkesutbildningscenter - Åsbro Kursgård
+Ytterbyns skola
+Ytterharnäs skola
+Ytterhogdals Centralskola
+Yttre Ursviksskolan
+af Chapmangymnasiet
+von Bahrs skola
+von Reisers skola
+Älgarås skola
+Älgens fritidshem
+Älghults Friskola
+Älmhults Montessoriskola
+Älta resursskola
+Älta skola
+Älvboda friskola
+Älvbrinkens skola
+Älvdalens Utbildningscentrum
+Älvsbyns anpassade grundskola
+Älvsbyns anpassade gymnasium
+Älvsbyns gymnasium
+Älvstrandsgymnasiet Regnbågen
+Ängelholms Montessoriskola
+Ängen anpassad grundskola
+Ängkärrskolan i Solna
+Ängs skola
+Ängsdals skolor AB
+Ängsholmsskolan - anpassad grundskola
+Ängsholmsskolan - anpassad gymnasieskola
+Ängslyckans skola
+Ängslättskolan - Anpassad grundskola
+Ängsskolan A
+Å-mini förskola och fritidshem
+Åby skola
+Åbyggeby skola
+Åkerskolan anpassad grundskola
+Åkerskolan låg
+Åkerskolan mellan
+Åkersviks skola
+Åkerö skola
+Åkraskolan AGR
+Åkullsjöns skola
+Ålberga skola
+Ållebergsgymnasiet A
+Ållebergsgymnasiet B
+Ållebergsgymnasiet C
+Ållebergsgymnasiet E
+Ållebergsgymnasiet anpassad gymnasieskola
+Åmmebergs skola
+Ånge grundskola
+Ånge resursskola
+Ångsta skola
+Årjängs gymnasieskola
+Årjängs gymnasieskola vuxenutb
+Årsta Gårds anpassade grundskola
+Årsta Gårds anpassade gymnasieskola
+Årsta anpassad grundskola
+Årsunda Kyrkskola
+Åryds Friskola
+Åryds skola
+Ås skola
+Åsalyckans fritidshem
+Åsarna skola
+Åsbo skola
+Åsbo skola AGR
+Åsbro skola
+Åsebro skola
+Åsele Centralskola fritidshem
+Åsle Friskola
+Åsö grundskola
+Åtorps skola
+Åva gymnasium
+Öckerö Seglande gymnasieskola
+Ödeborgs skola
+Ödenäs skola
+Ödestugu skola
+Öja skola
+Öjaby skola
+Ölands Friskola
+Ölands utbildningscenter
+Öllsjöskolan L
+Öllsjöskolan MH
+Ölmbrotorps skola
+Önnestads skola H
+Önnestads skola LM
+Öns skola
+Ör skola
+Öregrunds skola
+Öresundsgymnasiet Landskrona
+Öringe Skola
+Örjanskolan grund
+Örjanskolan gym
+Örnsköldsviks Gymnasium Alfa
+Örnsköldsviks Gymnasium Beta
+Örnsköldsviks Gymnasium Delta
+Örnsköldsviks Gymnasium Epsilon
+Örnsköldsviks Gymnasium Gamma
+Örnsköldsviks Gymnasium Jota
+Örnsköldsviks Gymnasium Kappa
+Örnsköldsviks Gymnasium Lambda
+Örnsköldsviks Gymnasium Omega
+Örnsköldsviks Gymnasium Sigma
+Örnsköldsviks anpassade grundskola
+Örsjö skola
+Örslösa skola
+Örtagårdsskolan - Anpassad grundskola
+Ösby naturbruksgymnasium
+Ösbyskolan AB
+Össjö skola
+Östad skola
+Östansjö skola
+Österfärnebo skola
+Österro skola
+Österslövs skola L
+Österstad skola
+Östersunds Gymnasieskola
+Östersunds Waldorfskola
+Östersunds resursskola
+Österåkers gymnasium
+Österåkersbygdens Friskola
+Östmarks skola
+Östra Ersbodaskolan
+Östra Karups skola
+Östra Lugnets skola
+Östra Ringskolan
+Östra Ryds skola
+Östra Skolan Dibber
+Östra Stenhagen anpassad grundskola
+Östra Stenhagenskolan
+Östra Strö skola
+Östra grundskolan
+Östra gymnasiet
+Östra skolan
+Östra Ängsskolan
+Östraby skola
+Östtegs skola
+Överboda skola
+Överby fritidshem
+Överkalix Friskola
+Övre Soppero skola
+Övrig centralt anställda pedagoger

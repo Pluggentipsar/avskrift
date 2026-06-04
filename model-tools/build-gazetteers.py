@@ -35,12 +35,8 @@ DATA = ROOT / "src-tauri" / "src" / "data"
 # namn som mest ökar risken för övermaskering; vi tar de vanliga. Justera vid behov.
 DEFAULT_MIN_BEARERS = 500
 
-# Suffix som rules::skolnamn redan fångar – exakta skolnamn som slutar så här behöver
-# INTE ligga i skolor.txt (håll listan liten, för icke-suffix-namn).
-SCHOOL_SUFFIXES = (
-    "gymnasieskolan", "grundskolan", "gymnasiet", "förskolan",
-    "särskolan", "friskolan", "skolan",
-)
+# Tröskel för tätorter (antal invånare). Små tätorter har ofta vardagsordsnamn; börja stort.
+DEFAULT_MIN_POP = 5000
 
 # Tillåtna tecken i ett namn/ortnamn (svenska + vanliga lånebokstäver, bindestreck,
 # apostrof, mellanslag). Filtrerar bort initialer ("A-C"), siffror och skräp.
@@ -105,95 +101,168 @@ def read_scb_sheet(wb, sheet: str) -> list[tuple[str, int]]:
     return out
 
 
-def cmd_scb_namn(src: Path, min_bearers: int) -> None:
+def cmd_scb_namn(args: argparse.Namespace) -> None:
     import openpyxl
 
-    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(args.file, read_only=True, data_only=True)
     forn = read_scb_sheet(wb, "Tilltalsnamn kvinnor") + read_scb_sheet(wb, "Tilltalsnamn män")
     efter = read_scb_sheet(wb, "Efternamn")
 
-    forn_terms = clean_terms(forn, min_bearers)
-    efter_terms = clean_terms(efter, min_bearers)
+    forn_terms = clean_terms(forn, args.min_bearers)
+    efter_terms = clean_terms(efter, args.min_bearers)
 
-    write_list(DATA / "fornamn.txt", FORNAMN_HEADER.format(min=min_bearers), forn_terms)
-    write_list(DATA / "efternamn.txt", EFTERNAMN_HEADER.format(min=min_bearers), efter_terms)
+    write_list(DATA / "fornamn.txt", FORNAMN_HEADER.format(min=args.min_bearers), forn_terms)
+    write_list(DATA / "efternamn.txt", EFTERNAMN_HEADER.format(min=args.min_bearers), efter_terms)
 
 
 # --- Skolverket skolenheter -----------------------------------------------------
 
-def read_name_column(src: Path, candidates: tuple[str, ...]) -> list[str]:
-    """Läs en namnkolumn ur CSV (semikolon/komma) eller JSON; prova kolumnnamnen i tur."""
-    names: list[str] = []
+def read_rows(src: Path) -> list[dict]:
+    """Läs en CSV (semikolon/komma) eller JSON-export som en lista av dict-rader.
+    För JSON tas den första list-värdet (t.ex. {"Skolenheter": [...]}) eller en topp-lista."""
     if src.suffix.lower() == ".json":
         import json
 
         data = json.loads(src.read_text(encoding="utf-8"))
-        rows = data if isinstance(data, list) else next(
-            (v for v in data.values() if isinstance(v, list)), []
-        )
-        for r in rows:
-            for c in candidates:
-                if isinstance(r, dict) and r.get(c):
-                    names.append(str(r[c]))
-                    break
-    else:
-        import csv
+        if isinstance(data, list):
+            return data
+        return next((v for v in data.values() if isinstance(v, list)), [])
+    import csv
 
-        text = src.read_text(encoding="utf-8-sig")
-        delim = ";" if text.splitlines()[0].count(";") >= text.splitlines()[0].count(",") else ","
-        reader = csv.DictReader(text.splitlines(), delimiter=delim)
-        cols = {c.lower(): c for c in (reader.fieldnames or [])}
-        key = next((cols[c.lower()] for c in candidates if c.lower() in cols), None)
-        if key is None:
-            sys.exit(f"hittade ingen av kolumnerna {candidates} i {src.name}; fanns: {reader.fieldnames}")
-        names = [row[key] for row in reader if row.get(key)]
-    return names
+    text = src.read_text(encoding="utf-8-sig")
+    first = text.splitlines()[0]
+    delim = ";" if first.count(";") >= first.count(",") else ","
+    return list(csv.DictReader(text.splitlines(), delimiter=delim))
 
 
-def cmd_skolverket(src: Path, _min_bearers: int) -> None:
-    raw = read_name_column(src, ("Skolenhetsnamn", "skolenhetsnamn", "namn", "name"))
+def field(row: dict, candidates: tuple[str, ...]) -> str | None:
+    low = {k.lower(): k for k in row}
+    for c in candidates:
+        k = low.get(c.lower())
+        if k and row.get(k):
+            return str(row[k])
+    return None
+
+
+# Generiska skolord. Ett namn som BARA består av sådana ("Anpassad grundskola", "Kommunal
+# vuxenutbildning", "Vuxenutbildningen SFI") är en allmän term, inte ett egennamn, och skulle
+# övermaska vanlig elevhälsotext. Vi kräver minst ett särskiljande (icke-generiskt) ord.
+GENERIC_SCHOOL_WORDS = {
+    "anpassad", "anpassade", "kommunal", "kommunala", "fristående", "grundläggande", "gymnasial",
+    "vuxen", "vuxna", "för", "och", "i", "som", "vid", "av", "med", "samt", "den", "det",
+    "skola", "skolan", "grundskola", "grundskolan", "grundsärskola", "grundsärskolan",
+    "gymnasieskola", "gymnasieskolan", "gymnasium", "gymnasiet", "förskola", "förskolan",
+    "särskola", "särskolan", "särskild", "särskilda", "friskola", "fritidshem", "resursskola",
+    "resursskolan", "vuxenutbildning", "vuxenutbildningen", "komvux", "särvux", "lärvux",
+    "sfi", "vux", "im", "ab", "utbildning", "utbildningen", "yrkesutbildning", "yrkesvux", "yrkes",
+    "introduktion", "introduktionsprogram", "introduktionsprogrammet", "inriktning", "ämne",
+    "ämnesområde", "undervisning", "undervisningsgrupp", "nivå", "anordnare", "externa", "extern",
+    "enhet", "enheten",
+}
+
+
+def has_distinctive_word(name: str) -> bool:
+    """True om namnet har minst ett ord som inte är ett generiskt skolord (ett egennamn)."""
+    return any(t.strip("-").lower() not in GENERIC_SCHOOL_WORDS and len(t) >= 2 for t in name.split())
+
+
+def cmd_skolverket(args: argparse.Namespace) -> None:
+    rows = read_rows(args.file)
     seen: dict[str, None] = {}
-    for name in raw:
-        name = name.strip()
-        if len(name) < 2 or not VALID.match(name):
+    for r in rows:
+        status = field(r, ("Status", "status"))
+        if status and status.lower() != "aktiv":
+            continue  # hoppa över vilande/planerade/nedlagda enheter
+        name = field(r, ("Skolenhetsnamn", "skolenhetsnamn", "namn", "name"))
+        if not name:
             continue
-        low = name.lower()
-        if low.endswith(SCHOOL_SUFFIXES) or (low.endswith("s") and low[:-1].endswith(SCHOOL_SUFFIXES)):
-            continue  # redan fångat av rules::skolnamn
-        seen[name] = None  # skolnamn skrivs som de står (egennamn, redan korrekt versaliserade)
+        name = name.strip()
+        # Behåll bara FLERORDS-namn (innehåller mellanslag). Enordsnamn är antingen redan
+        # fångade av rules::skolnamn ("Björkskolan", "Kunskapsskolan") eller generiska ord med
+        # hög risk för övermaskering ("Elevhälsan", "Introduktionsprogrammet", "Borgen").
+        # Flerordsnamn ("Internationella Engelska Skolan Bromma", "IES Bromma") är specifika.
+        if " " not in name or len(name) < 2 or not VALID.match(name):
+            continue
+        if not has_distinctive_word(name):
+            continue  # bara generiska skolord ("Anpassad grundskola") -> hoppa över
+        seen[name] = None  # skrivs som de står (egennamn, redan korrekt versaliserade)
     write_list(DATA / "skolor.txt", SKOLOR_HEADER, sorted(seen))
 
 
 # --- Tätorter / ortnamn ---------------------------------------------------------
 
-def cmd_tatorter(src: Path, _min_bearers: int) -> None:
+# Tätortsnamn som också är vanliga svenska ord (eller vanliga förnamn) – uteslut ur
+# ortnamn.txt. Platser får hög score, så en vardagsordskrock ("Bro", "Vi") maskas i varje
+# dokument; namnkrockar ("Åsa") täcks redan av förnamnslistan. Justera vid behov.
+STOPWORDS_ORT = {
+    "Bro", "Vi", "Viken", "Bo", "By", "Ed", "Lo", "Näs", "Vik", "Ås", "Hed", "Hov", "Backe",
+    "Sand", "Mon", "Åsa",
+}
+
+
+def load_kommuner() -> set[str]:
+    """Kommunnamn ur kommuner.txt – tätorter som delar namn med en kommun (oftast
+    centralorten) utelämnas ur ortnamn.txt, de täcks redan av kommun-gazetteern."""
+    path = DATA / "kommuner.txt"
+    if not path.exists():
+        return set()
+    return {l.strip() for l in path.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")}
+
+
+def to_int(v) -> int | None:
+    try:
+        return int(str(v).replace(" ", "").replace("\xa0", ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def cmd_tatorter(args: argparse.Namespace) -> None:
+    src = args.file
+    pairs: list[tuple[object, object]] = []  # (namn, folkmängd|None)
     if src.suffix.lower() in (".xlsx", ".xlsm"):
         import openpyxl
 
         wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
-        ws = wb.active
-        rows = [r for r in ws.iter_rows(values_only=True)]
-        # Hitta en kolumn vars rubrik innehåller "tätort"/"ort"/"namn".
-        header_idx, col = None, None
+        rows = list(wb.active.iter_rows(values_only=True))
+        name_col = pop_col = header_idx = None
         for i, r in enumerate(rows[:15]):
             for j, cell in enumerate(r):
-                if isinstance(cell, str) and re.search(r"tätort|ortnamn|\bort\b|namn", cell, re.I):
-                    header_idx, col = i, j
-                    break
-            if col is not None:
+                if not isinstance(cell, str):
+                    continue
+                if name_col is None and re.search(r"tätort|ortnamn|\bort\b|namn", cell, re.I):
+                    header_idx, name_col = i, j
+                if re.search(r"folkmängd|befolkning|invånare", cell, re.I):
+                    pop_col = j
+            if name_col is not None:
                 break
-        if col is None:
+        if name_col is None:
             sys.exit("hittade ingen tätorts-/namnkolumn i xlsx")
-        raw = [r[col] for r in rows[header_idx + 1:] if r[col]]
+        for r in rows[header_idx + 1:]:
+            pop = r[pop_col] if pop_col is not None and pop_col < len(r) else None
+            pairs.append((r[name_col], pop))
     else:
-        raw = read_name_column(src, ("Tätort", "tätort", "ortnamn", "namn", "name"))
+        for r in read_rows(src):
+            name = field(r, ("Tätort", "tätort", "ortnamn", "namn", "name"))
+            pop = field(r, ("Folkmängd", "folkmängd", "folkmangd", "befolkning", "invånare", "population"))
+            pairs.append((name, pop))
+
+    kommuner = load_kommuner()
     seen: dict[str, None] = {}
-    for name in raw:
-        name = str(name).strip()
-        if len(name) < 2 or looks_like_initials(name) or not VALID.match(name):
+    for name, pop in pairs:
+        if not name:
             continue
-        seen[titlecase(name)] = None
-    write_list(DATA / "ortnamn.txt", ORTNAMN_HEADER, sorted(seen))
+        p = to_int(pop)
+        if p is not None and p < args.min_pop:
+            continue  # för liten tätort – hög risk för vardagsordskrock, hoppa över
+        # Dela ihopslagna tätorter ("Upplands Väsby och Sollentuna", "Skanör med Falsterbo").
+        for part in re.split(r"\s+(?:och|med)\s+", str(name)):
+            part = part.strip()
+            if len(part) < 2 or looks_like_initials(part) or not VALID.match(part):
+                continue
+            if part in kommuner or part in STOPWORDS_ORT:
+                continue  # täcks redan av kommuner.txt, eller vardagsord/förnamn
+            seen[part] = None  # SCB:s tätortsnamn är redan korrekt versaliserade
+    write_list(DATA / "ortnamn.txt", ORTNAMN_HEADER.format(min=args.min_pop), sorted(seen))
 
 
 # --- Headers (behålls överst i varje fil) ---------------------------------------
@@ -216,22 +285,26 @@ EFTERNAMN_HEADER = """\
 # skiftlägeskänslig (kräver inledande versal). Träffar får låg score och granskas."""
 
 SKOLOR_HEADER = """\
-# Skolnamn – gazetteer för Category::Plats.
-# Källa: Skolverkets skolenhetsregister (öppna data).
-# Genererad av model-tools/build-gazetteers.py. Namn som slutar på de suffix som
-# rules::skolnamn redan fångar (…skolan, …gymnasiet m.fl.) är bortfiltrerade –
-# den här listan är för EXAKTA namn som inte följer suffix-mönstret.
+# Skolnamn (flerordsnamn på aktiva skolenheter) – gazetteer för Category::Plats.
+# Källa: Skolverkets skolenhetsregister (öppna API, v1/skolenhet).
+# Genererad av model-tools/build-gazetteers.py.
+#
+# Bara FLERORDS-namn tas med ("Internationella Engelska Skolan Bromma", "IES Bromma").
+# Enordsnamn utelämnas: de fångas antingen redan av rules::skolnamn ("Björkskolan",
+# "Kunskapsskolan") eller är generiska ord med hög risk för övermaskering
+# ("Elevhälsan", "Introduktionsprogrammet").
 #
 # Format: ett namn per rad. #-rader och tomma rader ignoreras. Skiftlägeskänslig."""
 
 ORTNAMN_HEADER = """\
 # Ortnamn (tätorter) – gazetteer för Category::Plats.
-# Källa: SCB:s tätortsregister / Lantmäteriets ortnamn (öppna data).
-# Genererad av model-tools/build-gazetteers.py.
+# Källa: SCB, "Folkmängd i tätorter per tätort" (2023, MI0810). Tätorter som delar
+# namn med en kommun är utelämnade (täcks av kommuner.txt).
+# Genererad av model-tools/build-gazetteers.py (tröskel: minst {min} invånare).
 #
-# OBS: ju större lista, desto högre risk för övermaskering av vanliga ord. Börja
-# smått (t.ex. bara de största tätorterna). #-rader/tomma rader ignoreras.
-# Matchningen är skiftlägeskänslig (kräver inledande versal)."""
+# OBS: ju större lista (lägre tröskel), desto högre risk för övermaskering av
+# vardagsord. Börja smått. #-rader/tomma rader ignoreras. Matchningen är
+# skiftlägeskänslig (kräver inledande versal)."""
 
 COMMANDS = {
     "scb-namn": cmd_scb_namn,
@@ -246,11 +319,13 @@ def main() -> None:
     p.add_argument("file", type=Path, help="sökväg till den råa exporten (xlsx/csv/json)")
     p.add_argument("--min-bearers", type=int, default=DEFAULT_MIN_BEARERS,
                    help=f"minsta antal bärare för SCB-namn (default {DEFAULT_MIN_BEARERS})")
+    p.add_argument("--min-pop", type=int, default=DEFAULT_MIN_POP,
+                   help=f"minsta antal invånare för tätorter (default {DEFAULT_MIN_POP})")
     args = p.parse_args()
     if not args.file.exists():
         sys.exit(f"filen finns inte: {args.file}")
     print(f"Bygger gazetteer från {args.file.name} ({args.source})…")
-    COMMANDS[args.source](args.file, args.min_bearers)
+    COMMANDS[args.source](args)
     print("Klart.")
 
 
