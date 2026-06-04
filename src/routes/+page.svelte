@@ -16,7 +16,7 @@
   type Utterance = { start: number; end: number; speaker: string | null; text: string; words?: Word[] };
   type Transcript = { utterances: Utterance[]; language: string; model: string; diarized: boolean };
   type SpanInfo = { id: number; category: string; source: string; text: string; replacement: string };
-  type Segment = { text: string; span: number | null; start: number; end: number; word: boolean };
+  type Segment = { text: string; span: number | null; start: number; end: number; word: boolean; para: number };
   type AnalyzeResult = {
     text: string;
     segments: Segment[];
@@ -128,6 +128,8 @@
   // ---- Editing, corrections, projects, export options ----
   let editingIdx = $state<number | null>(null);
   let editText = $state("");
+  let editMode = $state(false); // when on, a single click opens a line for editing instead of seeking
+  let undoStack = $state<Transcript[]>([]); // snapshots before each transcript edit (for Ångra)
   let dirty = $state(false); // unsaved edits since last transcribe/open
   let correctionInput = $state("");
   let exportTimestamps = $state(false);
@@ -164,6 +166,7 @@
   let liveUtterances = $state<{ source: string; start: number; end: number; text: string }[]>([]);
   let liveFeedEl = $state<HTMLDivElement | null>(null);
   let meetingLive = $state(true); // transcribe live during the meeting (vs only after stop)
+  let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
 
   // ---- Meeting Q&A ("Fråga mötet") — works on any transcript ----
@@ -574,6 +577,7 @@
     const next = editText.trim();
     editingIdx = null;
     if (next === transcript.utterances[idx].text) return;
+    snapshotTranscript();
     transcript.utterances[idx].text = next;
     // Editing invalidates word-level timings for that utterance; drop them to avoid stale highlights.
     transcript.utterances[idx].words = [];
@@ -596,9 +600,48 @@
     }
   }
 
+  /** Save a snapshot of the transcript before a mutation, so "Ångra" can restore it (cap 30). */
+  function snapshotTranscript() {
+    if (!transcript) return;
+    undoStack = [...undoStack.slice(-29), JSON.parse(JSON.stringify(transcript)) as Transcript];
+  }
+
+  function undoEdit() {
+    if (!undoStack.length) return;
+    editingIdx = null;
+    transcript = undoStack[undoStack.length - 1];
+    undoStack = undoStack.slice(0, -1);
+    void pushTranscript();
+  }
+
+  /** Remove an utterance (filler, cross-talk, mis-capture). */
+  function deleteUtterance(idx: number) {
+    if (!transcript) return;
+    snapshotTranscript();
+    editingIdx = null;
+    transcript.utterances = transcript.utterances.filter((_, i) => i !== idx);
+    void pushTranscript();
+  }
+
+  /** Reassign a single utterance to another speaker (`""` clears it). */
+  function setSpeaker(idx: number, id: string) {
+    if (!transcript) return;
+    snapshotTranscript();
+    transcript.utterances[idx] = { ...transcript.utterances[idx], speaker: id || null };
+    void pushTranscript();
+  }
+
   async function renameSpeaker(id: string, name: string) {
     speakerLabels[id] = name;
     // Labels live in the UI; nothing to push to the transcript itself.
+  }
+
+  /** Speaker display label for utterance/paragraph `para`, for the de-identify review (transcripts
+   *  only; pasted text / documents have no speakers so this returns null). */
+  function speakerForPara(para: number): string | null {
+    const u = transcript?.utterances[para];
+    if (!u?.speaker) return null;
+    return speakerLabels[u.speaker] ?? u.speaker;
   }
 
   /** Apply find→replace corrections (one "fel=>rätt" per line) across every utterance. */
@@ -1042,21 +1085,31 @@
     transcribePct = 0;
     progressMsg = "Transkriberar om mötet…";
     try {
-      const t = await invoke<Transcript>("retranscribe_meeting", {
+      let t = await invoke<Transcript>("retranscribe_meeting", {
         args: { micWavPath: meetingMicWav, systemWavPath: meetingSysWav, model: selectedModel, language },
       });
+      if (retranscribeDiarize && meetingSysWav) {
+        progressMsg = "Separerar mötesröster…";
+        t = await invoke<Transcript>("diarize_meeting", {
+          args: { systemWavPath: meetingSysWav, numSpeakers: null },
+        });
+      }
       transcript = t;
-      // Re-transcribing resets speakers to the stream labels; map each to itself for the rename UI.
+      // Map speaker ids to friendly labels (Jag/Mötet kept as-is; diarised TALARE_n → "Talare n").
       const labels: Record<string, string> = {};
       for (const u of t.utterances) {
-        if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
+        if (u.speaker && !(u.speaker in labels)) {
+          labels[u.speaker] = u.speaker.startsWith("TALARE_") ? u.speaker.replace("TALARE_", "Talare ") : u.speaker;
+        }
       }
       speakerLabels = labels;
       analysis = null;
       summaryDraft = "";
       dirty = false;
+      undoStack = [];
+      editingIdx = null;
       await saveCurrentJob("meeting");
-      showToast("Mötet transkriberat om");
+      showToast(retranscribeDiarize ? "Mötet omtranskriberat · röster separerade" : "Mötet transkriberat om");
     } catch (e) {
       error = String(e);
     } finally {
@@ -1123,6 +1176,13 @@
       else out.push({ speaker: u.speaker, start: u.start, items: [{ idx, u }] });
     });
     return out;
+  });
+
+  /** Distinct speaker ids in the transcript, for the per-utterance "byt talare" dropdown. */
+  const speakerOptions = $derived.by(() => {
+    const seen: string[] = [];
+    for (const u of transcript?.utterances ?? []) if (u.speaker && !seen.includes(u.speaker)) seen.push(u.speaker);
+    return seen;
   });
 
   // ============================================================================
@@ -1670,7 +1730,7 @@
             klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
           </div>
           <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
-          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg, i}{#if (i === 0 || seg.para !== analysis.segments[i - 1].para) && speakerForPara(seg.para)}<span class="rev-speaker">{speakerForPara(seg.para)}: </span>{/if}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
@@ -2005,6 +2065,7 @@
             <select class="profile" bind:value={selectedModel}>
               {#each models as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
             </select>
+            <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeDiarize} /><span>Separera mötesröster automatiskt efteråt</span></label>
             {#if !selectedDownloaded}
               {#if downloading === selectedModel}
                 <div class="dl mt"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
@@ -2054,7 +2115,7 @@
       {#if error}<div class="banner error">{error}</div>{/if}
       {#if analysis?.warnings.length}{#each analysis.warnings as w}<div class="banner warn">{w}</div>{/each}{/if}
 
-      {#if busy}
+      {#if busy && !transcript}
         <div class="state">
           <div class="spinner"></div>
           <p class="state-title">{progressMsg || "Arbetar…"}</p>
@@ -2075,6 +2136,9 @@
           <p class="state-sub">Välj modell och språk, slå på <strong>diarisering</strong> för att skilja talare åt, och klicka <strong>Transkribera</strong>. Sedan kan du avidentifiera och exportera.</p>
         </div>
       {:else}
+        {#if busy}
+          <div class="working" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Arbetar…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
+        {/if}
         <div class="review-head actions-only">
           <div class="actions">
             {#if view === "summary" && summaryDraft}
@@ -2135,8 +2199,15 @@
         {/if}
 
         {#if view === "transcript"}
-          <div class="meta">
-            {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} · klicka tid för att spela · dubbelklicka text för att rätta
+          <div class="t-toolbar">
+            <button class="btn small" class:on={editMode} onclick={() => (editMode = !editMode)} title="Växla mellan att spela upp och att rätta text">
+              {editMode ? "✓ Redigerar" : "Redigera"}
+            </button>
+            <button class="btn small" onclick={undoEdit} disabled={!undoStack.length}>Ångra</button>
+            <span class="meta">
+              {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} ·
+              {editMode ? "klicka en rad för att rätta · byt talare · ta bort" : "klicka tid för att spela · klicka/dubbelklicka text för att rätta"}
+            </span>
           </div>
           <div class="transcript">
             {#each groups as g}
@@ -2156,18 +2227,20 @@
                         onkeydown={(e) => { if (e.key === "Escape") cancelEdit(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEdit(); }}
                       ></textarea>{:else}<span
                         class="body"
+                        class:editing={editMode}
                         role="button"
                         tabindex="0"
+                        onclick={() => editMode && startEdit(it.idx)}
                         ondblclick={() => startEdit(it.idx)}
                         onkeydown={(e) => e.key === "Enter" && startEdit(it.idx)}
                       >{#if it.u.words && it.u.words.length}{#each it.u.words as w}<button
                               class="word"
                               class:playing={playing && currentTime >= w.start && currentTime < w.end}
-                              onclick={() => seekTo(w.start)}
+                              onclick={() => (editMode ? startEdit(it.idx) : seekTo(w.start))}
                             >{w.text}</button>{" "}{/each}{:else}<span
                             class="useg"
                             class:playing={activeUtterance === it.idx}
-                          >{it.u.text}</span>{/if}</span>{/if}
+                          >{it.u.text}</span>{/if}</span>{/if}{#if editMode}<span class="ed-ctrls">{#if speakerOptions.length}<select class="ed-spk" value={it.u.speaker ?? ""} onchange={(e) => setSpeaker(it.idx, e.currentTarget.value)} title="Byt talare för repliken">{#each speakerOptions as s}<option value={s}>{speakerLabels[s] ?? s}</option>{/each}</select>{/if}<button class="ed-del" title="Ta bort repliken" aria-label="Ta bort repliken" onclick={() => deleteUtterance(it.idx)}>×</button></span>{/if}
                   </p>
                 {/each}
               </div>
@@ -2202,7 +2275,7 @@
             klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
           </div>
           <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
-          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
+          <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg, i}{#if (i === 0 || seg.para !== analysis.segments[i - 1].para) && speakerForPara(seg.para)}<span class="rev-speaker">{speakerForPara(seg.para)}: </span>{/if}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
@@ -2542,6 +2615,19 @@
   .ai-open { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line-2); }
   .ai-open-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 2px; }
   .btn.small { padding: 6px 10px; font-size: 13px; }
+  .working { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; background: #eef1ff; color: var(--accent); border: 1px solid #dfe3ff; border-radius: 999px; padding: 5px 13px; font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: workpulse 1s ease-in-out infinite; }
+  .rev-speaker { font-weight: 600; color: var(--muted); }
+  .t-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .t-toolbar .meta { margin: 0; }
+  .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .body.editing { cursor: text; border-radius: 4px; }
+  .body.editing:hover { background: #fff7e0; box-shadow: 0 0 0 2px #fff7e0; }
+  .ed-ctrls { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
+  .ed-spk { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 6px; color: var(--ink); }
+  .ed-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 6px; }
+  .ed-del:hover { background: #fde8e8; color: #c0392b; }
+  @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
   .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
   .empty-view { max-width: 460px; margin: 48px auto; text-align: center; }
