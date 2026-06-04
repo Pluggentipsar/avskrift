@@ -413,47 +413,7 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
         align::from_labeled(backend.live_utterances.lock().unwrap().clone())
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
-        let model_path = backend.paths.whisper_file(&args.model);
-        let transcribe_stream =
-            |wav: &str, label: &str, base: i32, span: i32| -> anyhow::Result<Vec<transcript::Utterance>> {
-                let path = Path::new(wav);
-                if !path.exists() {
-                    return Ok(Vec::new());
-                }
-                let audio = audio::load(path)?;
-                if audio.samples.is_empty() {
-                    return Ok(Vec::new());
-                }
-                let app_pct = app.clone();
-                let raw = {
-                    let mut tr = backend.transcriber.lock().unwrap();
-                    tr.transcribe(
-                        &args.model,
-                        &model_path,
-                        &audio.samples,
-                        &args.language,
-                        false,
-                        false,
-                        &progress,
-                        move |p| {
-                            let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
-                        },
-                    )?
-                };
-                Ok(align::without_speakers(raw)
-                    .into_iter()
-                    .map(|mut u| {
-                        u.speaker = Some(label.to_string());
-                        u
-                    })
-                    .collect())
-            };
-
-        progress("Transkriberar din röst…");
-        let mut utts = transcribe_stream(&files.mic_wav, "Jag", 0, 50)?;
-        progress("Transkriberar mötet…");
-        utts.extend(transcribe_stream(&files.sys_wav, "Mötet", 50, 50)?);
-        align::from_labeled(utts)
+        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language)?
     };
 
     let transcript =
@@ -516,6 +476,92 @@ fn run_diarize_meeting(app: &AppHandle, args: DiarizeMeetingArgs) -> anyhow::Res
     };
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
     progress("Klar");
+    Ok(transcript)
+}
+
+/// Batch-transcribe a meeting's two source WAVs (mic = "Jag", system = "Mötet") with `model` and
+/// merge them into one time-ordered, speaker-labelled list. A missing or empty WAV simply
+/// contributes nothing. Shared by `stop_meeting` ("efter mötet") and `retranscribe_meeting`.
+fn transcribe_meeting_wavs(
+    app: &AppHandle,
+    mic_wav: &str,
+    sys_wav: &str,
+    model: &str,
+    language: &str,
+) -> anyhow::Result<Vec<transcript::Utterance>> {
+    let backend = app.state::<Backend>();
+    let model_path = backend.paths.whisper_file(model);
+    let progress = |m: &str| emit(app, m);
+    let transcribe_stream =
+        |wav: &str, label: &str, base: i32, span: i32| -> anyhow::Result<Vec<transcript::Utterance>> {
+            let path = Path::new(wav);
+            if !path.exists() {
+                return Ok(Vec::new());
+            }
+            let audio = audio::load(path)?;
+            if audio.samples.is_empty() {
+                return Ok(Vec::new());
+            }
+            let app_pct = app.clone();
+            let raw = {
+                let mut tr = backend.transcriber.lock().unwrap();
+                tr.transcribe(model, &model_path, &audio.samples, language, false, false, &progress, move |p| {
+                    let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
+                })?
+            };
+            Ok(align::without_speakers(raw)
+                .into_iter()
+                .map(|mut u| {
+                    u.speaker = Some(label.to_string());
+                    u
+                })
+                .collect())
+        };
+
+    progress("Transkriberar din röst…");
+    let mut utts = transcribe_stream(mic_wav, "Jag", 0, 50)?;
+    progress("Transkriberar mötet…");
+    utts.extend(transcribe_stream(sys_wav, "Mötet", 50, 50)?);
+    Ok(align::from_labeled(utts))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetranscribeMeetingArgs {
+    mic_wav_path: Option<String>,
+    system_wav_path: Option<String>,
+    /// Whisper model id to re-transcribe with — typically a larger/better one than the live run.
+    model: String,
+    /// ISO code or "auto".
+    language: String,
+}
+
+/// Re-transcribe a finished meeting from its saved source WAVs with a chosen Whisper model: a full
+/// batch pass (better than the live/chunked run, especially with a larger model), re-merged into
+/// "Jag" / "Mötet" and stored. Run `diarize_meeting` afterwards to re-split "Mötet" into speakers.
+#[tauri::command]
+async fn retranscribe_meeting(app: AppHandle, args: RetranscribeMeetingArgs) -> Result<Transcript, String> {
+    tauri::async_runtime::spawn_blocking(move || run_retranscribe_meeting(&app, args))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> anyhow::Result<Transcript> {
+    let mic = args.mic_wav_path.unwrap_or_default();
+    let sys = args.system_wav_path.unwrap_or_default();
+    if mic.is_empty() && sys.is_empty() {
+        anyhow::bail!("Det här mötet har inga sparade ljudfiler att transkribera om.");
+    }
+    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language)?;
+    if utterances.is_empty() {
+        anyhow::bail!("Inget ljud kunde transkriberas – ljudfilerna saknas eller är tomma.");
+    }
+    let transcript =
+        Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
+    let backend = app.state::<Backend>();
+    *backend.transcript.lock().unwrap() = Some(transcript.clone());
+    emit(app, "Klar");
     Ok(transcript)
 }
 
@@ -893,6 +939,7 @@ pub fn run() {
             start_meeting,
             stop_meeting,
             diarize_meeting,
+            retranscribe_meeting,
             ask_transcript,
             update_transcript,
             save_project,
