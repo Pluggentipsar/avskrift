@@ -446,6 +446,26 @@ mod tests {
         })
     }
 
+    /// The Url category masks a web address end-to-end without the NER model: enabling only
+    /// `Url` skips the model (it is not a `MODEL_CATEGORIES` member), so the rule detector and
+    /// pseudonymiser must do all the work. Guards the frontend "Webbadress" wiring at the seam.
+    #[test]
+    fn url_is_masked_end_to_end() {
+        let engine = test_engine();
+        let text = "Mer info på https://www.skolverket.se/sida och www.exempel.se.".to_string();
+        let res = engine.analyze_text(text, vec![Category::Url], Vec::new(), false, &|_: &str| {}).unwrap();
+        let urls = res.spans.iter().filter(|s| s.category == Category::Url).count();
+        assert_eq!(urls, 2, "båda webbadresserna ska hittas");
+        assert!(res.spans.iter().all(|s| s.replacement.starts_with("Webbadress")));
+
+        let out = std::env::temp_dir().join("avident_url_test.txt");
+        engine.export(out.clone(), Vec::new()).unwrap();
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert!(!written.contains("skolverket.se"), "URL läckte: {written}");
+        assert!(!written.contains("exempel.se"), "URL läckte: {written}");
+        assert!(written.contains("Webbadress 1") && written.contains("Webbadress 2"));
+    }
+
     /// Full text pipeline: detect -> export -> verify PII is gone. Run with:
     /// `cargo test --lib engine::tests -- --ignored --nocapture`
     #[test]
