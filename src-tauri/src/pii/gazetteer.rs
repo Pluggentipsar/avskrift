@@ -51,6 +51,16 @@ pub fn mediciner(text: &str) -> Vec<Span> {
     MEDICIN_WORDS.detect(text)
 }
 
+/// Drop spans covering the exact same byte range. A token can appear in more than one list —
+/// a name that is both a first and last name ("Sten", "Björn"), or a tätort that is also a
+/// kommun ("Vara") — and would otherwise be reported twice. (merge() resolves overlaps too,
+/// but deduping here keeps each gazetteer's own output clean.)
+fn dedup_spans(mut v: Vec<Span>) -> Vec<Span> {
+    v.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    v.dedup_by(|a, b| a.start == b.start && a.end == b.end);
+    v
+}
+
 /// Detect Swedish first and last names from the built-in name lists (SCB).
 /// A deterministic safety net complementing the NER model: high recall on common names
 /// (children's and staff names in school transcripts), at a low score because common
@@ -61,7 +71,7 @@ pub fn namn(text: &str) -> Vec<Span> {
     for s in &mut v {
         s.score = NAME_SCORE;
     }
-    v
+    dedup_spans(v)
 }
 
 /// Detect place names from the built-in lists: all 290 municipalities plus the (initially
@@ -71,7 +81,7 @@ pub fn platser(text: &str) -> Vec<Span> {
     let mut v = KOMMUN_WORDS.detect(text);
     v.extend(SKOLA_WORDS.detect(text));
     v.extend(ORT_WORDS.detect(text));
-    v
+    dedup_spans(v)
 }
 
 #[cfg(test)]
@@ -104,6 +114,12 @@ mod tests {
         // "Sten" the name is masked; "sten" the rock is left alone.
         assert_eq!(namn("Vi pratade med Sten igår.").len(), 1);
         assert!(namn("Han snubblade på en sten.").is_empty());
+    }
+
+    #[test]
+    fn name_in_both_lists_is_reported_once() {
+        // "Björn"/"Sten" are both first and last names in the SCB lists; one span, not two.
+        assert_eq!(namn("Vi träffade Björn idag.").len(), 1);
     }
 
     #[test]
