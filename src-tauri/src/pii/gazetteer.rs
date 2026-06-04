@@ -1,5 +1,6 @@
 //! Built-in term lists compiled into the binary (no external files for the end user).
-//! Provides the Diagnos, Medicin and Person (name) gazetteers; new sets can be added the same way.
+//! Provides the Diagnos, Medicin, Person (name) and Plats (municipality/school/locality)
+//! gazetteers; new sets can be added the same way.
 
 use once_cell::sync::Lazy;
 
@@ -11,6 +12,9 @@ const DIAGNOSER_AKRONYMER: &str = include_str!("../data/diagnoser_akronymer.txt"
 const MEDICINER: &str = include_str!("../data/mediciner.txt");
 const FORNAMN: &str = include_str!("../data/fornamn.txt");
 const EFTERNAMN: &str = include_str!("../data/efternamn.txt");
+const KOMMUNER: &str = include_str!("../data/kommuner.txt");
+const SKOLOR: &str = include_str!("../data/skolor.txt");
+const ORTNAMN: &str = include_str!("../data/ortnamn.txt");
 
 /// Names double as everyday words (Björn, Sten, My), so a list match is only a hint, not a
 /// certainty. We mark hits with a low score; the user reviews them. (Overlap resolution in
@@ -38,6 +42,13 @@ static FORNAMN_WORDS: Lazy<Dictionary> =
     Lazy::new(|| Dictionary::new(&parse(FORNAMN), Category::Person, false));
 static EFTERNAMN_WORDS: Lazy<Dictionary> =
     Lazy::new(|| Dictionary::new(&parse(EFTERNAMN), Category::Person, false));
+// Place lists are case-sensitive too: several names double as everyday words (Mark, Vara, Berg).
+static KOMMUN_WORDS: Lazy<Dictionary> =
+    Lazy::new(|| Dictionary::new(&parse(KOMMUNER), Category::Plats, false));
+static SKOLA_WORDS: Lazy<Dictionary> =
+    Lazy::new(|| Dictionary::new(&parse(SKOLOR), Category::Plats, false));
+static ORT_WORDS: Lazy<Dictionary> =
+    Lazy::new(|| Dictionary::new(&parse(ORTNAMN), Category::Plats, false));
 
 /// Detect diagnosis terms from the built-in gazetteer (ICD codes are handled in `rules`).
 pub fn diagnoser(text: &str) -> Vec<Span> {
@@ -61,6 +72,16 @@ pub fn namn(text: &str) -> Vec<Span> {
     for s in &mut v {
         s.score = NAME_SCORE;
     }
+    v
+}
+
+/// Detect place names from the built-in lists: all 290 municipalities plus the (initially
+/// empty) school and locality scaffolds. Complements the NER model and the suffix-based
+/// street/school rules. Capitalisation is required to avoid everyday-word collisions.
+pub fn platser(text: &str) -> Vec<Span> {
+    let mut v = KOMMUN_WORDS.detect(text);
+    v.extend(SKOLA_WORDS.detect(text));
+    v.extend(ORT_WORDS.detect(text));
     v
 }
 
@@ -94,5 +115,19 @@ mod tests {
         // "Sten" the name is masked; "sten" the rock is left alone.
         assert_eq!(namn("Vi pratade med Sten igår.").len(), 1);
         assert!(namn("Han snubblade på en sten.").is_empty());
+    }
+
+    #[test]
+    fn finds_municipalities() {
+        let hits = platser("Eleven flyttade från Höör till Östra Göinge.");
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|s| s.category == Category::Plats));
+    }
+
+    #[test]
+    fn municipality_requires_capital_to_avoid_everyday_word() {
+        // "Vara" the municipality is masked; "vara" the verb is left alone.
+        assert_eq!(platser("Hen bor i Vara.").len(), 1);
+        assert!(platser("Hen vill vara hemma.").is_empty());
     }
 }

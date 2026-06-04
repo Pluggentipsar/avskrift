@@ -1,0 +1,14 @@
+# Skolnamn – gazetteer för Category::Plats. TOM SCAFFOLD – fyll på själv.
+#
+# Suffix-baserade skolnamn ("Björkskolan", "Vasagymnasiet") fångas redan av
+# regeln `rules::skolnamn`. Den här listan är för EXAKTA namn som inte följer
+# suffix-mönstret, t.ex. "Engelska skolan", "Kunskapsskolan", "IES Bromma",
+# eller en specifik kommuns alla skolenheter.
+#
+# Datakälla: Skolverkets skolenhetsregister (öppna data) –
+#   https://www.skolverket.se/skolutveckling/skolenhetsregistret
+# Exportera enheterna och klistra in ett namn per rad. #-rader och tomma rader
+# ignoreras. Matchning är skiftlägeskänslig (kräver inledande versal).
+#
+# Tills listan fylls på görs inga träffar härifrån (regeln räcker för de
+# vanliga suffix-namnen).

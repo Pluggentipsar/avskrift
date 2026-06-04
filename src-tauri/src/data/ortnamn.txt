@@ -1,0 +1,14 @@
+# Ortnamn (tätorter, byar, stadsdelar) – gazetteer för Category::Plats.
+# TOM SCAFFOLD – fyll på själv.
+#
+# Kommuner täcks redan av `kommuner.txt`. Den här listan är för mindre orter,
+# tätorter och stadsdelar som NER-modellen lätt missar.
+#
+# Datakälla: SCB:s tätortsregister eller Lantmäteriets ortnamn (öppna data).
+# Klistra in ett namn per rad. #-rader och tomma rader ignoreras. Matchning är
+# skiftlägeskänslig (kräver inledande versal) – många ortnamn är även vardagsord.
+#
+# OBS: ju större lista, desto högre risk för övermaskering av vanliga ord.
+# Börja gärna med orterna i de kommuner ni faktiskt arbetar med.
+#
+# Tills listan fylls på görs inga träffar härifrån.

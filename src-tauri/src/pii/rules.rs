@@ -10,6 +10,7 @@ static EMAIL: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
 static PHONE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:\+46|0046|0)[\d \-]{6,12}\d").unwrap());
 static IPV4: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap());
+static URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:https?://|www\.)[^\s<>"'()]+"#).unwrap());
 static ICD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"[A-Z][0-9]{2}(?:\.[0-9]{1,2}[A-Z]?)?").unwrap());
 static LGH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\blgh\.?\s*\d{1,4}\b").unwrap());
@@ -124,6 +125,25 @@ pub fn ip_adress(text: &str) -> Vec<Span> {
     out
 }
 
+/// Web addresses (`https://…`, `http://…`, `www.…`). Trailing sentence punctuation that the
+/// greedy match swallowed is trimmed back off the span.
+pub fn url(text: &str) -> Vec<Span> {
+    let mut out = Vec::new();
+    for m in URL.find_iter(text) {
+        let s = m.start();
+        let mut e = m.end();
+        while text[s..e]
+            .ends_with(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '"' | '\''))
+        {
+            e -= 1;
+        }
+        if e > s {
+            out.push(Span::new(s, e, &text[s..e], Category::Url, Source::Rule, 0.95));
+        }
+    }
+    out
+}
+
 /// ICD-10 diagnosis codes, e.g. `F90.0`, `F84`, `J45.9`.
 pub fn icd10(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
@@ -176,6 +196,7 @@ pub fn all(text: &str) -> Vec<Span> {
     v.extend(epost(text));
     v.extend(telefon(text));
     v.extend(ip_adress(text));
+    v.extend(url(text));
     v.extend(icd10(text));
     v.extend(lagenhet(text));
     v.extend(gatuadress(text));
@@ -251,6 +272,15 @@ mod tests {
     #[test]
     fn icd_not_glued_to_word() {
         assert!(icd10("kod ABC12 finns").is_empty());
+    }
+
+    #[test]
+    fn finds_url_and_trims_trailing_punctuation() {
+        let s = url("Besök https://exempel.se/sida. Eller www.test.se, sade hen.");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].text, "https://exempel.se/sida"); // trailing "." trimmed
+        assert_eq!(s[0].category, Category::Url);
+        assert_eq!(s[1].text, "www.test.se"); // trailing "," trimmed
     }
 
     #[test]

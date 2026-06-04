@@ -20,6 +20,7 @@ pub enum Category {
     Telefon,
     Epost,
     IpAdress,
+    Url,
     Diagnos,
     Medicin,
     Egen,
@@ -39,6 +40,7 @@ impl Category {
             Category::Telefon => "Telefon",
             Category::Epost => "E-post",
             Category::IpAdress => "IP-adress",
+            Category::Url => "Webbadress",
             Category::Diagnos => "Diagnos",
             Category::Medicin => "Medicin",
             Category::Egen => "Egen",
@@ -46,7 +48,7 @@ impl Category {
         }
     }
 
-    pub const ALL: [Category; 13] = [
+    pub const ALL: [Category; 14] = [
         Category::Person,
         Category::Plats,
         Category::Organisation,
@@ -56,6 +58,7 @@ impl Category {
         Category::Telefon,
         Category::Epost,
         Category::IpAdress,
+        Category::Url,
         Category::Diagnos,
         Category::Medicin,
         Category::Egen,

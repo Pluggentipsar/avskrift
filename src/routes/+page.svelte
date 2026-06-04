@@ -32,6 +32,7 @@
     { key: "telefon", label: "Telefon", color: "#0891b2" },
     { key: "epost", label: "E-post", color: "#059669" },
     { key: "ip_adress", label: "IP-adress", color: "#4f46e5" },
+    { key: "url", label: "Webbadress", color: "#0369a1" },
     { key: "tid", label: "Tid", color: "#d97706" },
     { key: "handelse", label: "Händelse", color: "#0d9488" },
     { key: "diagnos", label: "Diagnos", color: "#b45309" },
@@ -42,7 +43,7 @@
   const ALL_KEYS = CATEGORIES.map((c) => c.key);
   const colorOf = (key: string) => CATEGORIES.find((c) => c.key === key)?.color ?? "#888";
 
-  const IDENTITY = ["person", "personnummer", "telefon", "epost", "ip_adress", "plats", "organisation", "egen", "ovrigt"];
+  const IDENTITY = ["person", "personnummer", "telefon", "epost", "ip_adress", "url", "plats", "organisation", "egen", "ovrigt"];
   const PROFILES = [
     { id: "allman", label: "Allmän", cats: IDENTITY },
     { id: "skola", label: "Skola / Elevhälsa", cats: [...IDENTITY, "diagnos", "medicin"] },
