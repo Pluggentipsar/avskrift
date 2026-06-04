@@ -54,6 +54,8 @@ pub struct Segment {
     pub end: usize,
     /// True for a clickable plain word (manual-mask target); false for detected spans / whitespace.
     pub word: bool,
+    /// Index of the paragraph/utterance this segment belongs to (lets the UI show speaker labels).
+    pub para: usize,
 }
 
 #[derive(Serialize)]
@@ -152,7 +154,7 @@ impl Engine {
         let enabled: HashSet<Category> = enabled.into_iter().collect();
         let spans = self.detect(&text, &enabled, &terms, use_ai, progress)?;
         let para_ranges = vec![(0, text.len())];
-        let result = build_result(&text, &spans, Vec::new());
+        let result = build_result(&text, &spans, Vec::new(), &para_ranges);
         *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None });
         Ok(result)
     }
@@ -176,7 +178,7 @@ impl Engine {
             );
         }
 
-        let result = build_result(&doc.text, &spans, warnings);
+        let result = build_result(&doc.text, &spans, warnings, &doc.para_ranges);
         *self.last.lock().unwrap() =
             Some(Analysis { text: doc.text, spans, para_ranges: doc.para_ranges, source_path: Some(path) });
         Ok(result)
@@ -205,7 +207,7 @@ impl Engine {
         }
         let enabled: HashSet<Category> = enabled.into_iter().collect();
         let spans = self.detect(&text, &enabled, &terms, use_ai, progress)?;
-        let result = build_result(&text, &spans, Vec::new());
+        let result = build_result(&text, &spans, Vec::new(), &para_ranges);
         *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None });
         Ok(result)
     }
@@ -234,7 +236,7 @@ impl Engine {
         analysis.spans.retain(|s| !(start < s.end && s.start < end));
         analysis.spans.push(Span::manual(start, end, &surface, category, custom));
         analysis.spans.sort_by_key(|s| s.start);
-        Ok(build_result(&analysis.text, &analysis.spans, Vec::new()))
+        Ok(build_result(&analysis.text, &analysis.spans, Vec::new(), &analysis.para_ranges))
     }
 
     /// The masked text of each stored paragraph (utterance), skipping rejected spans, with
@@ -326,8 +328,12 @@ impl Engine {
     }
 }
 
-fn build_result(text: &str, spans: &[Span], warnings: Vec<String>) -> AnalyzeResult {
-    let segments = build_segments(text, spans);
+fn build_result(text: &str, spans: &[Span], warnings: Vec<String>, para_ranges: &[(usize, usize)]) -> AnalyzeResult {
+    let mut segments = build_segments(text, spans);
+    // Tag each segment with its paragraph/utterance index so the UI can show speaker labels.
+    for seg in &mut segments {
+        seg.para = para_ranges.iter().rposition(|(s, _)| seg.start >= *s).unwrap_or(0);
+    }
 
     let mut pseudo = Pseudonymizer::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -362,6 +368,7 @@ fn build_segments(text: &str, spans: &[Span]) -> Vec<Segment> {
             start: s.start,
             end: s.end,
             word: false,
+            para: 0,
         });
         cursor = s.end;
     }
@@ -387,6 +394,7 @@ fn push_plain(run: &str, base: usize, segs: &mut Vec<Segment>) {
                     start: base + tok_start,
                     end: base + off,
                     word: !prev,
+                    para: 0,
                 });
                 tok_start = off;
                 cur_ws = Some(ws);
@@ -402,6 +410,7 @@ fn push_plain(run: &str, base: usize, segs: &mut Vec<Segment>) {
                 start: base + tok_start,
                 end: base + run.len(),
                 word: !prev,
+                para: 0,
             });
         }
     }

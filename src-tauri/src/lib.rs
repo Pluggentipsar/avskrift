@@ -413,7 +413,7 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
         align::from_labeled(backend.live_utterances.lock().unwrap().clone())
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
-        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language)?
+        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false)?
     };
 
     let transcript =
@@ -488,35 +488,39 @@ fn transcribe_meeting_wavs(
     sys_wav: &str,
     model: &str,
     language: &str,
+    word_timestamps: bool,
 ) -> anyhow::Result<Vec<transcript::Utterance>> {
     let backend = app.state::<Backend>();
     let model_path = backend.paths.whisper_file(model);
     let progress = |m: &str| emit(app, m);
-    let transcribe_stream =
-        |wav: &str, label: &str, base: i32, span: i32| -> anyhow::Result<Vec<transcript::Utterance>> {
-            let path = Path::new(wav);
-            if !path.exists() {
-                return Ok(Vec::new());
-            }
-            let audio = audio::load(path)?;
-            if audio.samples.is_empty() {
-                return Ok(Vec::new());
-            }
-            let app_pct = app.clone();
-            let raw = {
-                let mut tr = backend.transcriber.lock().unwrap();
-                tr.transcribe(model, &model_path, &audio.samples, language, false, false, &progress, move |p| {
-                    let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
-                })?
-            };
-            Ok(align::without_speakers(raw)
-                .into_iter()
-                .map(|mut u| {
-                    u.speaker = Some(label.to_string());
-                    u
-                })
-                .collect())
+    let transcribe_stream = |wav: &str,
+                             label: &str,
+                             base: i32,
+                             span: i32|
+     -> anyhow::Result<Vec<transcript::Utterance>> {
+        let path = Path::new(wav);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let audio = audio::load(path)?;
+        if audio.samples.is_empty() {
+            return Ok(Vec::new());
+        }
+        let app_pct = app.clone();
+        let raw = {
+            let mut tr = backend.transcriber.lock().unwrap();
+            tr.transcribe(model, &model_path, &audio.samples, language, word_timestamps, false, &progress, move |p| {
+                let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
+            })?
         };
+        Ok(align::without_speakers(raw)
+            .into_iter()
+            .map(|mut u| {
+                u.speaker = Some(label.to_string());
+                u
+            })
+            .collect())
+    };
 
     progress("Transkriberar din röst…");
     let mut utts = transcribe_stream(mic_wav, "Jag", 0, 50)?;
@@ -553,7 +557,7 @@ fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> a
     if mic.is_empty() && sys.is_empty() {
         anyhow::bail!("Det här mötet har inga sparade ljudfiler att transkribera om.");
     }
-    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language)?;
+    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language, true)?;
     if utterances.is_empty() {
         anyhow::bail!("Inget ljud kunde transkriberas – ljudfilerna saknas eller är tomma.");
     }
