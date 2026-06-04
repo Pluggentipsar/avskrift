@@ -1,6 +1,6 @@
 [package]
 name = "avskrift"
-version = "0.1.2"
+version = "0.1.3"
 description = "Lokal transkribering, diarisering och avidentifiering av svenskt tal"
 authors = ["Pluggentipsar"]
 edition = "2021"
