@@ -69,12 +69,7 @@ impl Summarizer {
 
     /// Summarise `transcript_text` using the chosen structure instruction (from a built-in template
     /// or the user's own agenda/headings). `progress` reports map/reduce phases. Greedy decoding.
-    pub fn summarize(
-        &self,
-        transcript_text: &str,
-        structure: &str,
-        progress: &dyn Fn(&str),
-    ) -> Result<String> {
+    pub fn summarize(&self, transcript_text: &str, structure: &str, progress: &dyn Fn(&str)) -> Result<String> {
         let chunks = split_chunks(transcript_text, CHUNK_CHARS);
 
         if chunks.len() <= 1 {
@@ -98,12 +93,7 @@ impl Summarizer {
 
     /// Answer a free-text question **strictly from the transcript** (greedy decoding). For long
     /// transcripts the question is answered per chunk, then the partial answers are woven together.
-    pub fn answer(
-        &self,
-        question: &str,
-        transcript_text: &str,
-        progress: &dyn Fn(&str),
-    ) -> Result<String> {
+    pub fn answer(&self, question: &str, transcript_text: &str, progress: &dyn Fn(&str)) -> Result<String> {
         let chunks = split_chunks(transcript_text, CHUNK_CHARS);
 
         if chunks.len() <= 1 {

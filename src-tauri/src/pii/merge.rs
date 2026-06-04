@@ -20,16 +20,10 @@ fn priority(s: &Span) -> u8 {
 /// Keep only enabled categories and drop overlaps, preferring higher priority then longer spans.
 /// Returns spans sorted by start offset.
 pub fn resolve(spans: Vec<Span>, enabled: &HashSet<Category>) -> Vec<Span> {
-    let mut cand: Vec<Span> = spans
-        .into_iter()
-        .filter(|s| s.end > s.start && enabled.contains(&s.category))
-        .collect();
+    let mut cand: Vec<Span> = spans.into_iter().filter(|s| s.end > s.start && enabled.contains(&s.category)).collect();
 
     cand.sort_by(|a, b| {
-        priority(b)
-            .cmp(&priority(a))
-            .then((b.end - b.start).cmp(&(a.end - a.start)))
-            .then(a.start.cmp(&b.start))
+        priority(b).cmp(&priority(a)).then((b.end - b.start).cmp(&(a.end - a.start))).then(a.start.cmp(&b.start))
     });
 
     let mut kept: Vec<Span> = Vec::new();
@@ -54,6 +48,9 @@ pub struct Replacement {
 
 pub struct AppliedResult {
     pub text: String,
+    /// Structured record of every applied replacement. Populated by `apply`; not read yet
+    /// (kept for a future "what was masked" view / audit log).
+    #[allow(dead_code)]
     pub replacements: Vec<Replacement>,
 }
 

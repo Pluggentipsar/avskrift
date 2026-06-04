@@ -86,8 +86,7 @@ pub fn save(dir: &Path, job: &Job) -> Result<()> {
 
 /// Load a single job by id.
 pub fn open(dir: &Path, id: &str) -> Result<Job> {
-    let json = std::fs::read_to_string(job_path(dir, id))
-        .map_err(|e| anyhow!("kunde inte läsa jobbet: {e}"))?;
+    let json = std::fs::read_to_string(job_path(dir, id)).map_err(|e| anyhow!("kunde inte läsa jobbet: {e}"))?;
     serde_json::from_str(&json).map_err(|e| anyhow!("ogiltig jobbfil: {e}"))
 }
 

@@ -10,21 +10,15 @@ use anyhow::{anyhow, Context, Result};
 
 /// Download `url` to `dest`, calling `progress(downloaded_bytes, total_bytes)` periodically.
 pub fn to_file(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()> {
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| anyhow!("nedladdningen kunde inte startas: {e}"))?;
+    let resp = ureq::get(url).call().map_err(|e| anyhow!("nedladdningen kunde inte startas: {e}"))?;
 
-    let total: u64 = resp
-        .header("Content-Length")
-        .and_then(|h| h.parse().ok())
-        .unwrap_or(0);
+    let total: u64 = resp.header("Content-Length").and_then(|h| h.parse().ok()).unwrap_or(0);
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let tmp = dest.with_extension("part");
-    let mut out = std::fs::File::create(&tmp)
-        .with_context(|| format!("kunde inte skapa {}", tmp.display()))?;
+    let mut out = std::fs::File::create(&tmp).with_context(|| format!("kunde inte skapa {}", tmp.display()))?;
 
     let mut reader = resp.into_reader();
     let mut buf = [0u8; 64 * 1024];
@@ -46,8 +40,7 @@ pub fn to_file(url: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<()
     out.sync_all().ok();
     drop(out);
 
-    std::fs::rename(&tmp, dest)
-        .with_context(|| format!("kunde inte färdigställa {}", dest.display()))?;
+    std::fs::rename(&tmp, dest).with_context(|| format!("kunde inte färdigställa {}", dest.display()))?;
     progress(done, total.max(done));
     Ok(())
 }

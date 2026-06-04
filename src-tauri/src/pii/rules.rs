@@ -6,13 +6,11 @@ use regex::Regex;
 use super::{char_after_is_alnum, char_before_is_alnum, Category, Source, Span};
 
 static PNR: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d{6,8}[-+]?\d{4}").unwrap());
-static EMAIL: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
+static EMAIL: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}").unwrap());
 static PHONE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?:\+46|0046|0)[\d \-]{6,12}\d").unwrap());
 static IPV4: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap());
 static URL: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:https?://|www\.)[^\s<>"'()]+"#).unwrap());
-static ICD: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"[A-Z][0-9]{2}(?:\.[0-9]{1,2}[A-Z]?)?").unwrap());
+static ICD: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Z][0-9]{2}(?:\.[0-9]{1,2}[A-Z]?)?").unwrap());
 static LGH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\blgh\.?\s*\d{1,4}\b").unwrap());
 // Street address: an optional directional prefix, a capitalised stem ending in a Swedish
 // street suffix, then a house number (the precision anchor). E.g. "Storgatan 12B",
@@ -132,9 +130,7 @@ pub fn url(text: &str) -> Vec<Span> {
     for m in URL.find_iter(text) {
         let s = m.start();
         let mut e = m.end();
-        while text[s..e]
-            .ends_with(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '"' | '\''))
-        {
+        while text[s..e].ends_with(['.', ',', ';', ':', '!', '?', ')', ']', '}', '"', '\'']) {
             e -= 1;
         }
         if e > s {
@@ -159,9 +155,7 @@ pub fn icd10(text: &str) -> Vec<Span> {
 
 /// Apartment number, e.g. "lgh 1203" — part of an address.
 pub fn lagenhet(text: &str) -> Vec<Span> {
-    LGH.find_iter(text)
-        .map(|m| Span::new(m.start(), m.end(), m.as_str(), Category::Plats, Source::Rule, 0.9))
-        .collect()
+    LGH.find_iter(text).map(|m| Span::new(m.start(), m.end(), m.as_str(), Category::Plats, Source::Rule, 0.9)).collect()
 }
 
 /// Swedish street address ("Storgatan 12B"). The trailing house number keeps precision high.

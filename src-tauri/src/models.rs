@@ -34,16 +34,36 @@ pub struct WhisperModelInfo {
 /// published artefacts before release** (see FINISH.md) — KBLab publishes the PyTorch/CT2 weights,
 /// and the GGML files come from a community/own conversion repo.
 pub const WHISPER_MODELS: &[(&str, &str, u32, &str)] = &[
-    ("kb-whisper-tiny", "Tiny (q5) — snabbast, lägst kvalitet", 28,
-        "https://huggingface.co/KBLab/kb-whisper-tiny/resolve/main/ggml-model-q5_0.bin"),
-    ("kb-whisper-base", "Base (q5) — snabb", 53,
-        "https://huggingface.co/KBLab/kb-whisper-base/resolve/main/ggml-model-q5_0.bin"),
-    ("kb-whisper-small", "Small (q5) — bra balans (rekommenderad)", 167,
-        "https://huggingface.co/KBLab/kb-whisper-small/resolve/main/ggml-model-q5_0.bin"),
-    ("kb-whisper-medium", "Medium (q5) — högre kvalitet, långsammare", 514,
-        "https://huggingface.co/KBLab/kb-whisper-medium/resolve/main/ggml-model-q5_0.bin"),
-    ("kb-whisper-large", "Large (q5) — bäst kvalitet, kräver kraftig dator", 1031,
-        "https://huggingface.co/KBLab/kb-whisper-large/resolve/main/ggml-model-q5_0.bin"),
+    (
+        "kb-whisper-tiny",
+        "Tiny (q5) — snabbast, lägst kvalitet",
+        28,
+        "https://huggingface.co/KBLab/kb-whisper-tiny/resolve/main/ggml-model-q5_0.bin",
+    ),
+    (
+        "kb-whisper-base",
+        "Base (q5) — snabb",
+        53,
+        "https://huggingface.co/KBLab/kb-whisper-base/resolve/main/ggml-model-q5_0.bin",
+    ),
+    (
+        "kb-whisper-small",
+        "Small (q5) — bra balans (rekommenderad)",
+        167,
+        "https://huggingface.co/KBLab/kb-whisper-small/resolve/main/ggml-model-q5_0.bin",
+    ),
+    (
+        "kb-whisper-medium",
+        "Medium (q5) — högre kvalitet, långsammare",
+        514,
+        "https://huggingface.co/KBLab/kb-whisper-medium/resolve/main/ggml-model-q5_0.bin",
+    ),
+    (
+        "kb-whisper-large",
+        "Large (q5) — bäst kvalitet, kräver kraftig dator",
+        1031,
+        "https://huggingface.co/KBLab/kb-whisper-large/resolve/main/ggml-model-q5_0.bin",
+    ),
 ];
 
 /// Download URL for a Whisper model id.
@@ -94,10 +114,7 @@ pub const SUMMARY_MODELS: &[(&str, &str, u32, &str, &str)] = &[
 
 /// `(gguf_url, tokenizer_url)` for a summary model id.
 pub fn summary_urls(id: &str) -> Option<(&'static str, &'static str)> {
-    SUMMARY_MODELS
-        .iter()
-        .find(|(mid, ..)| *mid == id)
-        .map(|(_, _, _, gguf, tok)| (*gguf, *tok))
+    SUMMARY_MODELS.iter().find(|(mid, ..)| *mid == id).map(|(_, _, _, gguf, tok)| (*gguf, *tok))
 }
 
 /// Resolved on-disk locations of every model the app needs.
@@ -147,10 +164,7 @@ impl ModelPaths {
         if id == "qwen2.5-1.5b" && self.llm_model.exists() {
             return (self.llm_model.clone(), self.llm_tokenizer.clone());
         }
-        (
-            self.summary_dir.join(format!("{id}.gguf")),
-            self.summary_dir.join(format!("{id}.tokenizer.json")),
-        )
+        (self.summary_dir.join(format!("{id}.gguf")), self.summary_dir.join(format!("{id}.tokenizer.json")))
     }
 
     /// True when both files for a summary model are present (or it's the bundled 1.5B).
@@ -194,10 +208,7 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     // Writable per-user dir for downloaded Whisper models.
     let data_dir = app.path().app_data_dir().ok();
     let writable = |sub: &str| -> PathBuf {
-        data_dir
-            .as_ref()
-            .map(|d| d.join(sub))
-            .unwrap_or_else(|| manifest.join("resources").join(sub))
+        data_dir.as_ref().map(|d| d.join(sub)).unwrap_or_else(|| manifest.join("resources").join(sub))
     };
     let whisper_dir = writable("whisper-models");
     let summary_dir = writable("summary-models");

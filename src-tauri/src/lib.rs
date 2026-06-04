@@ -63,9 +63,7 @@ fn list_whisper_models(backend: State<Backend>) -> Vec<WhisperModelInfo> {
 async fn download_whisper_model(app: AppHandle, id: String) -> Result<(), String> {
     let (url, dest) = {
         let backend = app.state::<Backend>();
-        let url = models::whisper_url(&id)
-            .ok_or_else(|| format!("okänd modell: {id}"))?
-            .to_string();
+        let url = models::whisper_url(&id).ok_or_else(|| format!("okänd modell: {id}"))?.to_string();
         (url, backend.paths.whisper_file(&id))
     };
 
@@ -99,10 +97,7 @@ struct TemplateInfo {
 
 #[tauri::command]
 fn list_summary_templates() -> Vec<TemplateInfo> {
-    summarize::TEMPLATES
-        .iter()
-        .map(|t| TemplateInfo { id: t.id.to_string(), label: t.label.to_string() })
-        .collect()
+    summarize::TEMPLATES.iter().map(|t| TemplateInfo { id: t.id.to_string(), label: t.label.to_string() }).collect()
 }
 
 /// Download a summary model (GGUF + tokenizer) by id, emitting `avskrift:download` progress.
@@ -110,8 +105,7 @@ fn list_summary_templates() -> Vec<TemplateInfo> {
 async fn download_summary_model(app: AppHandle, id: String) -> Result<(), String> {
     let (gguf_url, tok_url, gguf_dest, tok_dest) = {
         let backend = app.state::<Backend>();
-        let (gguf_url, tok_url) =
-            models::summary_urls(&id).ok_or_else(|| format!("okänd modell: {id}"))?;
+        let (gguf_url, tok_url) = models::summary_urls(&id).ok_or_else(|| format!("okänd modell: {id}"))?;
         let (gguf_dest, tok_dest) = backend.paths.summary_files(&id);
         (gguf_url.to_string(), tok_url.to_string(), gguf_dest, tok_dest)
     };
@@ -162,10 +156,7 @@ fn run_summarize(app: &AppHandle, args: SummarizeArgs) -> anyhow::Result<String>
 
     let (gguf, tok) = backend.paths.summary_files(&args.model);
     if !gguf.exists() || !tok.exists() {
-        return Err(anyhow::anyhow!(
-            "Sammanfattningsmodellen '{}' är inte nedladdad. Hämta den först.",
-            args.model
-        ));
+        return Err(anyhow::anyhow!("Sammanfattningsmodellen '{}' är inte nedladdad. Hämta den först.", args.model));
     }
 
     // Lazily (re)load the summariser when the selected model changes.
@@ -258,12 +249,8 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
         align::without_speakers(raw)
     };
 
-    let transcript = Transcript {
-        utterances,
-        language: args.language.clone(),
-        model: args.model.clone(),
-        diarized: args.diarize,
-    };
+    let transcript =
+        Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: args.diarize };
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
     progress("Klar");
     Ok(transcript)
@@ -296,16 +283,10 @@ fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
     }
     let model_path = backend.paths.whisper_file(&args.model);
     if !model_path.exists() {
-        return Err(format!(
-            "Whisper-modellen '{}' är inte nedladdad. Hämta den först.",
-            args.model
-        ));
+        return Err(format!("Whisper-modellen '{}' är inte nedladdad. Hämta den först.", args.model));
     }
 
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let mic_wav = backend.paths.meetings_dir.join(format!("mote-{ts}-mic.wav"));
     let sys_wav = backend.paths.meetings_dir.join(format!("mote-{ts}-system.wav"));
 
@@ -319,9 +300,7 @@ fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
         // Transcriber, emitting each utterance live and accumulating it for the final transcript.
         let worker_app = app.clone();
         let started = std::time::Instant::now();
-        let worker = std::thread::spawn(move || {
-            meeting_worker(worker_app, chunks, args.model, args.language, started)
-        });
+        let worker = std::thread::spawn(move || meeting_worker(worker_app, chunks, args.model, args.language, started));
         *backend.meeting_worker.lock().unwrap() = Some(worker);
     } else {
         // "Efter mötet"-läge: capture only; both WAVs are transcribed on stop. Dropping the chunk
@@ -420,12 +399,7 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
     let backend = app.state::<Backend>();
     let progress = |m: &str| emit(app, m);
 
-    let cap = backend
-        .meeting
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Ingen mötesinspelning pågår."))?;
+    let cap = backend.meeting.lock().unwrap().take().ok_or_else(|| anyhow::anyhow!("Ingen mötesinspelning pågår."))?;
 
     progress("Avslutar inspelning…");
     let files = cap.stop().map_err(|e| anyhow::anyhow!(e))?;
@@ -482,12 +456,8 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
         align::from_labeled(utts)
     };
 
-    let transcript = Transcript {
-        utterances,
-        language: args.language.clone(),
-        model: args.model.clone(),
-        diarized: true,
-    };
+    let transcript =
+        Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
     progress("Klar");
 
@@ -572,10 +542,7 @@ fn run_ask(app: &AppHandle, args: AskArgs) -> anyhow::Result<String> {
 
     let (gguf, tok) = backend.paths.summary_files(&args.model);
     if !gguf.exists() || !tok.exists() {
-        return Err(anyhow::anyhow!(
-            "Modellen '{}' är inte nedladdad. Hämta den först.",
-            args.model
-        ));
+        return Err(anyhow::anyhow!("Modellen '{}' är inte nedladdad. Hämta den först.", args.model));
     }
     let mut guard = backend.summarizer.lock().unwrap();
     let needs_load = !matches!(&*guard, Some((cur, _)) if *cur == args.model);
@@ -593,10 +560,7 @@ fn run_ask(app: &AppHandle, args: AskArgs) -> anyhow::Result<String> {
 /// path, so the existing `transcribe` pipeline can pick it up like any other audio file.
 #[tauri::command]
 fn save_recording(data: Vec<u8>) -> Result<String, String> {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let path = std::env::temp_dir().join(format!("avskrift-inspelning-{ts}.wav"));
     std::fs::write(&path, &data).map_err(|e| format!("kunde inte spara inspelningen: {e}"))?;
     Ok(path.to_string_lossy().to_string())
@@ -636,16 +600,8 @@ struct SaveProjectArgs {
 #[tauri::command]
 fn save_project(backend: State<Backend>, args: SaveProjectArgs) -> Result<(), String> {
     let guard = backend.transcript.lock().unwrap();
-    let transcript = guard
-        .as_ref()
-        .ok_or_else(|| "det finns inget transkript att spara".to_string())?
-        .clone();
-    let project = Project {
-        version: 1,
-        transcript,
-        speaker_labels: args.speaker_labels,
-        audio_path: args.audio_path,
-    };
+    let transcript = guard.as_ref().ok_or_else(|| "det finns inget transkript att spara".to_string())?.clone();
+    let project = Project { version: 1, transcript, speaker_labels: args.speaker_labels, audio_path: args.audio_path };
     let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
     std::fs::write(&args.path, json).map_err(|e| format!("kunde inte spara projektet: {e}"))
 }
@@ -677,9 +633,7 @@ async fn anonymize(app: AppHandle, args: AnonArgs) -> Result<AnalyzeResult, Stri
     tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<Backend>();
         let progress = |m: &str| emit(&app, m);
-        backend
-            .engine
-            .analyze_segments(args.texts, args.enabled, args.terms, args.use_ai, &progress)
+        backend.engine.analyze_segments(args.texts, args.enabled, args.terms, args.use_ai, &progress)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -706,12 +660,9 @@ struct ManualSpanArgs {
 /// are renumbered, so the frontend resets its rejected set).
 #[tauri::command]
 fn add_manual_span(backend: State<Backend>, args: ManualSpanArgs) -> Result<AnalyzeResult, String> {
-    let category: Category = serde_json::from_value(serde_json::Value::String(args.category))
-        .map_err(|_| "okänd kategori".to_string())?;
-    backend
-        .engine
-        .add_manual_span(args.start, args.end, category, args.custom)
-        .map_err(|e| e.to_string())
+    let category: Category =
+        serde_json::from_value(serde_json::Value::String(args.category)).map_err(|_| "okänd kategori".to_string())?;
+    backend.engine.add_manual_span(args.start, args.end, category, args.custom).map_err(|e| e.to_string())
 }
 
 // ---- Standalone de-identify (arbitrary pasted text or a loaded .txt/.md/.docx, no transcript) ----
@@ -739,9 +690,7 @@ async fn analyze_document(app: AppHandle, args: AnalyzeDocArgs) -> Result<Analyz
         let progress = |m: &str| emit(&app, m);
         let AnalyzeDocArgs { text, path, enabled, terms, use_ai } = args;
         match (path, text) {
-            (Some(p), _) => {
-                backend.engine.analyze_file(PathBuf::from(p), enabled, terms, use_ai, &progress)
-            }
+            (Some(p), _) => backend.engine.analyze_file(PathBuf::from(p), enabled, terms, use_ai, &progress),
             (None, Some(t)) => backend.engine.analyze_text(t, enabled, terms, use_ai, &progress),
             (None, None) => Err(anyhow::anyhow!("ingen text eller fil angiven")),
         }
@@ -811,9 +760,7 @@ fn export_transcript(backend: State<Backend>, args: ExportArgs) -> Result<(), St
 
 fn export_inner(backend: &Backend, args: ExportArgs) -> anyhow::Result<()> {
     let guard = backend.transcript.lock().unwrap();
-    let transcript = guard
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("det finns inget transkript att exportera"))?;
+    let transcript = guard.as_ref().ok_or_else(|| anyhow::anyhow!("det finns inget transkript att exportera"))?;
 
     // When anonymising, fetch masked text per utterance so timestamps & speakers are preserved.
     let masked: Option<Vec<String>> =
@@ -824,13 +771,9 @@ fn export_inner(backend: &Backend, args: ExportArgs) -> anyhow::Result<()> {
 
     match ext(&out).as_deref() {
         Some("srt") => docio::save_text(&out, &transcript.to_srt(texts, labels))?,
-        Some("vtt") if args.word_level && !args.anonymize => {
-            docio::save_text(&out, &transcript.to_vtt_words(labels))?
-        }
+        Some("vtt") if args.word_level && !args.anonymize => docio::save_text(&out, &transcript.to_vtt_words(labels))?,
         Some("vtt") => docio::save_text(&out, &transcript.to_vtt(texts, labels))?,
-        Some("docx") if args.timestamps => {
-            docio::save_docx(&out, &transcript.to_docx_paragraphs_timed(texts, labels))?
-        }
+        Some("docx") if args.timestamps => docio::save_docx(&out, &transcript.to_docx_paragraphs_timed(texts, labels))?,
         Some("docx") => docio::save_docx(&out, &transcript.to_docx_paragraphs(texts, labels))?,
         _ if args.timestamps => docio::save_text(&out, &transcript.to_text_timed(texts, labels))?,
         _ => docio::save_text(&out, &transcript.to_text(texts, labels))?, // txt / default
@@ -915,7 +858,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let paths = models::resolve(&app.handle());
+            let paths = models::resolve(app.handle());
             // PII "Övrigt (AI)" reuses the 1.5B Qwen — the bundled copy if present, otherwise the
             // downloadable summary 1.5B, so the lean installer can enable it via one download.
             let (pii_llm, pii_llm_tok) = paths.summary_files("qwen2.5-1.5b");

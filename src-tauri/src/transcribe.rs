@@ -41,10 +41,11 @@ impl Transcriber {
         let needs_load = !matches!(&self.loaded, Some((cur, _)) if cur == id);
         if needs_load {
             if !path.exists() {
-                return Err(anyhow!(
-                    "Whisper-modellen '{id}' är inte nedladdad. Hämta den först (se modellväljaren)."
-                ));
+                return Err(anyhow!("Whisper-modellen '{id}' är inte nedladdad. Hämta den först (se modellväljaren)."));
             }
+            // `mut` is only consumed by the GPU-feature `use_gpu` call below; without a GPU
+            // backend feature the binding is never mutated, so silence the lint in that case.
+            #[cfg_attr(not(any(feature = "cuda", feature = "metal", feature = "vulkan")), allow(unused_mut))]
             let mut cparams = WhisperContextParameters::default();
             // Use the GPU when the binary was built with a GPU backend feature.
             #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -62,6 +63,7 @@ impl Transcriber {
     /// Transcribe 16 kHz mono f32 `samples`. `language` is an ISO code, or "auto" to detect.
     /// When `word_timestamps` is set, each segment is filled with word-level timing. When
     /// `translate` is set, Whisper translates the speech to English. `pct` receives 0–100 progress.
+    #[allow(clippy::too_many_arguments)]
     pub fn transcribe(
         &mut self,
         id: &str,
@@ -101,9 +103,7 @@ impl Transcriber {
         let n = state.full_n_segments().map_err(|e| anyhow!("kunde inte läsa segment: {e}"))?;
         let mut out = Vec::with_capacity(n as usize);
         for i in 0..n {
-            let text = state
-                .full_get_segment_text(i)
-                .map_err(|e| anyhow!("kunde inte läsa segmenttext: {e}"))?;
+            let text = state.full_get_segment_text(i).map_err(|e| anyhow!("kunde inte läsa segmenttext: {e}"))?;
             let t0 = state.full_get_segment_t0(i).map_err(|e| anyhow!("tidsfel: {e}"))?;
             let t1 = state.full_get_segment_t1(i).map_err(|e| anyhow!("tidsfel: {e}"))?;
             let text = text.trim().to_string();
@@ -145,12 +145,7 @@ impl Transcriber {
                 Vec::new()
             };
             // whisper timestamps are in centiseconds (10 ms units).
-            out.push(RawSegment {
-                start: t0 as f64 / 100.0,
-                end: t1 as f64 / 100.0,
-                text,
-                words,
-            });
+            out.push(RawSegment { start: t0 as f64 / 100.0, end: t1 as f64 / 100.0, text, words });
         }
         Ok(out)
     }

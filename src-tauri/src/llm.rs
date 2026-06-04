@@ -17,8 +17,9 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel, Special};
+use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::TokenToStringError;
 use once_cell::sync::Lazy;
 
 const REPEAT_PENALTY: f32 = 1.15;
@@ -34,8 +35,7 @@ const N_CTX: u32 = 8192;
 /// the marker lets us share that single init across Tauri's worker threads.
 struct SyncBackend(LlamaBackend);
 unsafe impl Sync for SyncBackend {}
-static BACKEND: Lazy<SyncBackend> =
-    Lazy::new(|| SyncBackend(LlamaBackend::init().expect("llama.cpp backend init")));
+static BACKEND: Lazy<SyncBackend> = Lazy::new(|| SyncBackend(LlamaBackend::init().expect("llama.cpp backend init")));
 
 fn n_threads() -> i32 {
     std::thread::available_parallelism().map(|n| n.get() as i32).unwrap_or(4)
@@ -75,15 +75,11 @@ impl Qwen {
             .with_n_batch(N_CTX)
             .with_n_threads(threads)
             .with_n_threads_batch(threads);
-        let mut ctx = self
-            .model
-            .new_context(&BACKEND.0, ctx_params)
-            .map_err(|e| anyhow!("kunde inte skapa kontext: {e}"))?;
+        let mut ctx =
+            self.model.new_context(&BACKEND.0, ctx_params).map_err(|e| anyhow!("kunde inte skapa kontext: {e}"))?;
 
-        let tokens = self
-            .model
-            .str_to_token(prompt, AddBos::Never)
-            .map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
+        let tokens =
+            self.model.str_to_token(prompt, AddBos::Never).map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
         if tokens.is_empty() {
             return Ok(String::new());
         }
@@ -118,11 +114,18 @@ impl Qwen {
             if self.model.is_eog_token(token) {
                 break;
             }
-            // token_to_bytes retries past the small default buffer (tokens_to_str does not).
-            let piece = self
-                .model
-                .token_to_bytes(token, Special::Plaintext)
-                .map_err(|e| anyhow!("avkodning misslyckades: {e}"))?;
+            // Retry past the small default 8-byte buffer for tokens that decode to more bytes
+            // (multi-byte UTF-8, e.g. åäö) — mirrors the now-deprecated `token_to_bytes`.
+            let piece = match self.model.token_to_piece_bytes(token, 8, false, None) {
+                Err(TokenToStringError::InsufficientBufferSpace(i)) => self.model.token_to_piece_bytes(
+                    token,
+                    (-i).try_into().expect("error buffer size is positive"),
+                    false,
+                    None,
+                ),
+                x => x,
+            }
+            .map_err(|e| anyhow!("avkodning misslyckades: {e}"))?;
             bytes.extend_from_slice(&piece);
 
             batch.clear();

@@ -17,13 +17,8 @@ use crate::pii::model::NerModel;
 use crate::pii::pseudonym::Pseudonymizer;
 use crate::pii::{rules, Category, Source, Span};
 
-const MODEL_CATEGORIES: [Category; 5] = [
-    Category::Person,
-    Category::Plats,
-    Category::Organisation,
-    Category::Tid,
-    Category::Handelse,
-];
+const MODEL_CATEGORIES: [Category; 5] =
+    [Category::Person, Category::Plats, Category::Organisation, Category::Tid, Category::Handelse];
 
 pub struct ModelPaths {
     pub model: PathBuf,
@@ -37,6 +32,8 @@ struct Analysis {
     text: String,
     spans: Vec<Span>,
     para_ranges: Vec<(usize, usize)>,
+    /// Read only by `suggested_output_name`, which is not wired to a command yet.
+    #[allow(dead_code)]
     source_path: Option<PathBuf>,
 }
 
@@ -180,12 +177,8 @@ impl Engine {
         }
 
         let result = build_result(&doc.text, &spans, warnings);
-        *self.last.lock().unwrap() = Some(Analysis {
-            text: doc.text,
-            spans,
-            para_ranges: doc.para_ranges,
-            source_path: Some(path),
-        });
+        *self.last.lock().unwrap() =
+            Some(Analysis { text: doc.text, spans, para_ranges: doc.para_ranges, source_path: Some(path) });
         Ok(result)
     }
 
@@ -250,13 +243,8 @@ impl Engine {
         let guard = self.last.lock().unwrap();
         let analysis = guard.as_ref().ok_or_else(|| anyhow!("det finns ingen analys"))?;
         let rejected: HashSet<usize> = rejected.into_iter().collect();
-        let accepted: Vec<Span> = analysis
-            .spans
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !rejected.contains(i))
-            .map(|(_, s)| s.clone())
-            .collect();
+        let accepted: Vec<Span> =
+            analysis.spans.iter().enumerate().filter(|(i, _)| !rejected.contains(i)).map(|(_, s)| s.clone()).collect();
         let mut pseudo = Pseudonymizer::new();
         let mut out = Vec::with_capacity(analysis.para_ranges.len());
         for &(ps, pe) in &analysis.para_ranges {
@@ -283,13 +271,8 @@ impl Engine {
         let analysis = guard.as_ref().ok_or_else(|| anyhow!("det finns ingen analys att exportera"))?;
         let rejected: HashSet<usize> = rejected.into_iter().collect();
 
-        let accepted: Vec<Span> = analysis
-            .spans
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !rejected.contains(i))
-            .map(|(_, s)| s.clone())
-            .collect();
+        let accepted: Vec<Span> =
+            analysis.spans.iter().enumerate().filter(|(i, _)| !rejected.contains(i)).map(|(_, s)| s.clone()).collect();
 
         let mut pseudo = Pseudonymizer::new();
         match Format::from_path(&out_path).unwrap_or(Format::Text) {
@@ -324,18 +307,15 @@ impl Engine {
         let guard = self.last.lock().unwrap();
         let analysis = guard.as_ref().ok_or_else(|| anyhow!("det finns ingen analys"))?;
         let rejected: HashSet<usize> = rejected.into_iter().collect();
-        let accepted: Vec<Span> = analysis
-            .spans
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !rejected.contains(i))
-            .map(|(_, s)| s.clone())
-            .collect();
+        let accepted: Vec<Span> =
+            analysis.spans.iter().enumerate().filter(|(i, _)| !rejected.contains(i)).map(|(_, s)| s.clone()).collect();
         let mut pseudo = Pseudonymizer::new();
         Ok(merge::apply(&analysis.text, &accepted, &mut pseudo).text)
     }
 
     /// Default output path next to the source file, suffixed `_avidentifierad`.
+    /// Not yet exposed as a command; kept for the export flow.
+    #[allow(dead_code)]
     pub fn suggested_output_name(&self) -> Option<String> {
         let guard = self.last.lock().unwrap();
         let analysis = guard.as_ref()?;
@@ -472,11 +452,8 @@ mod tests {
     #[ignore]
     fn end_to_end_text() {
         let engine = test_engine();
-        let text =
-            "Anna Svensson har personnummer 811228-9874 och mejlar anna@example.se.".to_string();
-        let res = engine
-            .analyze_text(text, Category::ALL.to_vec(), Vec::new(), false, &|_: &str| {})
-            .unwrap();
+        let text = "Anna Svensson har personnummer 811228-9874 och mejlar anna@example.se.".to_string();
+        let res = engine.analyze_text(text, Category::ALL.to_vec(), Vec::new(), false, &|_: &str| {}).unwrap();
         assert!(res.spans.iter().any(|s| s.category == Category::Person));
         assert!(res.spans.iter().any(|s| s.category == Category::Personnummer));
         assert!(res.spans.iter().any(|s| s.category == Category::Epost));
@@ -503,9 +480,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = engine
-            .analyze_file(input, Category::ALL.to_vec(), Vec::new(), false, &|_: &str| {})
-            .unwrap();
+        let res = engine.analyze_file(input, Category::ALL.to_vec(), Vec::new(), false, &|_: &str| {}).unwrap();
         assert!(res.spans.iter().any(|s| s.category == Category::Person));
 
         let out = dir.join("avident_out.docx");
@@ -523,13 +498,11 @@ mod tests {
     #[ignore]
     fn ai_layer_surfaces_ovrigt() {
         let engine = test_engine();
-        let text = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/veckobrev.txt"),
-        )
-        .unwrap();
-        let res = engine
-            .analyze_text(text, Category::ALL.to_vec(), Vec::new(), true, &|m: &str| println!(">> {m}"))
-            .unwrap();
+        let text =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/veckobrev.txt"))
+                .unwrap();
+        let res =
+            engine.analyze_text(text, Category::ALL.to_vec(), Vec::new(), true, &|m: &str| println!(">> {m}")).unwrap();
         let ovrigt = res.spans.iter().filter(|s| s.category == Category::Ovrigt).count();
         println!("Totalt {} träffar, varav Övrigt(AI): {ovrigt}", res.spans.len());
         for s in &res.spans {

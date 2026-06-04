@@ -48,6 +48,8 @@ impl Category {
         }
     }
 
+    /// Every category, e.g. for "enable all" in tests and callers that need the full set.
+    #[allow(dead_code)]
     pub const ALL: [Category; 14] = [
         Category::Person,
         Category::Plats,

@@ -21,7 +21,8 @@ pub const TARGET_SR: u32 = 16_000;
 pub struct Audio {
     /// Mono f32 samples in [-1, 1] at [`TARGET_SR`].
     pub samples: Vec<f32>,
-    /// Length in seconds (convenience for progress / SRT bounds).
+    /// Length in seconds (convenience for progress / SRT bounds). Computed on load; not yet read.
+    #[allow(dead_code)]
     pub duration_s: f64,
 }
 
@@ -58,11 +59,7 @@ pub fn load(path: &Path) -> Result<Audio> {
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(symphonia::core::errors::Error::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break
-            }
+            Err(symphonia::core::errors::Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(anyhow!("fel vid läsning av ljud: {e}")),
         };
         if packet.track_id() != track_id {
@@ -75,11 +72,7 @@ pub fn load(path: &Path) -> Result<Audio> {
         }
     }
 
-    let samples = if src_sr == TARGET_SR {
-        mono
-    } else {
-        resample(&mono, src_sr, TARGET_SR)?
-    };
+    let samples = if src_sr == TARGET_SR { mono } else { resample(&mono, src_sr, TARGET_SR)? };
     let duration_s = samples.len() as f64 / TARGET_SR as f64;
     Ok(Audio { samples, duration_s })
 }
@@ -99,9 +92,7 @@ fn append_mono(decoded: &AudioBufferRef, channels: usize, out: &mut Vec<f32>) {
 
 /// High-quality resample from `from_sr` to `to_sr` using a sinc interpolator.
 fn resample(input: &[f32], from_sr: u32, to_sr: u32) -> Result<Vec<f32>> {
-    use rubato::{
-        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-    };
+    use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
     if input.is_empty() {
         return Ok(Vec::new());
@@ -123,9 +114,7 @@ fn resample(input: &[f32], from_sr: u32, to_sr: u32) -> Result<Vec<f32>> {
     let mut pos = 0usize;
     while pos + chunk <= input.len() {
         let frame = vec![input[pos..pos + chunk].to_vec()];
-        let res = resampler
-            .process(&frame, None)
-            .map_err(|e| anyhow!("resampling misslyckades: {e}"))?;
+        let res = resampler.process(&frame, None).map_err(|e| anyhow!("resampling misslyckades: {e}"))?;
         out.extend_from_slice(&res[0]);
         pos += chunk;
     }
@@ -141,8 +130,9 @@ fn resample(input: &[f32], from_sr: u32, to_sr: u32) -> Result<Vec<f32>> {
 }
 
 /// Mix interleaved multi-channel f32 frames down to mono by averaging channels. A trailing partial
-/// frame (fewer than `channels` samples) is dropped. Used by the live meeting capture, which gets
-/// interleaved frames straight from WASAPI rather than via [`load`].
+/// frame (fewer than `channels` samples) is dropped. Kept as a shared helper for interleaved WASAPI
+/// frames; the live meeting capture currently inlines its own downmix, so this is not called yet.
+#[allow(dead_code)]
 pub fn downmix_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
     let ch = channels.max(1);
     let mut out = Vec::with_capacity(interleaved.len() / ch);

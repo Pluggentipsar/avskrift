@@ -43,11 +43,7 @@ impl LlmDetector {
         }
         let output = self.qwen.generate(&build_prompt(text), 512, 0.0)?;
         let mut seen = std::collections::HashSet::new();
-        Ok(parse_json_strings(&output)
-            .into_iter()
-            .filter(|t| seen.insert(t.to_lowercase()))
-            .take(80)
-            .collect())
+        Ok(parse_json_strings(&output).into_iter().filter(|t| seen.insert(t.to_lowercase())).take(80).collect())
     }
 }
 
@@ -66,9 +62,7 @@ fn build_prompt(text: &str) -> String {
 fn parse_json_strings(s: &str) -> Vec<String> {
     if let (Some(a), Some(b)) = (s.find('['), s.rfind(']')) {
         if b > a {
-            if let Ok(serde_json::Value::Array(arr)) =
-                serde_json::from_str::<serde_json::Value>(&s[a..=b])
-            {
+            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(&s[a..=b]) {
                 let parsed: Vec<String> = arr
                     .iter()
                     .filter_map(|v| {
@@ -104,10 +98,8 @@ mod tests {
     fn smoke_llm() {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/llm");
         let d = LlmDetector::load(&base.join("model.gguf"), &base.join("tokenizer.json")).unwrap();
-        let text = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/veckobrev.txt"),
-        )
-        .unwrap();
+        let text =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../samples/veckobrev.txt")).unwrap();
         let proposals = d.propose(&text).unwrap();
         println!("AI-FÖRSLAG ({}):\n{proposals:#?}", proposals.len());
         assert!(!proposals.is_empty(), "AI-lagret gav inga förslag");

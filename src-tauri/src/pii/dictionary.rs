@@ -47,11 +47,7 @@ mod tests {
 
     #[test]
     fn matches_whole_words_case_insensitive() {
-        let d = Dictionary::new(
-            &["Projekt Solros".to_string(), "Avdelning 5".to_string()],
-            Category::Egen,
-            true,
-        );
+        let d = Dictionary::new(&["Projekt Solros".to_string(), "Avdelning 5".to_string()], Category::Egen, true);
         let hits = d.detect("Vi startade projekt solros på Avdelning 5.");
         assert_eq!(hits.len(), 2);
     }

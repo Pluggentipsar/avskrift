@@ -32,12 +32,10 @@ impl NerModel {
             .commit_from_file(model_path)
             .with_context(|| format!("kunde inte ladda modellen: {}", model_path.display()))?;
 
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| anyhow!("kunde inte ladda tokenizer: {e}"))?;
+        let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow!("kunde inte ladda tokenizer: {e}"))?;
 
         let raw: HashMap<String, String> = serde_json::from_slice(
-            &std::fs::read(labels_path)
-                .with_context(|| format!("kunde inte läsa {}", labels_path.display()))?,
+            &std::fs::read(labels_path).with_context(|| format!("kunde inte läsa {}", labels_path.display()))?,
         )?;
         let mut id2label = vec![String::new(); raw.len()];
         for (k, v) in raw {
@@ -47,12 +45,8 @@ impl NerModel {
             }
         }
 
-        let cls_id = tokenizer
-            .token_to_id("[CLS]")
-            .ok_or_else(|| anyhow!("tokenizer saknar [CLS]"))? as i64;
-        let sep_id = tokenizer
-            .token_to_id("[SEP]")
-            .ok_or_else(|| anyhow!("tokenizer saknar [SEP]"))? as i64;
+        let cls_id = tokenizer.token_to_id("[CLS]").ok_or_else(|| anyhow!("tokenizer saknar [CLS]"))? as i64;
+        let sep_id = tokenizer.token_to_id("[SEP]").ok_or_else(|| anyhow!("tokenizer saknar [SEP]"))? as i64;
 
         Ok(Self { session: Mutex::new(session), tokenizer, id2label, cls_id, sep_id })
     }
@@ -63,10 +57,7 @@ impl NerModel {
             return Ok(Vec::new());
         }
 
-        let enc = self
-            .tokenizer
-            .encode(text, false)
-            .map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
+        let enc = self.tokenizer.encode(text, false).map_err(|e| anyhow!("tokenisering misslyckades: {e}"))?;
         let ids = enc.get_ids();
         let offsets = enc.get_offsets();
         let num_labels = self.id2label.len();
@@ -182,8 +173,7 @@ fn merge_token_spans(text: &str, tokens: Vec<(Category, usize, usize)>) -> Vec<S
         let (s, e) = snap_to_word(text, s0, e0);
         if let Some(last) = out.last_mut() {
             if last.category == cat && s >= last.start {
-                let joinable = s <= last.end
-                    || text[last.end..s].chars().all(|c| c.is_whitespace() || c == '-');
+                let joinable = s <= last.end || text[last.end..s].chars().all(|c| c.is_whitespace() || c == '-');
                 if joinable {
                     last.end = last.end.max(e);
                     last.text = text[last.start..last.end].to_string();
@@ -232,11 +222,7 @@ mod tests {
     #[test]
     fn merges_double_surname() {
         let text = "Lisa Bengtsson-Krok kom";
-        let tokens = vec![
-            (Category::Person, 0, 4),
-            (Category::Person, 5, 14),
-            (Category::Person, 15, 19),
-        ];
+        let tokens = vec![(Category::Person, 0, 4), (Category::Person, 5, 14), (Category::Person, 15, 19)];
         let spans = merge_token_spans(text, tokens);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].text, "Lisa Bengtsson-Krok");
@@ -255,15 +241,9 @@ mod tests {
     #[ignore]
     fn smoke_detect_real_model() {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/model");
-        let m = NerModel::load(
-            &base.join("model.onnx"),
-            &base.join("tokenizer.json"),
-            &base.join("labels.json"),
-        )
-        .unwrap();
-        let spans = m
-            .detect("Anna Svensson bor i Stockholm och arbetar på Volvo sedan 2019.")
-            .unwrap();
+        let m =
+            NerModel::load(&base.join("model.onnx"), &base.join("tokenizer.json"), &base.join("labels.json")).unwrap();
+        let spans = m.detect("Anna Svensson bor i Stockholm och arbetar på Volvo sedan 2019.").unwrap();
         println!("SPANS: {spans:#?}");
         assert!(spans.iter().any(|s| s.category == Category::Person));
         assert!(spans.iter().any(|s| s.category == Category::Plats));

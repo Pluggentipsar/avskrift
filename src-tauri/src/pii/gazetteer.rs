@@ -23,32 +23,21 @@ const ORTNAMN: &str = include_str!("../data/ortnamn.txt");
 const NAME_SCORE: f32 = 0.5;
 
 fn parse(raw: &str) -> Vec<String> {
-    raw.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
-        .collect()
+    raw.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect()
 }
 
-static DIAGNOS_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(DIAGNOSER), Category::Diagnos, true));
+static DIAGNOS_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(DIAGNOSER), Category::Diagnos, true));
 static DIAGNOS_ACRONYMS: Lazy<Dictionary> =
     Lazy::new(|| Dictionary::new(&parse(DIAGNOSER_AKRONYMER), Category::Diagnos, false));
-static MEDICIN_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(MEDICINER), Category::Medicin, true));
+static MEDICIN_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(MEDICINER), Category::Medicin, true));
 // Case-sensitive: require the capitalised form so the everyday-word sense of a name
 // ("sten", "björn") is left alone while the proper-noun form ("Sten", "Björn") is caught.
-static FORNAMN_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(FORNAMN), Category::Person, false));
-static EFTERNAMN_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(EFTERNAMN), Category::Person, false));
+static FORNAMN_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(FORNAMN), Category::Person, false));
+static EFTERNAMN_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(EFTERNAMN), Category::Person, false));
 // Place lists are case-sensitive too: several names double as everyday words (Mark, Vara, Berg).
-static KOMMUN_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(KOMMUNER), Category::Plats, false));
-static SKOLA_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(SKOLOR), Category::Plats, false));
-static ORT_WORDS: Lazy<Dictionary> =
-    Lazy::new(|| Dictionary::new(&parse(ORTNAMN), Category::Plats, false));
+static KOMMUN_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(KOMMUNER), Category::Plats, false));
+static SKOLA_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(SKOLOR), Category::Plats, false));
+static ORT_WORDS: Lazy<Dictionary> = Lazy::new(|| Dictionary::new(&parse(ORTNAMN), Category::Plats, false));
 
 /// Detect diagnosis terms from the built-in gazetteer (ICD codes are handled in `rules`).
 pub fn diagnoser(text: &str) -> Vec<Span> {

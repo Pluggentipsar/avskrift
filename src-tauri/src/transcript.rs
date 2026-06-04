@@ -45,11 +45,13 @@ pub struct Transcript {
 
 impl Transcript {
     /// All utterance texts, in order — the unit of anonymisation (one "paragraph" each).
+    #[allow(dead_code)] // helper kept for callers that anonymise per utterance
     pub fn segment_texts(&self) -> Vec<String> {
         self.utterances.iter().map(|u| u.text.clone()).collect()
     }
 
     /// Distinct speaker ids in first-appearance order.
+    #[allow(dead_code)] // helper kept for speaker-aware export
     pub fn speakers(&self) -> Vec<String> {
         let mut seen = Vec::new();
         for u in &self.utterances {
@@ -116,11 +118,7 @@ impl Transcript {
     }
 
     /// docx paragraphs with `[mm:ss]` timestamps (see [`to_text_timed`]).
-    pub fn to_docx_paragraphs_timed(
-        &self,
-        texts: Option<&[String]>,
-        labels: &BTreeMap<String, String>,
-    ) -> Vec<String> {
+    pub fn to_docx_paragraphs_timed(&self, texts: Option<&[String]>, labels: &BTreeMap<String, String>) -> Vec<String> {
         self.timed_lines(texts, labels)
     }
 
@@ -158,11 +156,7 @@ impl Transcript {
             let speaker_changed = u.speaker.as_deref() != last_speaker;
             last_speaker = u.speaker.as_deref();
             for (wi, w) in u.words.iter().enumerate() {
-                let prefix = if wi == 0 && speaker_changed {
-                    speaker_prefix(u, labels)
-                } else {
-                    String::new()
-                };
+                let prefix = if wi == 0 && speaker_changed { speaker_prefix(u, labels) } else { String::new() };
                 out.push_str(&format!("{} --> {}\n", vtt_time(w.start), vtt_time(w.end)));
                 out.push_str(&format!("{prefix}{}\n\n", w.text));
             }
@@ -171,11 +165,7 @@ impl Transcript {
     }
 
     /// Paragraphs for .docx export: one "Name: text" line per utterance.
-    pub fn to_docx_paragraphs(
-        &self,
-        texts: Option<&[String]>,
-        labels: &BTreeMap<String, String>,
-    ) -> Vec<String> {
+    pub fn to_docx_paragraphs(&self, texts: Option<&[String]>, labels: &BTreeMap<String, String>) -> Vec<String> {
         self.utterances
             .iter()
             .enumerate()
@@ -235,8 +225,20 @@ mod tests {
             model: "kb-whisper-small".into(),
             diarized: true,
             utterances: vec![
-                Utterance { start: 0.0, end: 2.5, speaker: Some("TALARE_1".into()), text: "Hej.".into(), words: vec![] },
-                Utterance { start: 2.5, end: 5.0, speaker: Some("TALARE_2".into()), text: "Hejsan.".into(), words: vec![] },
+                Utterance {
+                    start: 0.0,
+                    end: 2.5,
+                    speaker: Some("TALARE_1".into()),
+                    text: "Hej.".into(),
+                    words: vec![],
+                },
+                Utterance {
+                    start: 2.5,
+                    end: 5.0,
+                    speaker: Some("TALARE_2".into()),
+                    text: "Hejsan.".into(),
+                    words: vec![],
+                },
             ],
         }
     }

@@ -12,10 +12,7 @@ use crate::transcript::{Utterance, Word};
 
 /// Convert transcriber words to the serialisable transcript words.
 fn words_of(seg: &RawSegment) -> Vec<Word> {
-    seg.words
-        .iter()
-        .map(|w| Word { start: w.start, end: w.end, text: w.text.clone() })
-        .collect()
+    seg.words.iter().map(|w| Word { start: w.start, end: w.end, text: w.text.clone() }).collect()
 }
 
 /// Build utterances without speaker info (diarisation off).
@@ -113,10 +110,8 @@ mod tests {
             RawSegment { start: 2.0, end: 4.0, text: "två".into(), words: vec![] },
         ];
         // Diariser numbered them 5 and 2; we expect TALARE_1 then TALARE_2 by appearance.
-        let turns = vec![
-            SpeakerTurn { start: 0.0, end: 2.0, speaker: 5 },
-            SpeakerTurn { start: 2.0, end: 4.0, speaker: 2 },
-        ];
+        let turns =
+            vec![SpeakerTurn { start: 0.0, end: 2.0, speaker: 5 }, SpeakerTurn { start: 2.0, end: 4.0, speaker: 2 }];
         let utts = with_speakers(segs, &turns);
         assert_eq!(utts[0].speaker.as_deref(), Some("TALARE_1"));
         assert_eq!(utts[1].speaker.as_deref(), Some("TALARE_2"));

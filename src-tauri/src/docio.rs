@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use docx_rs::{read_docx, Docx, DocumentChild, Paragraph, Run};
+use docx_rs::{read_docx, DocumentChild, Docx, Paragraph, Run};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -16,10 +16,7 @@ pub enum Format {
 
 impl Format {
     pub fn from_path(path: &Path) -> Result<Format> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase());
+        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
         match ext.as_deref() {
             Some("txt") | Some("text") | Some("md") => Ok(Format::Text),
             Some("docx") => Ok(Format::Docx),
@@ -30,6 +27,8 @@ impl Format {
 
 /// A loaded document, flattened for detection.
 pub struct LoadedDoc {
+    /// The detected source format. Recorded on load; not yet read by callers.
+    #[allow(dead_code)]
     pub format: Format,
     /// Paragraphs joined by `\n`.
     pub text: String,
@@ -42,14 +41,12 @@ pub struct LoadedDoc {
 pub fn load(path: &Path) -> Result<LoadedDoc> {
     match Format::from_path(path)? {
         Format::Text => {
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("kunde inte läsa {}", path.display()))?;
+            let text = std::fs::read_to_string(path).with_context(|| format!("kunde inte läsa {}", path.display()))?;
             let range = (0, text.len());
             Ok(LoadedDoc { format: Format::Text, para_ranges: vec![range], text, has_tables: false })
         }
         Format::Docx => {
-            let bytes =
-                std::fs::read(path).with_context(|| format!("kunde inte läsa {}", path.display()))?;
+            let bytes = std::fs::read(path).with_context(|| format!("kunde inte läsa {}", path.display()))?;
             let docx = read_docx(&bytes).map_err(|e| anyhow!("kunde inte tolka Word-filen: {e:?}"))?;
 
             let mut text = String::new();
@@ -85,10 +82,7 @@ pub fn save_docx(path: &Path, paragraphs: &[String]) -> Result<()> {
     for p in paragraphs {
         docx = docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(p.as_str())));
     }
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("kunde inte skapa {}", path.display()))?;
-    docx.build()
-        .pack(file)
-        .map_err(|e| anyhow!("kunde inte skriva Word-filen: {e:?}"))?;
+    let file = std::fs::File::create(path).with_context(|| format!("kunde inte skapa {}", path.display()))?;
+    docx.build().pack(file).map_err(|e| anyhow!("kunde inte skriva Word-filen: {e:?}"))?;
     Ok(())
 }

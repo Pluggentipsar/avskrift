@@ -16,7 +16,6 @@
 //! WASAPI is Windows-only, so the real implementation is `#[cfg(windows)]` with a graceful stub on
 //! other platforms (the project still compiles; the commands just return an error).
 
-use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 /// Which stream a chunk came from. Maps to the speaker label "Jag" / "Mötet".
@@ -53,7 +52,7 @@ mod imp {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
-    use std::sync::{Arc};
+    use std::sync::Arc;
     use std::thread::{self, JoinHandle};
     use wasapi::*;
 
@@ -137,12 +136,7 @@ mod imp {
             let start_s = self.start_samples as f64 / self.rate as f64;
             self.start_samples += cut as u64;
             if max_abs(&chunk) > SILENCE_FLOOR {
-                let _ = tx.send(CapturedChunk {
-                    source: self.source,
-                    start_s,
-                    samples: chunk,
-                    src_rate: self.rate,
-                });
+                let _ = tx.send(CapturedChunk { source: self.source, start_s, samples: chunk, src_rate: self.rate });
             }
         }
 
@@ -169,10 +163,7 @@ mod imp {
         /// Open both endpoints and start recording. Returns the capture handle and a receiver of
         /// live chunks (drained by the worker in `lib.rs`). Errors synchronously if either stream
         /// fails to open, so the UI learns immediately rather than after a wasted meeting.
-        pub fn start(
-            mic_wav: PathBuf,
-            sys_wav: PathBuf,
-        ) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
+        pub fn start(mic_wav: PathBuf, sys_wav: PathBuf) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
             let stop = Arc::new(AtomicBool::new(false));
             let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
             let (chunk_tx, chunk_rx) = mpsc::channel::<CapturedChunk>();
@@ -259,7 +250,7 @@ mod imp {
             Ok((client, h_event, capture_client, channels, rate, writer))
         })();
 
-        let (mut client, h_event, capture_client, channels, rate, mut writer) = match opened {
+        let (client, h_event, capture_client, channels, rate, mut writer) = match opened {
             Ok(v) => {
                 let _ = ready.send(Ok(()));
                 v
@@ -356,10 +347,7 @@ mod spike {
     /// Capture ~`secs` seconds from the default device of `device_dir`.
     /// `device_dir = Render` + a Capture stream = system loopback; `device_dir = Capture` = mic.
     /// Returns (read_iterations, max_abs_f32_sample, sample_rate, channels).
-    fn capture(
-        device_dir: Direction,
-        secs: f64,
-    ) -> Result<(usize, f32, usize, usize), Box<dyn std::error::Error>> {
+    fn capture(device_dir: Direction, secs: f64) -> Result<(usize, f32, usize, usize), Box<dyn std::error::Error>> {
         let enumerator = DeviceEnumerator::new()?;
         let device = enumerator.get_default_device(&device_dir)?;
         let mut client = device.get_iaudioclient()?;
