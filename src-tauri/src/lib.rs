@@ -887,8 +887,21 @@ fn list_jobs(backend: State<Backend>) -> Vec<jobs::JobMeta> {
     jobs::list(&backend.paths.jobs_dir)
 }
 
+/// Full-text search over jobs (title, category, transcript, summary, source). Empty query = all.
+#[tauri::command]
+fn search_jobs(backend: State<Backend>, query: String) -> Vec<jobs::JobMeta> {
+    jobs::search(&backend.paths.jobs_dir, &query)
+}
+
 #[tauri::command]
 fn save_job(backend: State<Backend>, job: jobs::Job) -> Result<(), String> {
+    let mut job = job;
+    // Ordinary saves (transcript edits etc.) don't carry the category; keep the one set in History.
+    if job.category.is_empty() {
+        if let Ok(existing) = jobs::open(&backend.paths.jobs_dir, &job.id) {
+            job.category = existing.category;
+        }
+    }
     jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())
 }
 
@@ -897,9 +910,48 @@ fn open_job(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
     jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
 }
 
+/// Rename / recategorise a job. Does not bump `updated_at`, so the History order is preserved.
+#[tauri::command]
+fn update_job_meta(backend: State<Backend>, id: String, title: String, category: String) -> Result<(), String> {
+    let mut job = jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())?;
+    job.title = title;
+    job.category = category;
+    jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())
+}
+
+/// Delete a job's audio to reclaim space, keeping the transcript and everything else. Only files
+/// Avskrift created are removed from disk; the user's own uploads are just dereferenced.
+#[tauri::command]
+fn delete_job_audio(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
+    let mut job = jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())?;
+    remove_avskrift_audio(&job, &backend.paths.meetings_dir);
+    job.audio_path = None;
+    job.mic_wav_path = None;
+    jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())?;
+    Ok(job)
+}
+
 #[tauri::command]
 fn delete_job(backend: State<Backend>, id: String) -> Result<(), String> {
+    if let Ok(job) = jobs::open(&backend.paths.jobs_dir, &id) {
+        remove_avskrift_audio(&job, &backend.paths.meetings_dir);
+    }
     jobs::delete(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
+}
+
+/// Remove audio files that Avskrift itself created — meeting WAVs in `meetings_dir`, or temporary
+/// in-app recordings named `avskrift-inspelning-*`. The user's own uploaded files are left untouched.
+fn remove_avskrift_audio(job: &jobs::Job, meetings_dir: &Path) {
+    let temp = std::env::temp_dir();
+    for p in [job.audio_path.as_deref(), job.mic_wav_path.as_deref()].into_iter().flatten() {
+        let path = Path::new(p);
+        let ours = path.starts_with(meetings_dir)
+            || (path.starts_with(&temp)
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("avskrift-inspelning-")));
+        if ours && path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -958,8 +1010,11 @@ pub fn run() {
             export_transcript,
             save_summary,
             list_jobs,
+            search_jobs,
             save_job,
             open_job,
+            update_job_meta,
+            delete_job_audio,
             delete_job,
         ])
         .run(tauri::generate_context!())

@@ -33,6 +33,12 @@ pub struct Job {
     pub speaker_labels: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_path: Option<String>,
+    /// Mic-stream WAV for meetings (kept so re-transcribe works after reopen; deletable to save space).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic_wav_path: Option<String>,
+    /// User-chosen folder/category for grouping in History ("" = uncategorised).
+    #[serde(default)]
+    pub category: String,
 
     // --- standalone de-identify / summarize input ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -68,8 +74,29 @@ pub struct JobMeta {
     pub id: String,
     pub title: String,
     pub job_type: String,
+    pub category: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Total bytes of this job's audio files still on disk (0 if none / already removed).
+    pub audio_bytes: u64,
+}
+
+fn meta_of(job: &Job) -> JobMeta {
+    let audio_bytes = [job.audio_path.as_deref(), job.mic_wav_path.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+    JobMeta {
+        id: job.id.clone(),
+        title: job.title.clone(),
+        job_type: job.job_type.clone(),
+        category: job.category.clone(),
+        created_at: job.created_at.clone(),
+        updated_at: job.updated_at.clone(),
+        audio_bytes,
+    }
 }
 
 fn job_path(dir: &Path, id: &str) -> PathBuf {
@@ -110,17 +137,50 @@ pub fn list(dir: &Path) -> Vec<JobMeta> {
             }
             if let Ok(txt) = std::fs::read_to_string(&p) {
                 if let Ok(job) = serde_json::from_str::<Job>(&txt) {
-                    out.push(JobMeta {
-                        id: job.id,
-                        title: job.title,
-                        job_type: job.job_type,
-                        created_at: job.created_at,
-                        updated_at: job.updated_at,
-                    });
+                    out.push(meta_of(&job));
                 }
             }
         }
     }
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     out
+}
+
+/// Jobs whose title, category, transcript, summary or source text contain `query` (case-insensitive).
+/// Empty query returns everything (same as `list`).
+pub fn search(dir: &Path, query: &str) -> Vec<JobMeta> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return list(dir);
+    }
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(txt) = std::fs::read_to_string(&p) {
+                if let Ok(job) = serde_json::from_str::<Job>(&txt) {
+                    if job_matches(&job, &q) {
+                        out.push(meta_of(&job));
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out
+}
+
+fn job_matches(job: &Job, q: &str) -> bool {
+    if job.title.to_lowercase().contains(q) || job.category.to_lowercase().contains(q) {
+        return true;
+    }
+    if job.summary_draft.as_deref().is_some_and(|s| s.to_lowercase().contains(q))
+        || job.source_text.as_deref().is_some_and(|s| s.to_lowercase().contains(q))
+    {
+        return true;
+    }
+    job.transcript.as_ref().is_some_and(|t| t.utterances.iter().any(|u| u.text.to_lowercase().contains(q)))
 }
