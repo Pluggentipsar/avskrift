@@ -910,6 +910,13 @@ fn open_job(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
     jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
 }
 
+/// Rename a folder or collapse it into its parent (delete-folder) by rewriting the category prefix
+/// on every job under it. `to` = "" moves jobs to the root.
+#[tauri::command]
+fn move_folder(backend: State<Backend>, from: String, to: String) -> Result<(), String> {
+    jobs::move_folder(&backend.paths.jobs_dir, &from, &to).map_err(|e| e.to_string())
+}
+
 /// Rename / recategorise a job. Does not bump `updated_at`, so the History order is preserved.
 #[tauri::command]
 fn update_job_meta(backend: State<Backend>, id: String, title: String, category: String) -> Result<(), String> {
@@ -1014,6 +1021,7 @@ pub fn run() {
             save_job,
             open_job,
             update_job_meta,
+            move_folder,
             delete_job_audio,
             delete_job,
         ])

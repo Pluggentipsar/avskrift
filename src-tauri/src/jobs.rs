@@ -173,6 +173,43 @@ pub fn search(dir: &Path, query: &str) -> Vec<JobMeta> {
     out
 }
 
+/// Rewrite the category prefix `from` → `to` on every job under it — drives folder rename and
+/// "delete folder" (collapse into parent: `to` = the parent path, or "" for the root). Paths are
+/// "/"-separated; jobs not under `from` are untouched.
+pub fn move_folder(dir: &Path, from: &str, to: &str) -> Result<()> {
+    let from = from.trim().trim_matches('/');
+    let to = to.trim().trim_matches('/');
+    if from.is_empty() || from == to {
+        return Ok(());
+    }
+    let with_slash = format!("{from}/");
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+            let Ok(mut job) = serde_json::from_str::<Job>(&txt) else { continue };
+            let cat = job.category.trim_matches('/');
+            let new = if cat == from {
+                to.to_string()
+            } else if let Some(rest) = cat.strip_prefix(&with_slash) {
+                if to.is_empty() {
+                    rest.to_string()
+                } else {
+                    format!("{to}/{rest}")
+                }
+            } else {
+                continue;
+            };
+            job.category = new;
+            let _ = save(dir, &job);
+        }
+    }
+    Ok(())
+}
+
 fn job_matches(job: &Job, q: &str) -> bool {
     if job.title.to_lowercase().contains(q) || job.category.to_lowercase().contains(q) {
         return true;
