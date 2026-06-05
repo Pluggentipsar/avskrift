@@ -1400,6 +1400,7 @@
   let selectedFolder = $state(""); // selected folder in the History tree ("" = Alla / root)
   let expandedFolders = $state<string[]>([]); // expanded tree nodes (paths)
   let pendingFolders = $state<string[]>([]); // created-but-empty folders (the path model can't store these in jobs)
+  let selectedJobIds = $state<string[]>([]); // multi-select for bulk actions in History
   let dragging = $state<{ id: string; label: string } | null>(null); // pointer-drag of a project
   let dragX = $state(0);
   let dragY = $state(0);
@@ -1559,7 +1560,64 @@
     const target = dropTarget;
     dragging = null;
     dropTarget = null;
-    if (target !== null) await moveJobToFolder(id, target);
+    if (target === null) return;
+    if (selectedJobIds.includes(id) && selectedJobIds.length > 1) await bulkMove(target);
+    else await moveJobToFolder(id, target);
+  }
+
+  // ---- Multi-select + bulk actions ----
+  function toggleJobSelect(id: string) {
+    selectedJobIds = selectedJobIds.includes(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id];
+  }
+  function clearSelection() {
+    selectedJobIds = [];
+  }
+
+  async function bulkMove(path: string) {
+    const ids = [...selectedJobIds];
+    for (const id of ids) {
+      const j = allJobs.find((x) => x.id === id);
+      if (j) await invoke("update_job_meta", { id, title: j.title, category: path.trim() });
+    }
+    lastCategory = path.trim() || lastCategory;
+    clearSelection();
+    await reloadJobs();
+    showToast(`${ids.length} projekt flyttade`);
+  }
+
+  async function bulkDeleteAudio() {
+    const ids = selectedJobIds.filter((id) => (allJobs.find((x) => x.id === id)?.audioBytes ?? 0) > 0);
+    if (!ids.length) return;
+    for (const id of ids) await invoke("delete_job_audio", { id });
+    clearSelection();
+    await reloadJobs();
+    showToast(`Ljud borttaget i ${ids.length} projekt – texten finns kvar`);
+  }
+
+  async function bulkDelete() {
+    const ids = [...selectedJobIds];
+    if (!ids.length) return;
+    if (!(await ask(`Ta bort ${ids.length} projekt? Texten och Avskrift-skapat ljud raderas (uppladdade originalfiler rörs inte).`, { title: "Ta bort projekt", kind: "warning" })))
+      return;
+    for (const id of ids) {
+      if (currentJobId === id) currentJobId = null;
+      await invoke("delete_job", { id });
+    }
+    clearSelection();
+    await reloadJobs();
+    showToast(`${ids.length} projekt borttagna`);
+  }
+
+  /** Free space: delete audio for every project in a folder (recursively), keeping the text. */
+  async function deleteFolderAudio(path: string) {
+    ctxMenu = null;
+    const under = allJobs.filter((j) => j.audioBytes > 0 && (j.category === path || j.category.startsWith(path + "/")));
+    if (!under.length) return;
+    if (!(await ask(`Ta bort ljudet i ${under.length} projekt i ”${path}”? Texten behålls.`, { title: "Frigör utrymme", kind: "warning" })))
+      return;
+    for (const j of under) await invoke("delete_job_audio", { id: j.id });
+    await reloadJobs();
+    showToast("Ljud borttaget – texten finns kvar");
   }
 
   /** Distinct categories across all jobs, for the category datalist suggestions. */
@@ -1619,6 +1677,21 @@
     }
     return m;
   });
+
+  /** Recursive on-disk audio bytes per folder path, for the storage hints in the tree. */
+  const folderBytes = $derived.by(() => {
+    const m = new Map<string, number>();
+    for (const j of allJobs) {
+      const parts = catSegments(j.category);
+      for (let i = 1; i <= parts.length; i++) {
+        const p = parts.slice(0, i).join("/");
+        m.set(p, (m.get(p) ?? 0) + j.audioBytes);
+      }
+    }
+    return m;
+  });
+
+  const totalBytes = $derived(allJobs.reduce((s, j) => s + j.audioBytes, 0));
 
   function fmtBytes(n: number): string {
     if (!n) return "";
@@ -1989,7 +2062,8 @@
   {:else if screen === "history"}
     {#snippet jobRow(j: JobMeta, showPath: boolean)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <li class="job-item" class:dragging={dragging?.id === j.id} oncontextmenu={(e) => openCtx(e, "job", j.id)}>
+      <li class="job-item" class:dragging={dragging?.id === j.id} class:sel={selectedJobIds.includes(j.id)} oncontextmenu={(e) => openCtx(e, "job", j.id)}>
+        <input class="job-check" type="checkbox" checked={selectedJobIds.includes(j.id)} onchange={() => toggleJobSelect(j.id)} aria-label="Markera projekt" />
         <span class="drag-handle" title="Dra för att flytta till en mapp" onmousedown={(e) => startDrag(e, j)}>⠿</span>
         {#if renamingJobId === j.id}
           <!-- svelte-ignore a11y_autofocus -->
@@ -2032,11 +2106,11 @@
             class:on={!selectedFolder && !jobSearch.trim()}
             class:drop={dropTarget === ""}
             data-folder=""
-            onclick={() => { selectedFolder = ""; jobSearch = ""; }}
+            onclick={() => { selectedFolder = ""; jobSearch = ""; selectedJobIds = []; }}
           >
             <span class="tree-twirl-spacer"></span>
             <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
-            <span class="tree-name">Alla projekt</span><span class="tree-count">{allJobs.length}</span>
+            <span class="tree-name">Alla projekt</span><span class="tree-count">{allJobs.length}{totalBytes ? " · " + fmtBytes(totalBytes) : ""}</span>
           </button>
           {#each visibleTree as n (n.path)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2056,9 +2130,9 @@
                   onkeydown={(e) => { if (e.key === "Enter") commitFolderRename(n.path); if (e.key === "Escape") renamingFolder = null; }}
                 />
               {:else}
-                <button class="tree-node" class:on={selectedFolder === n.path} onclick={() => (selectedFolder = n.path)} oncontextmenu={(e) => openCtx(e, "folder", n.path)}>
+                <button class="tree-node" class:on={selectedFolder === n.path} onclick={() => { selectedFolder = n.path; selectedJobIds = []; }} oncontextmenu={(e) => openCtx(e, "folder", n.path)}>
                   <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
-                  <span class="tree-name">{n.name}</span><span class="tree-count">{folderCounts.get(n.path) ?? 0}</span>
+                  <span class="tree-name">{n.name}</span><span class="tree-count">{folderCounts.get(n.path) ?? 0}{folderBytes.get(n.path) ? " · " + fmtBytes(folderBytes.get(n.path) ?? 0) : ""}</span>
                 </button>
               {/if}
             </div>
@@ -2067,7 +2141,19 @@
         </aside>
 
         <main class="hist-main">
-          <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={searchJobs} />
+          <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={() => { void searchJobs(); selectedJobIds = []; }} />
+          {#if selectedJobIds.length}
+            <div class="bulkbar">
+              <span class="bulk-n">{selectedJobIds.length} markerade</span>
+              <div class="bulk-move">
+                <button class="btn small" onclick={() => (folderPickerFor = "bulk")}>Flytta till…</button>
+                {#if folderPickerFor === "bulk"}{@render folderPicker("", (p) => { folderPickerFor = null; newFolderName = ""; void bulkMove(p); })}{/if}
+              </div>
+              <button class="btn small" onclick={bulkDeleteAudio}>Ta bort ljud</button>
+              <button class="btn small" onclick={bulkDelete}>Ta bort</button>
+              <button class="btn small" onclick={clearSelection}>Avmarkera</button>
+            </div>
+          {/if}
           {#if jobSearch.trim()}
             {#if !historyJobs.length}<p class="hint">Inga träffar för ”{jobSearch}”.</p>{/if}
             <ul class="job-list">{#each historyJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
@@ -2094,6 +2180,7 @@
           {@const path = ctxMenu.target}
           <button class="ctx-item" onclick={() => createSubfolder(path)}>Ny undermapp</button>
           <button class="ctx-item" onclick={() => { renamingFolder = path; folderRenameText = path.split("/").pop() ?? path; ctxMenu = null; }}>Byt namn</button>
+          {#if folderBytes.get(path)}<button class="ctx-item" onclick={() => deleteFolderAudio(path)}>Ta bort ljud i mappen ({fmtBytes(folderBytes.get(path) ?? 0)})</button>{/if}
           <button class="ctx-item danger" onclick={() => deleteFolder(path)}>Ta bort mapp</button>
         {:else}
           {@const id = ctxMenu.target}
@@ -3090,6 +3177,11 @@
   .drag-handle:active { cursor: grabbing; }
   .app.grabbing { user-select: none; cursor: grabbing; }
   .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(36,64,255,.4); }
+  .job-check { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+  .job-item.sel { background: #eef1ff; border-radius: 6px; }
+  .bulkbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #eef1ff; border: 1px solid #dfe3ff; border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; }
+  .bulk-n { font-weight: 600; font-size: 13px; color: var(--accent); margin-right: 4px; }
+  .bulk-move { position: relative; }
   .job-cat-wrap .fp-menu { left: auto; right: 0; }
   .hist { display: flex; gap: 18px; align-items: flex-start; }
   .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
