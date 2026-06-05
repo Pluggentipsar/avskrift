@@ -1583,7 +1583,7 @@
     try {
       await invoke("delete_job", { id });
       if (currentJobId === id) currentJobId = null;
-      await refreshJobs();
+      await reloadJobs();
     } catch (e) {
       error = String(e);
     }
