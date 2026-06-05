@@ -80,7 +80,8 @@
   // ---- Transcript / review state ----
   let transcript = $state<Transcript | null>(null);
   let speakerLabels = $state<Record<string, string>>({});
-  let view = $state<"transcript" | "review" | "summary" | "qa">("transcript");
+  let view = $state<"transcript" | "review" | "summary" | "qa" | "notes">("transcript");
+  let sidebarCollapsed = $state(false); // hide the workspace controls panel to give the content full width
 
   // ---- Summarisation ----
   type SummaryModel = { id: string; label: string; sizeMb: number; downloaded: boolean };
@@ -166,6 +167,8 @@
   let liveUtterances = $state<{ source: string; start: number; end: number; text: string }[]>([]);
   let liveFeedEl = $state<HTMLDivElement | null>(null);
   let meetingLive = $state(true); // transcribe live during the meeting (vs only after stop)
+  let meetingShowLive = $state(true); // live-text pane visible during a meeting
+  let meetingShowNotes = $state(false); // notes/actions pane visible during a meeting (the "Anteckningar"-knapp)
   let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
 
@@ -565,6 +568,7 @@
       meetingSysWav = null;
       dirty = false;
       view = "transcript";
+      resetWorkspace();
       currentJobId = null; // a fresh transcription starts a new history entry
       currentCategory = lastCategory; // file it under the remembered folder by default
       currentJobCreatedAt = null;
@@ -991,6 +995,12 @@
     try {
       meetingLagging = false;
       await invoke("start_meeting", { args: { model: selectedModel, language, live: meetingLive } });
+      resetWorkspace(); // start the meeting's notes/actions clean (saved together when you stop)
+      currentJobId = null; // a new meeting is a new project
+      currentJobCreatedAt = null;
+      currentCategory = lastCategory;
+      meetingShowLive = true;
+      meetingShowNotes = false;
       meetingActive = true;
       meetingElapsed = 0;
       liveUtterances = [];
@@ -1026,7 +1036,8 @@
       audioPath = res.systemWavPath ?? null;
       audioName = `Möte (${fmtTime(meetingElapsed)})`;
       view = "transcript";
-      currentJobId = null;
+      // Note: do NOT resetWorkspace() here — notes/actions taken live during the meeting are kept and
+      // persisted together with the transcript by saveCurrentJob("meeting") below.
       currentJobCreatedAt = null;
       currentCategory = lastCategory;
       screen = "transcribe";
@@ -1218,7 +1229,7 @@
   }
 
   /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
-  function tab(v: "transcript" | "review" | "summary" | "qa") {
+  function tab(v: "transcript" | "review" | "summary" | "qa" | "notes") {
     view = v;
     screen = "transcribe";
     error = "";
@@ -1255,7 +1266,9 @@
     liveUtterances = [];
     currentJobId = null;
     currentJobCreatedAt = null;
+    currentJobType = "transcribe";
     currentCategory = lastCategory;
+    resetWorkspace();
     view = "transcript";
     go("home");
   }
@@ -1390,7 +1403,7 @@
   }
 
   // ---- Jobs / history (auto-saved past work) ----
-  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number };
+  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number; actionsTotal: number; actionsDone: number; hasNotes: boolean };
   let allJobs = $state<JobMeta[]>([]);
   let recentJobs = $state<JobMeta[]>([]);
   let historyJobs = $state<JobMeta[]>([]); // what the History screen shows (search-filtered)
@@ -1414,6 +1427,21 @@
   let newFolderName = $state(""); // create-folder input inside the dropdown
   let currentJobId = $state<string | null>(null);
   let currentJobCreatedAt = $state<string | null>(null);
+  let currentJobType = $state<"transcribe" | "meeting" | "deidentify" | "summarize">("transcribe");
+
+  // ---- Meeting workspace (B): notes, participants, actions, follow-up ----
+  type ActionItem = { text: string; done: boolean; assignee: string; due: string };
+  let notes = $state("");
+  let participants = $state<{ name: string; role: string }[]>([]);
+  let actions = $state<ActionItem[]>([]);
+  let followup = $state("");
+  let newActionText = $state("");
+  let actionPasteOpen = $state(false);
+  let actionPasteText = $state("");
+  let maximized = $state<null | "notes" | "actions">(null);
+  const wsHasContent = $derived(
+    !!(notes.trim() || followup.trim() || actions.length || participants.some((p) => p.name.trim() || p.role.trim())),
+  );
 
   async function refreshJobs() {
     try {
@@ -1783,6 +1811,7 @@
 
   async function saveCurrentJob(type: "transcribe" | "deidentify" | "summarize" | "meeting") {
     const now = new Date().toISOString();
+    currentJobType = type;
     if (!currentJobId) {
       currentJobId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
       currentJobCreatedAt = now;
@@ -1809,12 +1838,198 @@
       summaryTemplate: selectedTemplate,
       summaryModel: selectedSummaryModel,
       customHeadings,
+      notes,
+      participants,
+      actions,
+      followup,
     };
     try {
       await invoke("save_job", { job });
       await refreshJobs();
     } catch {
       /* non-fatal: failing to persist history shouldn't break the task */
+    }
+  }
+
+  // ---- Meeting workspace (B): notes / participants / actions / follow-up ----
+  let actionsBusy = $state(false);
+  let wsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Live-meeting pane toggles — keep at least one pane visible so the screen never goes blank. */
+  function toggleLivePane() {
+    meetingShowLive = !meetingShowLive;
+    if (!meetingShowLive && !meetingShowNotes) meetingShowNotes = true;
+  }
+  function toggleNotesPane() {
+    meetingShowNotes = !meetingShowNotes;
+    if (!meetingShowNotes && !meetingShowLive) meetingShowLive = true;
+  }
+
+  /** Clear the workspace so a freshly started job doesn't inherit the previous one's notes/actions. */
+  function resetWorkspace() {
+    notes = "";
+    participants = [];
+    actions = [];
+    followup = "";
+    newActionText = "";
+    actionPasteOpen = false;
+    actionPasteText = "";
+    maximized = null;
+  }
+
+  /** Persist the workspace fields onto the active job, debounced. Keeps the job's own type so the
+   *  badge/title stay correct. No-op until there's something to attach them to. */
+  function saveWorkspace() {
+    if (!hasActiveJob && !currentJobId) return;
+    if (wsSaveTimer) clearTimeout(wsSaveTimer);
+    wsSaveTimer = setTimeout(() => void saveCurrentJob(currentJobType === "meeting" ? "meeting" : "transcribe"), 500);
+  }
+
+  function addAction() {
+    const t = newActionText.trim();
+    if (!t) return;
+    actions = [...actions, { text: t, done: false, assignee: "", due: "" }];
+    newActionText = "";
+    saveWorkspace();
+  }
+  function toggleAction(i: number) {
+    actions = actions.map((a, k) => (k === i ? { ...a, done: !a.done } : a));
+    saveWorkspace();
+  }
+  function removeAction(i: number) {
+    actions = actions.filter((_, k) => k !== i);
+    saveWorkspace();
+  }
+  function moveAction(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= actions.length) return;
+    const next = actions.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    actions = next;
+    saveWorkspace();
+  }
+
+  /** Tolerant parser: one action per line; strips bullets, "[ ]"/"[x]" checkboxes and "1." numbering. */
+  function parseActionLines(raw: string): ActionItem[] {
+    const out: ActionItem[] = [];
+    for (let line of raw.split(/\r?\n/)) {
+      line = line.trim();
+      if (!line) continue;
+      let done = false;
+      const cb = line.match(/^[-*•]?\s*\[\s*([xX ])\s*\]\s*(.*)$/);
+      if (cb) {
+        done = cb[1].toLowerCase() === "x";
+        line = cb[2];
+      } else {
+        line = line.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, "");
+      }
+      line = line.trim();
+      if (!line || /^(åtgärder|att göra|to ?do|uppgifter|beslut)\s*:?$/i.test(line)) continue;
+      out.push({ text: line, done, assignee: "", due: "" });
+    }
+    return out;
+  }
+
+  function applyActionPaste() {
+    const parsed = parseActionLines(actionPasteText);
+    if (parsed.length) {
+      actions = [...actions, ...parsed];
+      saveWorkspace();
+      showToast(parsed.length + (parsed.length === 1 ? " åtgärd tillagd" : " åtgärder tillagda"));
+    }
+    actionPasteText = "";
+    actionPasteOpen = false;
+  }
+
+  /** Generate an action list locally with Qwen, strictly from the transcript (respects the de-identify
+   *  toggle via summaryInputText). Appends whatever it finds; non-locking like the Q&A. */
+  async function generateActions() {
+    if (actionsBusy || !transcript) return;
+    actionsBusy = true;
+    error = "";
+    progressMsg = "Tar fram åtgärder…";
+    try {
+      const text = await summaryInputText();
+      const q =
+        "Lista alla åtgärder, beslut och att-göra-punkter från mötet. Svara med EN punkt per rad och " +
+        'börja varje rad med "- ". Skriv ingenting annat än listan. Finns inga åtgärder, svara med en tom rad.';
+      const a = await invoke<string>("ask_transcript", {
+        args: { question: q, transcriptText: text, model: selectedSummaryModel },
+      });
+      const parsed = parseActionLines(a);
+      if (parsed.length) {
+        actions = [...actions, ...parsed];
+        saveWorkspace();
+        showToast(parsed.length + (parsed.length === 1 ? " åtgärd tillagd" : " åtgärder tillagda"));
+      } else {
+        showToast("Inga åtgärder hittades");
+      }
+    } catch (e) {
+      error = String(e);
+    } finally {
+      actionsBusy = false;
+      progressMsg = "";
+    }
+  }
+
+  /** Plain-text dump of the workspace for pasting into an email / journal note. */
+  function buildWorkspaceText(): string {
+    const parts: string[] = [];
+    const ps = participants.filter((p) => p.name.trim() || p.role.trim());
+    if (ps.length) {
+      parts.push("Deltagare:");
+      for (const p of ps) parts.push("- " + p.name.trim() + (p.role.trim() ? " (" + p.role.trim() + ")" : ""));
+      parts.push("");
+    }
+    if (notes.trim()) {
+      parts.push("Anteckningar:", notes.trim(), "");
+    }
+    if (actions.length) {
+      parts.push("Att göra:");
+      for (const a of actions) {
+        const extra = [a.assignee.trim(), a.due.trim()].filter(Boolean).join(", ");
+        parts.push("- [" + (a.done ? "x" : " ") + "] " + a.text.trim() + (extra ? " (" + extra + ")" : ""));
+      }
+      parts.push("");
+    }
+    if (followup.trim()) parts.push("Uppföljning: " + followup.trim());
+    return parts.join("\n").trim();
+  }
+  async function copyWorkspace() {
+    const t = buildWorkspaceText();
+    if (!t) return;
+    try {
+      await navigator.clipboard.writeText(t);
+      showToast("Kopierat");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function addParticipant() {
+    participants = [...participants, { name: "", role: "" }];
+    saveWorkspace();
+  }
+  function removeParticipant(i: number) {
+    participants = participants.filter((_, k) => k !== i);
+    saveWorkspace();
+  }
+  /** Seed participants from the transcript's (renamed) speakers, skipping names already present. */
+  function seedParticipantsFromSpeakers() {
+    const have = new Set(participants.map((p) => p.name.trim().toLowerCase()).filter(Boolean));
+    const add: { name: string; role: string }[] = [];
+    for (const id of speakerOptions) {
+      const name = (speakerLabels[id] ?? id).trim();
+      if (!name || have.has(name.toLowerCase())) continue;
+      have.add(name.toLowerCase());
+      add.push({ name, role: "" });
+    }
+    if (add.length) {
+      participants = [...participants, ...add];
+      saveWorkspace();
+      showToast(add.length + (add.length === 1 ? " deltagare tillagd" : " deltagare tillagda"));
+    } else {
+      showToast("Inga nya talare att lägga till");
     }
   }
 
@@ -1827,9 +2042,18 @@
       summaryDraft = "";
       deidentDoc = false;
       currentJobId = j.id;
+      currentJobType = j.jobType ?? "transcribe";
       currentJobCreatedAt = j.createdAt ?? null;
       currentCategory = j.category ?? "";
       speakerLabels = j.speakerLabels ?? {};
+      notes = typeof j.notes === "string" ? j.notes : "";
+      participants = Array.isArray(j.participants) ? j.participants : [];
+      actions = Array.isArray(j.actions) ? j.actions : [];
+      followup = typeof j.followup === "string" ? j.followup : "";
+      maximized = null;
+      newActionText = "";
+      actionPasteOpen = false;
+      actionPasteText = "";
       if (Array.isArray(j.terms)) terms = j.terms;
       if (typeof j.useAi === "boolean") useAi = j.useAi;
       if (j.summaryTemplate) selectedTemplate = j.summaryTemplate;
@@ -1924,15 +2148,22 @@
       <svg class="logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
         <rect x="9" y="10" width="20" height="28" rx="2" fill="#fff" stroke="#111214" stroke-width="2" />
         <rect x="13" y="17" width="12" height="2.6" fill="#111214" />
-        <rect x="13" y="22" width="12" height="2.6" fill="#2440ff" />
+        <rect x="13" y="22" width="12" height="2.6" fill="#3a36b0" />
         <rect x="13" y="27" width="7" height="2.6" fill="#c9ccd2" />
-        <path d="M34 16v16M38 20v8M30 21v6" stroke="#2440ff" stroke-width="2.4" stroke-linecap="round" />
+        <path d="M34 16v16M38 20v8M30 21v6" stroke="#3a36b0" stroke-width="2.4" stroke-linecap="round" />
       </svg>
       <span class="brand"><h1>Avskrift</h1></span>
     </button>
+    {#if (screen === "transcribe" && transcript) || screen === "deidentify" || screen === "summarize"}
+      <button class="hdr-toggle" class:on={sidebarCollapsed} onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+        title={sidebarCollapsed ? "Visa panel" : "Dölj panel – ge ytan full bredd"} aria-label="Visa/dölj panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/></svg>
+      </button>
+    {/if}
     <nav class="topnav">
       {#if transcript}
         <button class:on={screen === "transcribe" && view === "transcript"} onclick={() => tab("transcript")}>Transkript</button>
+        <button class:on={screen === "transcribe" && view === "notes"} onclick={() => tab("notes")}>Anteckningar & åtgärder{#if wsHasContent}<span class="nav-dot" title="Det här projektet har anteckningar/åtgärder"></span>{/if}</button>
         <button class:on={screen === "transcribe" && view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
         <button class:on={screen === "transcribe" && view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
         <button class:on={screen === "transcribe" && view === "qa"} onclick={() => tab("qa")}>Fråga</button>
@@ -1986,7 +2217,7 @@
         <button class="card" onclick={() => go("transcribe")}>
           <span class="card-ic-wrap">
             <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#2440ff" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
               <path d="M14 8.5h6M14 12h6M14 15.5h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
             </svg>
           </span>
@@ -1997,9 +2228,9 @@
           <span class="card-ic-wrap">
             <svg class="card-ic" viewBox="0 0 24 24" fill="none">
               <rect x="9" y="2.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="#2440ff" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
               <path d="M12 17.5V21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <circle cx="19" cy="5" r="2.4" fill="#2440ff"/>
+              <circle cx="19" cy="5" r="2.4" fill="#3a36b0"/>
             </svg>
           </span>
           <h3>Spela in möte</h3>
@@ -2009,7 +2240,7 @@
           <span class="card-ic-wrap">
             <svg class="card-ic" viewBox="0 0 24 24" fill="none">
               <path d="M12 2.5l7.5 3v4.6c0 5-3.2 7.4-7.5 8.6-4.3-1.2-7.5-3.6-7.5-8.6V5.5L12 2.5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#2440ff" stroke-width="1.9" stroke-linecap="round"/>
+              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#3a36b0" stroke-width="1.9" stroke-linecap="round"/>
             </svg>
           </span>
           <h3>Avidentifiera text</h3>
@@ -2019,9 +2250,9 @@
           <span class="card-ic-wrap">
             <svg class="card-ic" viewBox="0 0 24 24" fill="none">
               <rect x="4.5" y="3" width="15" height="18" rx="2.2" stroke="currentColor" stroke-width="1.7"/>
-              <circle cx="8.4" cy="8" r="1.1" fill="#2440ff"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <circle cx="8.4" cy="12" r="1.1" fill="#2440ff"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <circle cx="8.4" cy="16" r="1.1" fill="#2440ff"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="8.4" cy="8" r="1.1" fill="#3a36b0"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="8.4" cy="12" r="1.1" fill="#3a36b0"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <circle cx="8.4" cy="16" r="1.1" fill="#3a36b0"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
             </svg>
           </span>
           <h3>Sammanfatta text</h3>
@@ -2031,7 +2262,7 @@
           <span class="card-ic-wrap">
             <svg class="card-ic" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M12 7v5l3.5 2" stroke="#2440ff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M12 7v5l3.5 2" stroke="#3a36b0" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
           <h3>Mina projekt</h3>
@@ -2081,6 +2312,12 @@
           <button class="job-row" onclick={() => openJobById(j.id)}>
             <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
             <span class="job-title">{j.title}{#if showPath && j.category}<span class="job-path"> · {j.category}</span>{/if}</span>
+            {#if j.actionsTotal || j.hasNotes}
+              <span class="job-ws">
+                {#if j.hasNotes}<span class="job-chip" title="Har anteckningar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h10l4 4v12H5z"/><path d="M9 11h6M9 15h4"/></svg></span>{/if}
+                {#if j.actionsTotal}<span class="job-chip" class:done={j.actionsDone === j.actionsTotal} title="Åtgärder klara"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>{j.actionsDone}/{j.actionsTotal}</span>{/if}
+              </span>
+            {/if}
             <span class="job-date">{fmtJobDate(j.updatedAt)}{j.audioBytes ? " · " + fmtBytes(j.audioBytes) : ""}</span>
           </button>
         {/if}
@@ -2194,7 +2431,7 @@
     {/if}
 
   {:else if screen === "deidentify"}
-    <div class="layout">
+    <div class="layout" class:collapsed={sidebarCollapsed}>
       <aside class="sidebar">
         {@render sourcePicker()}
         <section class="anon-block">
@@ -2269,14 +2506,14 @@
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           <div class="reassure">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#2440ff" stroke-width="2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
         {:else}
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
               <path d="M12 2.5l7.5 3v4.6c0 5-3.2 7.4-7.5 8.6-4.3-1.2-7.5-3.6-7.5-8.6V5.5L12 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#2440ff" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
             </svg>
             <p class="state-title">Avidentifiera en text</p>
             <p class="state-sub">Klistra in en text eller välj ett dokument till vänster och klicka <strong>Avidentifiera</strong>. Granska träffarna och exportera maskerad text.</p>
@@ -2286,7 +2523,7 @@
     </div>
 
   {:else if screen === "summarize"}
-    <div class="layout">
+    <div class="layout" class:collapsed={sidebarCollapsed}>
       <aside class="sidebar">
         {@render sourcePicker()}
         <section class="anon-block">
@@ -2338,9 +2575,9 @@
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
               <rect x="4.5" y="3" width="15" height="18" rx="2.2" stroke="currentColor" stroke-width="1.5"/>
-              <circle cx="8.4" cy="8" r="1.1" fill="#2440ff"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              <circle cx="8.4" cy="12" r="1.1" fill="#2440ff"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              <circle cx="8.4" cy="16" r="1.1" fill="#2440ff"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="8" r="1.1" fill="#3a36b0"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="12" r="1.1" fill="#3a36b0"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="16" r="1.1" fill="#3a36b0"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
             <p class="state-title">Sammanfatta en text</p>
             <p class="state-sub">Klistra in en text eller välj ett dokument, välj mall och klicka <strong>Skapa sammanfattning</strong>.</p>
@@ -2352,7 +2589,7 @@
   {:else if screen === "meeting"}
     <div class="home">
       <h2 class="big-title">Spela in möte</h2>
-      <div class="meeting-card">
+      <div class="meeting-card" class:wide={meetingActive}>
         {#if !meetingActive && !meetingBusy}
           <p class="hint big-hint">
             Fångar <strong>din mikrofon</strong> och <strong>mötesljudet</strong> (det som hörs i datorn)
@@ -2391,24 +2628,58 @@
           <button class="btn primary block big mt" onclick={startMeeting} disabled={!selectedDownloaded}>Starta inspelning</button>
           <p class="hint">Starta mötet (Teams/Zoom/webbläsare) först, så att mötesljudet spelas upp.</p>
         {:else if meetingActive}
-          <div class="big-rec"><span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}</div>
-          <button class="btn primary block big mt" onclick={stopMeeting}>Stoppa &amp; transkribera</button>
+          <div class="m-live-head">
+            <div class="big-rec"><span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}</div>
+            <div class="m-live-toggles">
+              <button class="btn small" class:on={meetingShowLive} onclick={toggleLivePane} title="Visa/dölj live-texten">Live-text</button>
+              <button class="btn small" class:on={meetingShowNotes} onclick={toggleNotesPane} title="Visa/dölj anteckningar">Anteckningar</button>
+            </div>
+            <button class="btn primary" onclick={stopMeeting}>Stoppa &amp; transkribera</button>
+          </div>
           {#if meetingLagging}
             <div class="banner warn">Transkriberingen släpar efter på den här datorn. All text kommer ikapp när du stoppar — men välj gärna en mindre modell, eller stäng av ”Live-text” nästa gång.</div>
           {/if}
-          {#if meetingLive}
-            {#if liveUtterances.length}
-              <div class="live-feed" bind:this={liveFeedEl}>
-                {#each liveUtterances as u}
-                  <p class="live-line"><span class="live-who {u.source === 'Jag' ? 'me' : 'them'}">{u.source}</span> {u.text}</p>
-                {/each}
+          <div class="m-split" class:single={!(meetingShowLive && meetingShowNotes)}>
+            {#if meetingShowLive}
+              <div class="m-pane m-pane-live">
+                <div class="m-pane-head"><h3>Live-text</h3></div>
+                {#if meetingLive}
+                  {#if liveUtterances.length}
+                    <div class="live-feed" bind:this={liveFeedEl}>
+                      {#each liveUtterances as u}
+                        <p class="live-line"><span class="live-who {u.source === 'Jag' ? 'me' : 'them'}">{u.source}</span> {u.text}</p>
+                      {/each}
+                    </div>
+                  {:else}
+                    <p class="hint" style="text-align:center">Lyssnar… text dyker upp inom ~10 s när någon talar. Mötesljudet fångas bara medan något faktiskt spelas upp i datorn.</p>
+                  {/if}
+                {:else}
+                  <p class="hint" style="text-align:center">Spelar in din röst + mötesljudet. Allt transkriberas när du stoppar.</p>
+                {/if}
               </div>
-            {:else}
-              <p class="hint" style="text-align:center">Lyssnar… text dyker upp inom ~10 s när någon talar. Mötesljudet fångas bara medan något faktiskt spelas upp i datorn.</p>
             {/if}
-          {:else}
-            <p class="hint" style="text-align:center">Spelar in din röst + mötesljudet. Allt transkriberas när du stoppar.</p>
-          {/if}
+            {#if meetingShowNotes}
+              <div class="m-pane m-pane-notes">
+                <div class="m-pane-head"><h3>Anteckningar</h3></div>
+                <textarea class="m-notes" bind:value={notes} oninput={saveWorkspace} placeholder="Skriv anteckningar medan mötet pågår…"></textarea>
+                <form class="ws-add m-add" onsubmit={(e) => { e.preventDefault(); addAction(); }}>
+                  <input bind:value={newActionText} placeholder="Ny åtgärd…" />
+                  <button class="btn small primary" type="submit" disabled={!newActionText.trim()}>Lägg till</button>
+                </form>
+                {#if actions.length}
+                  <ul class="m-actions">
+                    {#each actions as a, i (i)}
+                      <li class:done={a.done}>
+                        <input type="checkbox" checked={a.done} onchange={() => toggleAction(i)} aria-label="Klar" />
+                        <span>{a.text}</span>
+                        <button class="x" onclick={() => removeAction(i)} aria-label="Ta bort">×</button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
+          </div>
         {:else}
           <div class="state">
             <div class="spinner"></div>
@@ -2421,7 +2692,7 @@
     </div>
 
   {:else}
-  <div class="layout">
+  <div class="layout" class:collapsed={sidebarCollapsed}>
     <aside class="sidebar">
       {#if !transcript}
         <section>
@@ -2591,6 +2862,29 @@
           <p class="hint">Ställ frågor om transkriptet i panelen till höger. Svaren bygger bara på texten — inget hittas på.</p>
         </section>
 
+      {:else if view === "notes"}
+        <section>
+          <h2>Anteckningar & åtgärder</h2>
+          <p class="hint">Deltagare, fria anteckningar, att-göra-punkter och uppföljning — sparas med projektet. Du kan rätta talarnas namn i transkriptet och hämta in dem som deltagare.</p>
+        </section>
+        <section>
+          <h2>Föreslå åtgärder (AI)</h2>
+          <p class="hint">Den lokala AI:n läser transkriptet och föreslår att-göra-punkter.</p>
+          <select class="profile" bind:value={selectedSummaryModel}>
+            {#each summaryModels as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
+          </select>
+          {#if analysis}
+            <label class="ai-toggle">
+              <input type="checkbox" bind:checked={summaryFromAnon} />
+              <span>Använd avidentifierad text<em>maskerade namn/uppgifter</em></span>
+            </label>
+          {/if}
+          <button class="btn primary block mt" onclick={generateActions} disabled={actionsBusy || !summaryDownloaded}>
+            {actionsBusy ? "Tar fram…" : "Föreslå åtgärder"}
+          </button>
+          {#if !summaryDownloaded}<p class="hint">Hämta sammanfattningsmodellen i Sammanfattning-panelen först.</p>{/if}
+        </section>
+
       {:else}
         {#if meetingMicWav && meetingSysWav}
           <section class="anon-block">
@@ -2662,7 +2956,7 @@
       {:else if !transcript}
         <div class="state">
           <svg class="state-icon" viewBox="0 0 24 24" fill="none">
-            <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#2440ff" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#3a36b0" stroke-width="1.5" stroke-linecap="round"/>
             <path d="M14 8.5h6M14 12h6M14 15.5h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
           <p class="state-title">Välj en ljudfil och transkribera</p>
@@ -2686,6 +2980,8 @@
               <button class="btn" onclick={() => exportAs("docx", true)}>Word</button>
               <button class="btn" onclick={() => exportAs("srt", true)}>.srt</button>
               <button class="btn" onclick={() => exportAs("vtt", true)}>.vtt</button>
+            {:else if view === "notes"}
+              <button class="btn primary" onclick={copyWorkspace} disabled={!wsHasContent}>Kopiera</button>
             {:else}
               <button class="btn primary" onclick={copyTranscript}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("transcript")}>Kopiera för AI</button>
@@ -2814,7 +3110,7 @@
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           <div class="reassure">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#2440ff" stroke-width="2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
           {:else}
@@ -2833,6 +3129,128 @@
             <p class="hint">Välj mall och modell och klicka <strong>Skapa sammanfattning</strong> i panelen till vänster — utkastet dyker upp här för redigering.</p>
           </div>
           {/if}
+        {:else if view === "notes"}
+          {#snippet actionsBody()}
+            {#if actionPasteOpen}
+              <div class="ws-paste">
+                <textarea bind:value={actionPasteText} rows="4" placeholder="Klistra in en lista — en åtgärd per rad. ”- ”, ”• ”, ”1.” och ”[ ]” funkar."></textarea>
+                <div class="row">
+                  <button class="btn small primary" onclick={applyActionPaste} disabled={!actionPasteText.trim()}>Lägg till</button>
+                  <button class="btn small" onclick={() => { actionPasteOpen = false; actionPasteText = ""; }}>Avbryt</button>
+                </div>
+              </div>
+            {/if}
+            {#if actions.length}
+              <ul class="ws-actions">
+                {#each actions as a, i (i)}
+                  <li class="ws-action" class:done={a.done}>
+                    <input class="ws-check" type="checkbox" checked={a.done} onchange={() => toggleAction(i)} aria-label="Klar" />
+                    <div class="ws-action-main">
+                      <input class="ws-atext" bind:value={actions[i].text} oninput={saveWorkspace} placeholder="Åtgärd" />
+                      <div class="ws-ameta">
+                        <input class="ws-assignee" bind:value={actions[i].assignee} oninput={saveWorkspace} placeholder="Ansvarig" />
+                        <input class="ws-due" type="date" bind:value={actions[i].due} onchange={saveWorkspace} title="Klart till" />
+                      </div>
+                    </div>
+                    <div class="ws-action-ctrls">
+                      <button class="mini" onclick={() => moveAction(i, -1)} disabled={i === 0} aria-label="Flytta upp">↑</button>
+                      <button class="mini" onclick={() => moveAction(i, 1)} disabled={i === actions.length - 1} aria-label="Flytta ner">↓</button>
+                      <button class="x" onclick={() => removeAction(i)} aria-label="Ta bort">×</button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="hint">Inga åtgärder ännu. Skriv en nedan, klistra in en lista, eller låt AI:n föreslå från transkriptet.</p>
+            {/if}
+            <form class="ws-add" onsubmit={(e) => { e.preventDefault(); addAction(); }}>
+              <input bind:value={newActionText} placeholder="Ny åtgärd…" />
+              <button class="btn small primary" type="submit" disabled={!newActionText.trim()}>Lägg till</button>
+            </form>
+          {/snippet}
+
+          <div class="ws">
+            {#if maximized === "notes"}
+              <section class="ws-card ws-max">
+                <header class="ws-head">
+                  <h3>Anteckningar</h3>
+                  <button class="btn small" onclick={() => (maximized = null)}>Minimera</button>
+                </header>
+                <textarea class="ws-notes max" bind:value={notes} oninput={saveWorkspace} placeholder="Fria anteckningar från mötet…"></textarea>
+              </section>
+            {:else if maximized === "actions"}
+              <section class="ws-card ws-max">
+                <header class="ws-head">
+                  <h3>Att göra {#if actions.length}<span class="ws-badge">{actions.filter((a) => a.done).length}/{actions.length}</span>{/if}</h3>
+                  <div class="ws-head-actions">
+                    <button class="btn small" onclick={() => (actionPasteOpen = !actionPasteOpen)}>Klistra in</button>
+                    <button class="btn small" onclick={() => (maximized = null)}>Minimera</button>
+                  </div>
+                </header>
+                <div class="ws-scroll">{@render actionsBody()}</div>
+              </section>
+            {:else}
+              <div class="ws-grid">
+                <div class="ws-col-main">
+                  <section class="ws-card">
+                    <header class="ws-head">
+                      <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h10l4 4v12H5z"/><path d="M9 11h6M9 15h6"/></svg> Anteckningar</h3>
+                      <button class="btn small" onclick={() => (maximized = "notes")} title="Maximera">Maximera</button>
+                    </header>
+                    <textarea class="ws-notes" bind:value={notes} oninput={saveWorkspace} placeholder="Fria anteckningar från mötet…"></textarea>
+                  </section>
+
+                  <section class="ws-card">
+                    <header class="ws-head">
+                      <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 7.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8"/><path d="M9 11l3 3 8-8"/></svg> Att göra {#if actions.length}<span class="ws-badge">{actions.filter((a) => a.done).length}/{actions.length}</span>{/if}</h3>
+                      <div class="ws-head-actions">
+                        <button class="btn small" onclick={() => (actionPasteOpen = !actionPasteOpen)}>Klistra in</button>
+                        <button class="btn small" onclick={() => (maximized = "actions")} title="Maximera">Maximera</button>
+                      </div>
+                    </header>
+                    {@render actionsBody()}
+                  </section>
+                </div>
+
+                <div class="ws-col-side">
+                  <section class="ws-card">
+                    <header class="ws-head">
+                      <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 5.5a3 3 0 0 1 0 5M17.5 14c2.2.5 3.5 2.2 3.5 5"/></svg> Deltagare</h3>
+                      <div class="ws-head-actions">
+                        {#if speakerOptions.length}<button class="btn small" onclick={seedParticipantsFromSpeakers} title="Hämta namn från transkriptets talare">Från talare</button>{/if}
+                        <button class="btn small" onclick={addParticipant}>+ Lägg till</button>
+                      </div>
+                    </header>
+                    {#if participants.length}
+                      <div class="ws-people">
+                        {#each participants as p, i (i)}
+                          <div class="ws-person">
+                            <div class="ws-person-top">
+                              <input class="ws-pname" bind:value={participants[i].name} oninput={saveWorkspace} placeholder="Namn" />
+                              <button class="x" onclick={() => removeParticipant(i)} aria-label="Ta bort">×</button>
+                            </div>
+                            <input class="ws-prole" bind:value={participants[i].role} oninput={saveWorkspace} placeholder="Roll (valfritt)" />
+                          </div>
+                        {/each}
+                      </div>
+                    {:else}
+                      <p class="hint">Lägg till deltagare manuellt, eller hämta namnen från transkriptets talare.</p>
+                    {/if}
+                  </section>
+
+                  <section class="ws-card">
+                    <header class="ws-head"><h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9.5h16M8 3v4M16 3v4"/></svg> Uppföljning</h3></header>
+                    <div class="ws-followup">
+                      <label>Uppföljningsdatum
+                        <input type="date" bind:value={followup} onchange={saveWorkspace} />
+                      </label>
+                      {#if followup}<button class="link" onclick={() => { followup = ""; saveWorkspace(); }}>rensa</button>{/if}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            {/if}
+          </div>
         {/if}
       {/if}
     </main>
@@ -2938,22 +3356,30 @@
 
 <style>
   :global(:root) {
-    --ink: #111214; --muted: #6a6e74; --faint: #a2a6ac; --bg: #ffffff;
-    --line: #ececec; --line-2: #e2e2e2; --accent: #2440ff;
+    --ink: #1a1a1d; --muted: #696a6f; --faint: #a6a7ad; --bg: #ffffff;
+    --canvas: #ffffff; /* pure white */
+    --line: #e8e8eb; --line-2: #dadadf; --accent: #3a36b0; --accent-press: #2e2b8f; /* deep ink-indigo */
+    --shadow-sm: none; --shadow-md: none; --shadow-lg: none; /* editorial: depth from hairlines + space, not shadows */
   }
-  :global(body) { margin: 0; font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--bg); -webkit-font-smoothing: antialiased; }
+  :global(body) { margin: 0; font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--canvas); -webkit-font-smoothing: antialiased; }
   .app { height: 100vh; display: flex; flex-direction: column; }
 
-  header { display: flex; align-items: flex-end; gap: 15px; padding: 20px 30px 16px; border-bottom: 1px solid var(--line); }
+  header { display: flex; align-items: flex-end; gap: 15px; padding: 20px 30px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
   .logo { width: 36px; height: 36px; flex: none; margin-bottom: 3px; }
   .brand h1 { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 34px; line-height: .9; margin: 0; }
-  .brand p { margin: 5px 0 0; font-size: 13px; color: var(--muted); }
   .spacer { flex: 1; }
   .lockbadge { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 5px; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
 
-  .layout { flex: 1; display: grid; grid-template-columns: 310px 1fr; overflow: hidden; }
+  .layout { flex: 1; display: grid; grid-template-columns: 310px 1fr; overflow: hidden; transition: grid-template-columns .16s ease; }
+  .layout.collapsed { grid-template-columns: 0 1fr; }
+  .layout.collapsed .sidebar { padding: 0; border-right: none; overflow: hidden; }
+  .layout.collapsed .ws { max-width: none; } /* sidebar hidden → let the workspace use the full width */
   .sidebar { padding: 22px 24px; overflow: auto; border-right: 1px solid var(--line); }
+  .hdr-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-bottom: 3px; border: 1px solid var(--line-2); border-radius: 3px; background: var(--bg); color: var(--muted); cursor: pointer; transition: .14s; }
+  .hdr-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  .hdr-toggle.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hdr-toggle svg { width: 18px; height: 18px; }
   section { margin-bottom: 22px; }
   h2 { font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--faint); margin: 0 0 11px; font-weight: 600; }
   .hint { font-size: 12px; color: var(--faint); margin: 6px 0 0; }
@@ -2969,9 +3395,10 @@
 
   .btn { font: inherit; font-size: 13.5px; font-weight: 500; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); border-radius: 3px; padding: 9px 14px; cursor: pointer; transition: .14s; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
   .btn:hover:not(:disabled) { background: var(--ink); color: #fff; }
-  .btn:disabled { opacity: .4; cursor: default; }
+  .btn svg { width: 17px; height: 17px; flex: none; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .btn.primary:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn.primary:hover:not(:disabled) { background: var(--accent-press); border-color: var(--accent-press); }
+  .btn:disabled, .btn.primary:disabled { background: var(--canvas); color: var(--faint); border-color: var(--line); box-shadow: none; filter: none; cursor: default; }
   .btn.block { width: 100%; }
   .btn.mt { margin-top: 8px; }
   select.profile.mt { margin-top: 8px; }
@@ -2979,7 +3406,7 @@
   .link { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0 2px; }
   .x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
 
-  .file-chip { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 3px; padding: 9px 11px; font-size: 13.5px; }
+  .file-chip { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: color-mix(in srgb, var(--accent) 5%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--bg)); border-radius: 3px; padding: 9px 11px; font-size: 13.5px; }
   .file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .recording { font-size: 13.5px; color: var(--ink); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -3017,7 +3444,7 @@
   .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   .meta strong { color: var(--ink); font-weight: 700; }
 
-  .transcript { flex: 1; overflow: auto; max-width: 78ch; }
+  .transcript { flex: 1; overflow: auto; max-width: 84ch; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 16px 24px; }
   .turn { margin-bottom: 16px; }
   .speaker { font: inherit; font-weight: 700; font-size: 13px; color: var(--accent); border: none; background: none; padding: 0 0 2px; border-bottom: 1px dashed transparent; }
   .speaker:hover, .speaker:focus { border-bottom-color: var(--line-2); outline: none; }
@@ -3037,14 +3464,14 @@
   .row { display: flex; gap: 8px; margin: 8px 0 22px; }
   .grow { flex: 1; }
 
-  .player { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 14px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 6px; }
+  .player { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 14px; background: color-mix(in srgb, var(--accent) 5%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--bg)); border-radius: 3px; }
   .play { flex: none; width: 36px; height: 36px; border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
   .play svg { width: 16px; height: 16px; }
   .pt { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .seek { flex: 1; accent-color: var(--accent); cursor: pointer; }
 
-  .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 76ch; padding: 4px 2px; }
-  .summary-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line-2); border-radius: 6px; padding: 18px 20px; max-width: 80ch; }
+  .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 82ch; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 26px; }
+  .summary-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 24px; max-width: 84ch; }
   .summary-edit:focus { outline: none; border-color: var(--accent); }
   .hit { border: none; background: color-mix(in srgb, var(--c) 14%, transparent); font: inherit; line-height: inherit; cursor: pointer; padding: 0 2px 1px; border-radius: 3px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
   .hit:hover { background: color-mix(in srgb, var(--c) 30%, transparent); }
@@ -3061,7 +3488,7 @@
 
   .state { margin: auto; text-align: center; color: var(--muted); max-width: 400px; padding: 30px; }
   .state-icon { width: 44px; height: 44px; color: var(--faint); margin-bottom: 14px; }
-  .state-title { font-family: "Instrument Serif", serif; font-size: 24px; color: var(--ink); margin: 0 0 6px; }
+  .state-title { font-family: "Instrument Serif", serif; font-size: 29px; line-height: 1.12; color: var(--ink); margin: 0 0 8px; letter-spacing: -.01em; }
   .state-sub { font-size: 14px; margin: 0; line-height: 1.6; }
   .spinner { width: 34px; height: 34px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; margin: 0 auto 16px; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -3081,18 +3508,33 @@
   .topnav { display: flex; gap: 2px; margin-bottom: 6px; }
   .topnav button { font: inherit; font-size: 13.5px; font-weight: 500; border: none; background: none; color: var(--faint); padding: 5px 11px; border-radius: 3px; cursor: pointer; transition: .14s; }
   .topnav button:hover { color: var(--ink); }
-  .topnav button.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .topnav button.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600; }
   .topnav button:disabled { color: var(--faint); opacity: .5; cursor: default; background: none; }
+
+  /* ---- polish: interactions, focus, selection, scrollbars (within the existing look) ---- */
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .link:hover { text-decoration: underline; }
+  .x:hover { color: var(--ink); }
+  textarea:focus, select.profile:focus { outline: none; border-color: var(--accent); }
+  textarea:focus-visible, select.profile:focus-visible, input:focus-visible {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  :global(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :global(::selection) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  :global(::-webkit-scrollbar) { width: 12px; height: 12px; }
+  :global(::-webkit-scrollbar-thumb) { background-color: color-mix(in srgb, var(--ink) 20%, transparent); border-radius: 3px; border: 3px solid var(--bg); background-clip: padding-box; }
+  :global(::-webkit-scrollbar-thumb:hover) { background-color: color-mix(in srgb, var(--ink) 34%, transparent); }
+  :global(::-webkit-scrollbar-track) { background: transparent; }
 
   /* ---- home / history ---- */
   .home { flex: 1; overflow: auto; padding: 46px 40px 60px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
-  .big-title { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 32px; color: var(--ink); margin: 0 0 26px; letter-spacing: 0; text-transform: none; }
-  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
-  .card { text-align: left; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 22px 22px 20px; cursor: pointer; transition: border-color .14s, box-shadow .14s, transform .14s; font: inherit; color: var(--ink); }
-  .card:hover { border-color: var(--accent); box-shadow: 0 10px 30px rgba(36,64,255,.08); transform: translateY(-1px); }
-  .card-ic-wrap { width: 46px; height: 46px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); display: flex; align-items: center; justify-content: center; margin-bottom: 14px; transition: background .14s; }
-  .card:hover .card-ic-wrap { background: color-mix(in srgb, var(--accent) 15%, transparent); }
-  .card-ic { width: 25px; height: 25px; color: var(--ink); }
+  .big-title { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 42px; line-height: 1.06; color: var(--ink); margin: 0 0 30px; letter-spacing: -.01em; text-transform: none; }
+  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .card { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 22px 22px 20px; cursor: pointer; box-shadow: var(--shadow-sm); transition: border-color .16s, box-shadow .16s, transform .16s; font: inherit; color: var(--ink); }
+  .card:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 3%, var(--bg)); }
+  .card-ic-wrap { width: 48px; height: 48px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); display: flex; align-items: center; justify-content: center; margin-bottom: 15px; transition: background .16s, transform .16s; }
+  .card:hover .card-ic-wrap { background: color-mix(in srgb, var(--accent) 15%, transparent); transform: scale(1.06); }
+  .card-ic { width: 25px; height: 25px; color: var(--accent); }
   .card h3 { font-size: 16px; font-weight: 600; margin: 0 0 5px; }
   .card p { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.5; }
 
@@ -3100,46 +3542,118 @@
   .recent h2 { font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--faint); margin: 0 0 11px; font-weight: 600; }
   .job-strip, .job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .job-item { display: flex; align-items: center; gap: 6px; }
-  .job-row { flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 11px 13px; cursor: pointer; font: inherit; color: var(--ink); transition: border-color .14s, background .14s; min-width: 0; }
-  .job-row:hover { border-color: var(--accent); background: #fafbff; }
-  .job-badge { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; white-space: nowrap; color: #fff; background: var(--faint); }
-  .job-badge.transcribe { background: #2440ff; }
+  .job-row { flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 12px 15px; cursor: pointer; font: inherit; color: var(--ink); box-shadow: var(--shadow-sm); transition: border-color .14s, box-shadow .14s, transform .14s; min-width: 0; }
+  .job-row:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 3%, var(--bg)); }
+  .job-badge { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; color: #fff; background: var(--faint); }
+  .job-badge.transcribe { background: #3a36b0; }
   .job-badge.deidentify { background: #be123c; }
   .job-badge.summarize { background: #0d9488; }
   .job-badge.meeting { background: #7c3aed; }
-  .meeting-card { max-width: 540px; margin: 6px auto 0; display: flex; flex-direction: column; gap: 14px; text-align: left; }
-  .consent { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: color-mix(in srgb, #f59e0b 12%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent); font-size: 13px; line-height: 1.45; color: #7c5410; }
+  .meeting-card { max-width: 560px; margin: 12px auto 0; display: flex; flex-direction: column; gap: 14px; text-align: left; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 26px 28px; box-shadow: var(--shadow-md); }
+  .consent { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 3px; background: color-mix(in srgb, #f59e0b 12%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent); font-size: 13px; line-height: 1.45; color: #7c5410; }
   .consent svg { width: 22px; height: 22px; flex-shrink: 0; color: #b45309; }
   .m-fields { display: flex; gap: 12px; }
   .m-field { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: #5b6270; }
   .m-field .profile { width: 100%; }
   .big-rec { font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 10px; justify-content: center; padding: 16px 0 2px; }
-  .live-feed { max-height: 340px; overflow-y: auto; text-align: left; background: color-mix(in srgb, var(--accent) 4%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; margin-top: 4px; }
+  .live-feed { max-height: 340px; overflow-y: auto; text-align: left; background: color-mix(in srgb, var(--accent) 4%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; margin-top: 4px; }
   .live-line { margin: 0; font-size: 14px; line-height: 1.45; }
-  .live-who { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 999px; color: #fff; margin-right: 6px; }
-  .live-who.me { background: #2440ff; }
+  .live-who { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 3px; color: #fff; margin-right: 6px; }
+  .live-who.me { background: #3a36b0; }
   .live-who.them { background: #7c3aed; }
+  /* Live meeting split view (live-text + notes/actions side by side) */
+  .meeting-card.wide { max-width: 100%; background: transparent; border: none; box-shadow: none; padding: 0; }
+  .m-live-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between; }
+  .m-live-toggles { display: flex; gap: 6px; }
+  .m-split { display: flex; gap: 14px; align-items: stretch; margin-top: 8px; }
+  .m-split.single { display: block; }
+  .m-pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 3px; padding: 12px 14px; background: #fff; }
+  .m-pane-head { margin-bottom: 8px; }
+  .m-pane-head h3 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .m-pane-live .live-feed { max-height: 420px; border: none; background: transparent; padding: 0; margin: 0; }
+  .m-notes { width: 100%; box-sizing: border-box; min-height: 240px; flex: 1; resize: vertical; font: inherit; font-size: 15px; line-height: 1.6; color: var(--ink); border: 1px solid var(--line-2); border-radius: 3px; padding: 10px 12px; }
+  .m-notes:focus { outline: none; border-color: var(--accent); }
+  .m-add { margin-top: 10px; }
+  .m-actions { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  .m-actions li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .m-actions li span { flex: 1; min-width: 0; }
+  .m-actions li.done span { text-decoration: line-through; color: var(--muted); }
+  .m-actions input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); flex: none; cursor: pointer; }
   .qa { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
   .qa-history { display: flex; flex-direction: column; gap: 16px; }
   .qa-item { display: flex; flex-direction: column; gap: 6px; }
   .qa-q { margin: 0; font-weight: 600; font-size: 15px; color: var(--ink); }
   .qa-q::before { content: "Du: "; color: var(--accent); }
-  .qa-a { margin: 0; font-size: 15px; line-height: 1.55; white-space: pre-wrap; background: #f7f8fa; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .qa-a { margin: 0; font-size: 15px; line-height: 1.55; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 13px 15px; box-shadow: var(--shadow-sm); }
   .qa-empty { margin: 0; }
   .qa-form { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 6px 0; }
-  .qa-input { flex: 1; padding: 11px 14px; border: 1px solid var(--line-2); border-radius: 10px; font: inherit; }
+  .qa-input { flex: 1; padding: 11px 14px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; }
   .qa-input:focus { outline: none; border-color: var(--accent); }
+
+  /* Meeting workspace (B): notes / participants / actions / follow-up */
+  .ws { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 1160px; margin: 0 auto; padding-bottom: 8px; container-type: inline-size; }
+  .ws-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 16px; align-items: start; }
+  .ws-col-main, .ws-col-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  /* Reflow on the actual content width (the app sidebar eats ~360px), not the viewport. */
+  @container (max-width: 720px) { .ws-grid { grid-template-columns: 1fr; } }
+  /* Viewport fallback for engines without container-query support. */
+  @media (max-width: 1080px) { .ws-grid { grid-template-columns: 1fr; } }
+  .ws-ico { width: 17px; height: 17px; color: var(--accent); flex: none; }
+  .ws-card { border: 1px solid var(--line); border-radius: 3px; background: #fff; padding: 16px 18px; min-width: 0; }
+  .ws-max { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .ws-scroll { flex: 1; overflow: auto; }
+  .ws-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .ws-head h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .ws-head-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ws-badge { font-size: 12px; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg)); border-radius: 3px; padding: 1px 9px; }
+  .ws-people { display: flex; flex-direction: column; gap: 8px; }
+  .ws-person { display: flex; flex-direction: column; gap: 6px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 3px; background: #fcfcfd; }
+  .ws-person-top { display: flex; gap: 6px; align-items: center; }
+  .ws-pname { flex: 1; font-weight: 500; }
+  .ws-person input { width: 100%; box-sizing: border-box; min-width: 0; padding: 8px 11px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; background: #fff; }
+  .ws-person input:focus { outline: none; border-color: var(--accent); }
+  .ws-notes { width: 100%; box-sizing: border-box; min-width: 0; min-height: 200px; resize: vertical; font: inherit; font-size: 15px; line-height: 1.6; color: var(--ink); border: 1px solid var(--line-2); border-radius: 3px; padding: 12px 14px; }
+  .ws-notes:focus { outline: none; border-color: var(--accent); }
+  .ws-notes.max { min-height: 0; flex: 1; resize: none; }
+  .ws-actions { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .ws-action { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; background: #fcfcfd; }
+  .ws-action.done { background: #f5f7f5; }
+  .ws-action.done .ws-atext { text-decoration: line-through; color: var(--muted); }
+  .ws-check { margin-top: 9px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .ws-action-main { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ws-atext { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid transparent; border-radius: 3px; font: inherit; font-size: 15px; background: transparent; }
+  .ws-atext:hover { border-color: var(--line-2); }
+  .ws-atext:focus { outline: none; border-color: var(--accent); background: #fff; }
+  .ws-ameta { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ws-assignee, .ws-due { min-width: 0; padding: 5px 9px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-size: 13px; color: var(--muted); }
+  .ws-assignee { width: 160px; max-width: 45%; }
+  .ws-due { max-width: 100%; }
+  .ws-assignee:focus, .ws-due:focus { outline: none; border-color: var(--accent); color: var(--ink); }
+  .ws-action-ctrls { display: flex; align-items: center; gap: 2px; flex: none; }
+  .mini { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 14px; width: 24px; height: 24px; border-radius: 3px; line-height: 1; }
+  .mini:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); color: var(--accent); }
+  .mini:disabled { opacity: .3; cursor: default; }
+  .ws-add { display: flex; gap: 8px; }
+  .ws-add input { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; }
+  .ws-add input:focus { outline: none; border-color: var(--accent); }
+  .ws-paste { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .ws-paste textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 14px; border: 1px solid var(--line-2); border-radius: 3px; padding: 10px 12px; }
+  .ws-paste textarea:focus { outline: none; border-color: var(--accent); }
+  .ws-followup { display: flex; align-items: center; gap: 12px; }
+  .ws-followup label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .ws-followup input { padding: 8px 11px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-weight: 400; color: var(--ink); width: max-content; max-width: 100%; box-sizing: border-box; }
+  .ws-followup input:focus { outline: none; border-color: var(--accent); }
   .maskword { display: inline; cursor: pointer; border: none; background: none; font: inherit; color: inherit; padding: 0 1px; border-radius: 3px; }
   .maskword:hover { background: #fff3cd; box-shadow: 0 0 0 1px #f59e0b; }
   .hit.manual:not(.rejected) { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 2px; }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(17,18,20,.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
-  .modal { background: #fff; border-radius: 16px; padding: 22px 24px; width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.25); display: flex; flex-direction: column; gap: 14px; }
+  .modal { background: #fff; border-radius: 3px; padding: 22px 24px; width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.25); display: flex; flex-direction: column; gap: 14px; }
   .modal-title { margin: 0; font-size: 17px; font-weight: 600; }
   .modal-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; font-weight: 600; color: var(--muted); }
-  .modal-field select, .modal-field input { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); }
+  .modal-field select, .modal-field input { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-weight: 400; color: var(--ink); }
   .modal-field select:focus, .modal-field input:focus { outline: none; border-color: var(--accent); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
-  .modal-field textarea { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; font-weight: 400; color: var(--ink); resize: vertical; }
+  .modal-field textarea { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-weight: 400; color: var(--ink); resize: vertical; }
   .modal-field textarea:focus { outline: none; border-color: var(--accent); }
   .modal.ai-modal { width: min(560px, 92vw); }
   .ai-status.ok { margin: 0; font-size: 13px; color: #047857; font-weight: 500; }
@@ -3148,7 +3662,7 @@
   .ai-open { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line-2); }
   .ai-open-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 2px; }
   .btn.small { padding: 6px 10px; font-size: 13px; }
-  .working { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; background: #eef1ff; color: var(--accent); border: 1px solid #dfe3ff; border-radius: 999px; padding: 5px 13px; font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .working { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--bg)); border-radius: 3px; padding: 5px 13px; font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
   .working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: workpulse 1s ease-in-out infinite; }
   .rev-speaker { font-weight: 600; color: var(--muted); }
   .t-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -3157,89 +3671,94 @@
   .body.editing { cursor: text; border-radius: 4px; }
   .body.editing:hover { background: #fff7e0; box-shadow: 0 0 0 2px #fff7e0; }
   .ed-ctrls { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
-  .ed-spk { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 6px; color: var(--ink); }
-  .ed-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 6px; }
+  .ed-spk { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--ink); }
+  .ed-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 3px; }
   .ed-del:hover { background: #fde8e8; color: #c0392b; }
-  .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; margin-bottom: 18px; display: block; }
+  .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; margin-bottom: 18px; display: block; }
   .job-search:focus { outline: none; border-color: var(--accent); }
   .job-path { color: var(--faint); font-weight: 400; }
   .job-item { flex-wrap: wrap; }
   .job-item.dragging { opacity: .45; }
   .job-cat-wrap { position: relative; }
-  .job-cat-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 7px; background: #fff; font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .job-cat-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 3px; background: #fff; font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; }
   .job-cat-btn svg { width: 14px; height: 14px; color: var(--accent); flex-shrink: 0; }
   .job-cat-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .job-cat-btn:hover { border-color: var(--accent); color: var(--ink); }
-  .job-menu { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 8px; border-radius: 6px; }
-  .job-menu:hover { background: #eef1ff; color: var(--accent); }
+  .job-menu { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 8px; border-radius: 3px; }
+  .job-menu:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); color: var(--accent); }
   .drag-handle { cursor: grab; color: var(--faint); font-size: 13px; padding: 0 4px; user-select: none; flex-shrink: 0; line-height: 1; }
   .drag-handle:hover { color: var(--accent); }
   .drag-handle:active { cursor: grabbing; }
   .app.grabbing { user-select: none; cursor: grabbing; }
-  .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(36,64,255,.4); }
+  .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 3px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(58,54,176,.4); }
   .job-check { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
-  .job-item.sel { background: #eef1ff; border-radius: 6px; }
-  .bulkbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #eef1ff; border: 1px solid #dfe3ff; border-radius: 10px; padding: 8px 12px; margin-bottom: 12px; }
+  .job-item.sel { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); border-radius: 3px; }
+  .bulkbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--bg)); border-radius: 3px; padding: 8px 12px; margin-bottom: 12px; }
   .bulk-n { font-weight: 600; font-size: 13px; color: var(--accent); margin-right: 4px; }
   .bulk-move { position: relative; }
   .job-cat-wrap .fp-menu { left: auto; right: 0; }
   .hist { display: flex; gap: 18px; align-items: flex-start; }
   .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
-  .tree-rowwrap { display: flex; align-items: center; border-radius: 8px; }
-  .tree-rowwrap.drop, .tree-node.drop { outline: 2px solid var(--accent); outline-offset: -2px; background: #eef1ff; }
+  .tree-rowwrap { display: flex; align-items: center; border-radius: 3px; }
+  .tree-rowwrap.drop, .tree-node.drop { outline: 2px solid var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
   .tree-twirl { border: none; background: none; cursor: pointer; color: var(--faint); width: 18px; flex-shrink: 0; font-size: 11px; transition: transform .12s; }
   .tree-twirl.open { transform: rotate(90deg); }
   .tree-twirl-spacer { width: 18px; flex-shrink: 0; display: inline-block; }
-  .tree-node { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; background: none; border: none; border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+  .tree-node { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; background: none; border: none; border-radius: 3px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
   .tree-node:hover { background: #f4f6ff; }
-  .tree-node.on { background: #eef1ff; font-weight: 600; }
+  .tree-node.on { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); font-weight: 600; }
   .tree-ico { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
   .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tree-count { color: var(--faint); font-size: 12px; }
-  .tree-rename { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 6px; font: inherit; font-size: 13.5px; }
+  .tree-rename { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 3px; font: inherit; font-size: 13.5px; }
   .tree-rename:focus { outline: none; }
-  .tree-new { text-align: left; border: 1px dashed var(--line-2); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; margin-top: 6px; }
+  .tree-new { text-align: left; border: 1px dashed var(--line-2); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 3px; margin-top: 6px; }
   .tree-new:hover { border-color: var(--accent); color: var(--accent); }
   .hist-main { flex: 1; min-width: 0; }
   .hist-bar { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px; }
   .hist-where { font-size: 16px; font-weight: 600; }
   .hist-count { color: var(--faint); font-size: 13px; }
-  .ctx { position: fixed; z-index: 61; min-width: 180px; background: #fff; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 5px; display: flex; flex-direction: column; gap: 1px; }
-  .ctx-item { text-align: left; background: none; border: none; border-radius: 7px; padding: 8px 11px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
-  .ctx-item:hover { background: #eef1ff; }
+  .ctx { position: fixed; z-index: 61; min-width: 180px; background: #fff; border: 1px solid var(--line-2); border-radius: 3px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+  .ctx-item { text-align: left; background: none; border: none; border-radius: 3px; padding: 8px 11px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+  .ctx-item:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
   .ctx-item.danger { color: #c0392b; }
   .ctx-item.danger:hover { background: #fde8e8; }
   .job-rename { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 4px; font: inherit; color: var(--ink); }
   .job-rename:focus { outline: none; }
   .hdr-folder { position: relative; margin-right: 12px; }
-  .hdr-folder-btn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 11px; background: #fff; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; max-width: 240px; }
+  .hdr-folder-btn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line-2); border-radius: 3px; padding: 6px 11px; background: #fff; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; max-width: 240px; }
   .hdr-folder-btn:hover { border-color: var(--accent); }
   .hdr-folder-btn svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
   .hdr-folder-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hdr-folder-btn .chev { width: 13px; height: 13px; color: var(--faint); }
   .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
-  .fp-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 61; min-width: 240px; max-width: 320px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+  .fp-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 61; min-width: 240px; max-width: 320px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid var(--line-2); border-radius: 3px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 6px; display: flex; flex-direction: column; gap: 1px; }
   .hdr-folder .fp-menu { left: auto; right: 0; }
   .fp-row { display: flex; align-items: center; }
-  .fp-item { flex: 1; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: none; border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; min-width: 0; }
-  .fp-item:hover { background: #eef1ff; }
-  .fp-item.on { background: #eef1ff; font-weight: 600; }
+  .fp-item { flex: 1; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: none; border-radius: 3px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; min-width: 0; }
+  .fp-item:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+  .fp-item.on { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); font-weight: 600; }
   .fp-item svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
   .fp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fp-count { color: var(--faint); font-size: 12px; }
-  .fp-sub { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
-  .fp-sub:hover { background: #eef1ff; color: var(--accent); }
+  .fp-sub { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 8px; border-radius: 3px; }
+  .fp-sub:hover { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); color: var(--accent); }
   .fp-create { display: flex; gap: 6px; padding: 8px 6px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
-  .fp-create input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 7px; font: inherit; font-size: 13px; }
+  .fp-create input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-size: 13px; }
   .fp-create input:focus { outline: none; border-color: var(--accent); }
   @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-  .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
+  .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 3px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(58,54,176,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
   .empty-view { max-width: 460px; margin: 48px auto; text-align: center; }
-  .empty-view h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+  .empty-view h3 { font-family: "Instrument Serif", serif; font-weight: 400; margin: 0 0 8px; font-size: 25px; letter-spacing: -.01em; color: var(--ink); }
   .empty-view .hint { font-size: 13.5px; line-height: 1.55; }
   .job-title { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .job-date { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  .job-ws { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  .job-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--muted); background: #f1f2f4; border-radius: 3px; padding: 2px 8px; }
+  .job-chip svg { width: 13px; height: 13px; }
+  .job-chip.done { color: #0d9488; background: #e7f6f3; }
+  .nav-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
   .home-open { display: inline-block; margin-top: 30px; }
   .big-hint { font-size: 14px; line-height: 1.6; max-width: 520px; }
 

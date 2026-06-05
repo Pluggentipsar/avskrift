@@ -54,6 +54,7 @@ mod imp {
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::Arc;
     use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
     use wasapi::*;
 
     // Chunker tuning. Cut at the quietest 30 ms frame between MIN and the buffer end once we reach
@@ -213,9 +214,20 @@ mod imp {
         }
     }
 
+    /// Always request f32 stereo @48k; autoconvert makes WASAPI deliver exactly this regardless of
+    /// the endpoint's native format, so the rate stays constant even when we re-open on a new device.
+    const RATE: u32 = 48000;
+
     /// Capture loop for one endpoint. `device_dir = Capture` → microphone; `device_dir = Render` →
     /// system loopback (a Render *device* with a Capture *stream* sets AUDCLNT_STREAMFLAGS_LOOPBACK
     /// inside the wasapi crate). Returns `(frames_written, sample_rate)`.
+    ///
+    /// Survives the default endpoint changing mid-recording (e.g. plugging in 3.5 mm headphones,
+    /// which switches the default *render* device — the loopback would otherwise keep reading the
+    /// now-silent old endpoint and "Mötet" would go quiet). We poll the default device id and, on a
+    /// change (or a device-invalidated read error), re-open the loopback/mic on the new default and
+    /// pad the saved WAV + chunker timeline with silence for the brief switch-over gap so the two
+    /// streams stay aligned.
     fn run_stream(
         source: Source,
         device_dir: Direction,
@@ -224,90 +236,157 @@ mod imp {
         ready: Sender<Result<(), String>>,
         chunks: Sender<CapturedChunk>,
     ) -> (u64, u32) {
-        let opened = (|| -> Result<_, String> {
-            let _ = initialize_mta();
-            let enumerator = DeviceEnumerator::new().map_err(es)?;
+        let _ = initialize_mta();
+        let enumerator = match DeviceEnumerator::new() {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = ready.send(Err(es(e)));
+                return (0, 0);
+            }
+        };
+
+        // Open (or re-open) a capture/loopback stream on the *current* default device. Returns the
+        // COM objects + channel count + the device id (so we can notice when the default changes).
+        let open = || -> Result<_, String> {
             let device = enumerator.get_default_device(&device_dir).map_err(es)?;
+            let dev_id = device.get_id().map_err(es)?;
             let mut client = device.get_iaudioclient().map_err(es)?;
-            // Request f32 stereo @48k; autoconvert makes WASAPI deliver exactly this regardless of
-            // the endpoint's native format (the A0 spike confirmed 48000 Hz / 2 ch for both).
-            let format = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
+            let format = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, 2, None);
             let (_def, min_time) = client.get_device_period().map_err(es)?;
             let mode = StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: min_time };
             client.initialize_client(&format, &Direction::Capture, &mode).map_err(es)?;
             let h_event = client.set_get_eventhandle().map_err(es)?;
             let capture_client = client.get_audiocaptureclient().map_err(es)?;
-            let rate = format.get_samplespersec();
             let channels = format.get_nchannels() as usize;
-            let spec = hound::WavSpec {
-                channels: 1,
-                sample_rate: rate,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            };
-            let writer = hound::WavWriter::create(&wav_path, spec).map_err(es)?;
             client.start_stream().map_err(es)?;
-            Ok((client, h_event, capture_client, channels, rate, writer))
-        })();
+            Ok((client, h_event, capture_client, channels, dev_id))
+        };
 
-        let (client, h_event, capture_client, channels, rate, mut writer) = match opened {
-            Ok(v) => {
-                let _ = ready.send(Ok(()));
-                v
-            }
+        // The WAV writer persists across re-opens (the rate is constant), so one continuous recording.
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = match hound::WavWriter::create(&wav_path, spec) {
+            Ok(w) => w,
             Err(e) => {
-                let _ = ready.send(Err(e));
+                let _ = ready.send(Err(es(e)));
                 return (0, 0);
             }
         };
 
-        let frame_bytes = 4 * channels.max(1);
-        let mut queue: VecDeque<u8> = VecDeque::new();
-        let mut chunker = Chunker::new(rate, source);
         let mut frames: u64 = 0;
-        let mut fault: Option<String> = None;
+        let mut chunker = Chunker::new(RATE, source);
+        let mut first = true;
+        let mut down_since: Option<Instant> = None;
 
-        while !stop.load(Ordering::Relaxed) {
-            if let Err(e) = capture_client.read_from_device_to_deque(&mut queue) {
-                fault = Some(format!("läsfel: {e}"));
+        'session: loop {
+            if stop.load(Ordering::Relaxed) {
                 break;
             }
-            // Drain whole interleaved f32 frames → mono; write 16-bit PCM and buffer for chunking.
-            let mut batch: Vec<f32> = Vec::with_capacity(queue.len() / frame_bytes + 1);
-            while queue.len() >= frame_bytes {
-                let mut acc = 0f32;
-                for _ in 0..channels {
-                    let b = [
-                        queue.pop_front().unwrap(),
-                        queue.pop_front().unwrap(),
-                        queue.pop_front().unwrap(),
-                        queue.pop_front().unwrap(),
-                    ];
-                    acc += f32::from_le_bytes(b);
+            let (client, h_event, capture_client, channels, dev_id) = match open() {
+                Ok(v) => v,
+                Err(e) => {
+                    if first {
+                        let _ = ready.send(Err(e));
+                        let _ = writer.finalize();
+                        return (0, 0);
+                    }
+                    // The endpoint is mid-switch; back off and retry until it's available or we stop.
+                    thread::sleep(Duration::from_millis(150));
+                    continue 'session;
                 }
-                let mono = (acc / channels as f32).clamp(-1.0, 1.0);
-                if let Err(e) = writer.write_sample((mono * 32767.0) as i16) {
-                    fault = Some(format!("WAV-skrivfel: {e}"));
-                    break;
+            };
+            if first {
+                let _ = ready.send(Ok(()));
+                first = false;
+            }
+
+            // Pad the WAV + advance the chunker timeline for any switch-over downtime, so the saved
+            // recording and the live timestamps stay aligned with the other stream.
+            if let Some(t) = down_since.take() {
+                let pad = (t.elapsed().as_secs_f64() * RATE as f64).min(30.0 * RATE as f64) as u64;
+                let zeros = [0f32; 2048];
+                let mut left = pad;
+                while left > 0 {
+                    let n = left.min(zeros.len() as u64) as usize;
+                    for _ in 0..n {
+                        let _ = writer.write_sample(0i16);
+                    }
+                    chunker.push(&zeros[..n], &chunks);
+                    frames += n as u64;
+                    left -= n as u64;
                 }
-                batch.push(mono);
-                frames += 1;
             }
-            if fault.is_some() {
-                break;
+
+            let frame_bytes = 4 * channels.max(1);
+            let mut queue: VecDeque<u8> = VecDeque::new();
+            let mut last_poll = Instant::now();
+            let mut wav_fault = false;
+
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    let _ = client.stop_stream();
+                    break 'session;
+                }
+                if capture_client.read_from_device_to_deque(&mut queue).is_err() {
+                    // Device invalidated (often the default just changed) → re-open on the new one.
+                    let _ = client.stop_stream();
+                    down_since = Some(Instant::now());
+                    continue 'session;
+                }
+                // Drain whole interleaved f32 frames → mono; write 16-bit PCM and buffer for chunking.
+                let mut batch: Vec<f32> = Vec::with_capacity(queue.len() / frame_bytes + 1);
+                while queue.len() >= frame_bytes {
+                    let mut acc = 0f32;
+                    for _ in 0..channels {
+                        let b = [
+                            queue.pop_front().unwrap(),
+                            queue.pop_front().unwrap(),
+                            queue.pop_front().unwrap(),
+                            queue.pop_front().unwrap(),
+                        ];
+                        acc += f32::from_le_bytes(b);
+                    }
+                    let mono = (acc / channels as f32).clamp(-1.0, 1.0);
+                    if writer.write_sample((mono * 32767.0) as i16).is_err() {
+                        wav_fault = true;
+                        break;
+                    }
+                    batch.push(mono);
+                    frames += 1;
+                }
+                if wav_fault {
+                    let _ = client.stop_stream();
+                    break 'session;
+                }
+                chunker.push(&batch, &chunks);
+                // Loopback is silent when nothing plays → the event simply times out; keep recording.
+                let _ = h_event.wait_for_event(200);
+
+                // ~once a second, notice if the default endpoint changed (e.g. headphones plugged in)
+                // and re-open there. A non-default endpoint that still exists just goes silent without
+                // erroring, so polling — not just the read error above — is what catches that case.
+                if last_poll.elapsed() >= Duration::from_secs(1) {
+                    last_poll = Instant::now();
+                    let changed = enumerator
+                        .get_default_device(&device_dir)
+                        .and_then(|d| d.get_id())
+                        .is_ok_and(|cur| cur != dev_id);
+                    if changed {
+                        let _ = client.stop_stream();
+                        down_since = Some(Instant::now());
+                        continue 'session;
+                    }
+                }
             }
-            chunker.push(&batch, &chunks);
-            // Loopback is silent when nothing plays → the event simply times out; keep recording.
-            let _ = h_event.wait_for_event(200);
         }
 
         chunker.flush(&chunks);
-        let _ = client.stop_stream();
         let _ = writer.finalize();
-        if let Some(e) = fault {
-            eprintln!("[capture] {}: {e}", wav_path.display());
-        }
-        (frames, rate)
+        (frames, RATE)
     }
 }
 

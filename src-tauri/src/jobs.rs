@@ -12,6 +12,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::transcript::Transcript;
 
+/// A checklist item in the meeting workspace ("Att göra").
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Action {
+    pub text: String,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub assignee: String,
+    #[serde(default)]
+    pub due: String,
+}
+
+/// A meeting participant (name + optional role).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Participant {
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+}
+
 /// A persisted job. Inputs + settings + verbatim outputs are stored; the de-identify `AnalyzeResult`
 /// is intentionally NOT stored (Span byte-offsets are brittle) — it is recomputed on reopen.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +87,16 @@ pub struct Job {
     pub summary_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_headings: Option<String>,
+
+    // --- meeting workspace (notes / participants / actions / follow-up) ---
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<Participant>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub followup: String,
 }
 
 /// Lightweight listing entry for the History screen.
@@ -79,6 +111,10 @@ pub struct JobMeta {
     pub updated_at: String,
     /// Total bytes of this job's audio files still on disk (0 if none / already removed).
     pub audio_bytes: u64,
+    /// Meeting-workspace indicators for the project list (badges).
+    pub actions_total: usize,
+    pub actions_done: usize,
+    pub has_notes: bool,
 }
 
 fn meta_of(job: &Job) -> JobMeta {
@@ -96,6 +132,9 @@ fn meta_of(job: &Job) -> JobMeta {
         created_at: job.created_at.clone(),
         updated_at: job.updated_at.clone(),
         audio_bytes,
+        actions_total: job.actions.len(),
+        actions_done: job.actions.iter().filter(|a| a.done).count(),
+        has_notes: !job.notes.trim().is_empty(),
     }
 }
 
@@ -217,6 +256,16 @@ fn job_matches(job: &Job, q: &str) -> bool {
     if job.summary_draft.as_deref().is_some_and(|s| s.to_lowercase().contains(q))
         || job.source_text.as_deref().is_some_and(|s| s.to_lowercase().contains(q))
     {
+        return true;
+    }
+    // Meeting workspace: notes / actions / participants / follow-up are searchable too.
+    if job.notes.to_lowercase().contains(q) || job.followup.to_lowercase().contains(q) {
+        return true;
+    }
+    if job.actions.iter().any(|a| a.text.to_lowercase().contains(q) || a.assignee.to_lowercase().contains(q)) {
+        return true;
+    }
+    if job.participants.iter().any(|p| p.name.to_lowercase().contains(q) || p.role.to_lowercase().contains(q)) {
         return true;
     }
     job.transcript.as_ref().is_some_and(|t| t.utterances.iter().any(|u| u.text.to_lowercase().contains(q)))
