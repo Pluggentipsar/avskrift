@@ -237,6 +237,11 @@
     if (saved) terms = JSON.parse(saved);
     lastCategory = localStorage.getItem("avskrift.lastCategory") ?? "";
     currentCategory = lastCategory;
+    try {
+      pendingFolders = JSON.parse(localStorage.getItem("avskrift.pendingFolders") ?? "[]");
+    } catch {
+      pendingFolders = [];
+    }
     // Pick a sensible default Whisper model + meeting mode for this machine (user can override).
     const savedModel = localStorage.getItem("avskrift_model");
     selectedModel = savedModel || hwDefaultModel();
@@ -248,6 +253,9 @@
 
   // Remember the last folder so new jobs are filed there automatically.
   $effect(() => { localStorage.setItem("avskrift.lastCategory", lastCategory); });
+
+  // Persist created-but-empty folders so they survive reloads.
+  $effect(() => { localStorage.setItem("avskrift.pendingFolders", JSON.stringify(pendingFolders)); });
 
   $effect(() => {
     const p = listen<string>("avskrift:progress", (e) => (progressMsg = e.payload));
@@ -1202,7 +1210,7 @@
     screen = s;
     error = "";
     if (s === "history") {
-      folderPath = [];
+      selectedFolder = "";
       jobSearch = "";
       void refreshJobs();
       void searchJobs();
@@ -1389,7 +1397,14 @@
   let jobSearch = $state(""); // full-text query for History
   let renamingJobId = $state<string | null>(null);
   let renameText = $state("");
-  let folderPath = $state<string[]>([]); // current drill-down location in History (category segments)
+  let selectedFolder = $state(""); // selected folder in the History tree ("" = Alla / root)
+  let expandedFolders = $state<string[]>([]); // expanded tree nodes (paths)
+  let pendingFolders = $state<string[]>([]); // created-but-empty folders (the path model can't store these in jobs)
+  let draggedJobId = $state<string | null>(null);
+  let dropTarget = $state<string | null>(null); // folder path currently hovered as a drop target ("" = root)
+  let renamingFolder = $state<string | null>(null);
+  let folderRenameText = $state("");
+  let ctxMenu = $state<{ x: number; y: number; kind: "folder" | "job"; target: string } | null>(null);
   let currentCategory = $state(""); // folder of the active job (path, "/"-separated)
   let lastCategory = $state(""); // remembered folder, applied to the next new job
   let folderPickerFor = $state<string | null>(null); // which folder dropdown is open ("header" | job id | null)
@@ -1419,6 +1434,96 @@
   async function reloadJobs() {
     await refreshJobs();
     if (screen === "history") await searchJobs();
+    // Empty-folder placeholders that now contain a job are redundant; drop them.
+    const real = new Set(
+      allJobs.flatMap((j) => catSegments(j.category).map((_, i, a) => a.slice(0, i + 1).join("/"))),
+    );
+    pendingFolders = pendingFolders.filter((p) => !real.has(p));
+  }
+
+  // ---- Folder tree operations (History) ----
+  function parentOf(path: string): string {
+    const i = path.lastIndexOf("/");
+    return i < 0 ? "" : path.slice(0, i);
+  }
+
+  function toggleExpand(path: string) {
+    expandedFolders = expandedFolders.includes(path)
+      ? expandedFolders.filter((p) => p !== path)
+      : [...expandedFolders, path];
+  }
+
+  /** Rewrite a prefix across the empty-folder placeholders (mirrors the backend job rewrite). */
+  function rewritePending(from: string, to: string) {
+    pendingFolders = pendingFolders
+      .map((p) =>
+        p === from ? to : p.startsWith(from + "/") ? (to ? to + p.slice(from.length) : p.slice(from.length + 1)) : p,
+      )
+      .filter(Boolean);
+  }
+
+  async function moveJobToFolder(id: string, path: string) {
+    const j = historyJobs.find((x) => x.id === id) ?? allJobs.find((x) => x.id === id);
+    if (j) await setJobCategory(j, path);
+  }
+
+  function createSubfolder(parent: string) {
+    const exists = (p: string) => allFolders.some((f) => f.path === p);
+    let path = parent ? parent + "/Ny mapp" : "Ny mapp";
+    let n = 2;
+    while (exists(path)) path = (parent ? parent + "/" : "") + "Ny mapp " + n++;
+    pendingFolders = [...pendingFolders, path];
+    if (parent && !expandedFolders.includes(parent)) expandedFolders = [...expandedFolders, parent];
+    renamingFolder = path;
+    folderRenameText = path.split("/").pop() ?? path;
+    ctxMenu = null;
+  }
+
+  async function commitFolderRename(oldPath: string) {
+    const name = folderRenameText.trim();
+    renamingFolder = null;
+    if (!name) return;
+    const newPath = parentOf(oldPath) ? parentOf(oldPath) + "/" + name : name;
+    if (newPath === oldPath) return;
+    rewritePending(oldPath, newPath);
+    try {
+      await invoke("move_folder", { from: oldPath, to: newPath });
+      if (selectedFolder === oldPath || selectedFolder.startsWith(oldPath + "/"))
+        selectedFolder = newPath + selectedFolder.slice(oldPath.length);
+      if (currentCategory === oldPath || currentCategory.startsWith(oldPath + "/"))
+        currentCategory = newPath + currentCategory.slice(oldPath.length);
+      await reloadJobs();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function deleteFolder(path: string) {
+    ctxMenu = null;
+    const parent = parentOf(path);
+    const count = folderCounts.get(path) ?? 0;
+    if (
+      count &&
+      !(await ask(`Ta bort mappen ”${path}”? ${count} projekt flyttas till ${parent || "Alla"}.`, {
+        title: "Ta bort mapp",
+        kind: "warning",
+      }))
+    )
+      return;
+    rewritePending(path, parent);
+    try {
+      await invoke("move_folder", { from: path, to: parent });
+      if (selectedFolder === path || selectedFolder.startsWith(path + "/")) selectedFolder = parent;
+      await reloadJobs();
+      showToast("Mappen borttagen");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function openCtx(e: MouseEvent, kind: "folder" | "job", target: string) {
+    e.preventDefault();
+    ctxMenu = { x: e.clientX, y: e.clientY, kind, target };
   }
 
   /** Distinct categories across all jobs, for the category datalist suggestions. */
@@ -1434,37 +1539,37 @@
       : [];
   }
 
-  /** Drill-down view of History at `folderPath`: immediate sub-folders (with recursive job counts)
-   *  and the jobs that live directly in this folder. */
-  const folderView = $derived.by(() => {
-    const subs = new Map<string, number>();
-    const here: JobMeta[] = [];
-    for (const j of historyJobs) {
-      const parts = catSegments(j.category);
-      if (parts.length < folderPath.length || !folderPath.every((seg, i) => parts[i] === seg)) continue;
-      if (parts.length === folderPath.length) here.push(j);
-      else {
-        const next = parts[folderPath.length];
-        subs.set(next, (subs.get(next) ?? 0) + 1);
-      }
-    }
-    const subfolders = [...subs.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => a.name.localeCompare(b.name, "sv"));
-    return { subfolders, jobs: here };
-  });
-
-  /** Every folder path that exists across all jobs, incl. intermediate ancestors, for the picker. */
+  /** Every folder path (from jobs + created-but-empty), incl. intermediate ancestors. */
   const allFolders = $derived.by(() => {
     const set = new Set<string>();
-    for (const cat of jobCategories) {
+    const add = (cat: string) => {
       const parts = catSegments(cat);
       for (let i = 1; i <= parts.length; i++) set.add(parts.slice(0, i).join("/"));
-    }
+    };
+    for (const cat of jobCategories) add(cat);
+    for (const p of pendingFolders) add(p);
     return [...set]
       .sort((a, b) => a.localeCompare(b, "sv"))
       .map((path) => ({ path, name: path.split("/").pop() ?? path, depth: path.split("/").length - 1 }));
   });
+
+  /** Tree nodes visible given which folders are expanded; each flags whether it has children. */
+  const visibleTree = $derived(
+    allFolders
+      .filter((f) => {
+        const parts = f.path.split("/");
+        for (let i = 1; i < parts.length; i++) if (!expandedFolders.includes(parts.slice(0, i).join("/"))) return false;
+        return true;
+      })
+      .map((f) => ({ ...f, hasChildren: allFolders.some((g) => g.path.startsWith(f.path + "/")) })),
+  );
+
+  /** Jobs in the right pane: those in the selected folder (recursively); "" = all. */
+  const jobsInSelected = $derived(
+    selectedFolder
+      ? historyJobs.filter((j) => j.category === selectedFolder || j.category.startsWith(selectedFolder + "/"))
+      : historyJobs,
+  );
 
   /** Recursive job count per folder path (a job in Elever/Kalle counts for Elever too). */
   const folderCounts = $derived.by(() => {
@@ -1842,7 +1947,15 @@
 
   {:else if screen === "history"}
     {#snippet jobRow(j: JobMeta, showPath: boolean)}
-      <li class="job-item">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <li
+        class="job-item"
+        class:dragging={draggedJobId === j.id}
+        draggable="true"
+        ondragstart={(e) => { draggedJobId = j.id; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
+        ondragend={() => (draggedJobId = null)}
+        oncontextmenu={(e) => openCtx(e, "job", j.id)}
+      >
         {#if renamingJobId === j.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input
@@ -1869,47 +1982,103 @@
           </button>
           {#if folderPickerFor === j.id}{@render folderPicker(j.category, (p) => { folderPickerFor = null; newFolderName = ""; void setJobCategory(j, p); })}{/if}
         </div>
-        <button class="job-act" onclick={() => startRename(j)}>Byt namn</button>
-        {#if j.audioBytes}
-          <button class="job-act" onclick={() => deleteJobAudio(j)} title="Ta bort ljudfilen men behåll texten">Ta bort ljud</button>
-        {/if}
-        <button class="x" onclick={() => deleteJobById(j.id)} aria-label="Ta bort projekt">×</button>
+        <button class="job-menu" onclick={(e) => openCtx(e, "job", j.id)} aria-label="Fler åtgärder" title="Fler åtgärder (eller högerklicka)">⋯</button>
       </li>
     {/snippet}
 
-    <div class="home">
-      <h2 class="big-title">Tidigare jobb</h2>
+    <div class="hist">
       {#if !allJobs.length}
-        <p class="hint big-hint">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>
+        <p class="hint big-hint" style="padding:32px">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>
       {:else}
-        <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={searchJobs} />
-        {#if jobSearch.trim()}
-          {#if !historyJobs.length}<p class="hint">Inga träffar för ”{jobSearch}”.</p>{/if}
-          <ul class="job-list">{#each historyJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
-        {:else}
-          <nav class="crumbs">
-            <button class="crumb" class:on={!folderPath.length} onclick={() => (folderPath = [])}>Alla</button>
-            {#each folderPath as seg, i}<span class="crumb-sep">/</span><button class="crumb" onclick={() => (folderPath = folderPath.slice(0, i + 1))}>{seg}</button>{/each}
-          </nav>
-          {#if folderView.subfolders.length}
-            <div class="folders">
-              {#each folderView.subfolders as f (f.name)}
-                <button class="folder" onclick={() => (folderPath = [...folderPath, f.name])}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
-                  <span class="folder-name">{f.name}</span>
-                  <span class="folder-count">{f.count}</span>
+        <aside class="hist-tree">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <button
+            class="tree-node root"
+            class:on={!selectedFolder && !jobSearch.trim()}
+            class:drop={dropTarget === ""}
+            onclick={() => { selectedFolder = ""; jobSearch = ""; }}
+            ondragover={(e) => { e.preventDefault(); dropTarget = ""; }}
+            ondragleave={() => (dropTarget = null)}
+            ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, ""); dropTarget = null; }}
+          >
+            <span class="tree-twirl-spacer"></span>
+            <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+            <span class="tree-name">Alla projekt</span><span class="tree-count">{allJobs.length}</span>
+          </button>
+          {#each visibleTree as n (n.path)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="tree-rowwrap"
+              class:drop={dropTarget === n.path}
+              style="padding-left:{n.depth * 14}px"
+              ondragover={(e) => { e.preventDefault(); dropTarget = n.path; }}
+              ondragleave={() => (dropTarget = null)}
+              ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, n.path); dropTarget = null; }}
+            >
+              {#if n.hasChildren}
+                <button class="tree-twirl" class:open={expandedFolders.includes(n.path)} onclick={() => toggleExpand(n.path)} aria-label="Fäll ut/ihop">▸</button>
+              {:else}
+                <span class="tree-twirl-spacer"></span>
+              {/if}
+              {#if renamingFolder === n.path}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  class="tree-rename"
+                  bind:value={folderRenameText}
+                  autofocus
+                  onblur={() => commitFolderRename(n.path)}
+                  onkeydown={(e) => { if (e.key === "Enter") commitFolderRename(n.path); if (e.key === "Escape") renamingFolder = null; }}
+                />
+              {:else}
+                <button class="tree-node" class:on={selectedFolder === n.path} onclick={() => (selectedFolder = n.path)} oncontextmenu={(e) => openCtx(e, "folder", n.path)}>
+                  <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+                  <span class="tree-name">{n.name}</span><span class="tree-count">{folderCounts.get(n.path) ?? 0}</span>
                 </button>
-              {/each}
+              {/if}
             </div>
+          {/each}
+          <button class="tree-new" onclick={() => createSubfolder("")}>+ Ny mapp</button>
+        </aside>
+
+        <main class="hist-main">
+          <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={searchJobs} />
+          {#if jobSearch.trim()}
+            {#if !historyJobs.length}<p class="hint">Inga träffar för ”{jobSearch}”.</p>{/if}
+            <ul class="job-list">{#each historyJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
+          {:else}
+            <div class="hist-bar">
+              <span class="hist-where">{selectedFolder || "Alla projekt"}</span>
+              <span class="hist-count">{jobsInSelected.length} projekt</span>
+            </div>
+            {#if jobsInSelected.length}
+              <ul class="job-list">{#each jobsInSelected as j (j.id)}{@render jobRow(j, !!selectedFolder)}{/each}</ul>
+            {:else}
+              <p class="hint">Inga projekt här ännu — dra hit ett projekt, eller välj mapp via ”Mapp…”.</p>
+            {/if}
           {/if}
-          {#if folderView.jobs.length}
-            <ul class="job-list">{#each folderView.jobs as j (j.id)}{@render jobRow(j, false)}{/each}</ul>
-          {:else if !folderView.subfolders.length}
-            <p class="hint">Den här mappen är tom.</p>
-          {/if}
-        {/if}
+        </main>
       {/if}
     </div>
+
+    {#if ctxMenu}
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <div class="fp-backdrop" onclick={() => (ctxMenu = null)} role="presentation"></div>
+      <div class="ctx" style="left:{ctxMenu.x}px; top:{ctxMenu.y}px">
+        {#if ctxMenu.kind === "folder"}
+          {@const path = ctxMenu.target}
+          <button class="ctx-item" onclick={() => createSubfolder(path)}>Ny undermapp</button>
+          <button class="ctx-item" onclick={() => { renamingFolder = path; folderRenameText = path.split("/").pop() ?? path; ctxMenu = null; }}>Byt namn</button>
+          <button class="ctx-item danger" onclick={() => deleteFolder(path)}>Ta bort mapp</button>
+        {:else}
+          {@const id = ctxMenu.target}
+          <button class="ctx-item" onclick={() => { openJobById(id); ctxMenu = null; }}>Öppna</button>
+          <button class="ctx-item" onclick={() => { const j = historyJobs.find((x) => x.id === id); if (j) startRename(j); ctxMenu = null; }}>Byt namn</button>
+          <button class="ctx-item" onclick={() => { folderPickerFor = id; ctxMenu = null; }}>Flytta till…</button>
+          <button class="ctx-item" onclick={() => { const j = historyJobs.find((x) => x.id === id); ctxMenu = null; if (j && j.audioBytes) void deleteJobAudio(j); }}>Ta bort ljud</button>
+          <button class="ctx-item danger" onclick={() => { const i = ctxMenu?.target; ctxMenu = null; if (i) void deleteJobById(i); }}>Ta bort projekt</button>
+        {/if}
+      </div>
+    {/if}
 
   {:else if screen === "deidentify"}
     <div class="layout">
@@ -2880,26 +3049,42 @@
   .ed-del:hover { background: #fde8e8; color: #c0392b; }
   .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; margin-bottom: 18px; display: block; }
   .job-search:focus { outline: none; border-color: var(--accent); }
-  .crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 14px; }
-  .crumb { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 5px; border-radius: 6px; }
-  .crumb.on { color: var(--ink); }
-  .crumb:hover { background: #eef1ff; }
-  .crumb-sep { color: var(--faint); }
-  .folders { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-  .folder { display: inline-flex; align-items: center; gap: 8px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 10px; padding: 9px 13px; cursor: pointer; font: inherit; font-size: 14px; color: var(--ink); }
-  .folder:hover { border-color: var(--accent); background: #eef1ff; }
-  .folder svg { width: 17px; height: 17px; color: var(--accent); }
-  .folder-name { font-weight: 600; }
-  .folder-count { color: var(--faint); font-size: 12px; }
   .job-path { color: var(--faint); font-weight: 400; }
   .job-item { flex-wrap: wrap; }
+  .job-item.dragging { opacity: .45; }
   .job-cat-wrap { position: relative; }
   .job-cat-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 7px; background: #fff; font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; }
   .job-cat-btn svg { width: 14px; height: 14px; color: var(--accent); flex-shrink: 0; }
   .job-cat-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .job-cat-btn:hover { border-color: var(--accent); color: var(--ink); }
-  .job-act { border: 1px solid var(--line-2); background: #fff; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; padding: 5px 9px; border-radius: 7px; white-space: nowrap; }
-  .job-act:hover { border-color: var(--accent); color: var(--accent); }
+  .job-menu { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 8px; border-radius: 6px; }
+  .job-menu:hover { background: #eef1ff; color: var(--accent); }
+  .hist { display: flex; gap: 18px; align-items: flex-start; }
+  .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
+  .tree-rowwrap { display: flex; align-items: center; border-radius: 8px; }
+  .tree-rowwrap.drop, .tree-node.drop { outline: 2px solid var(--accent); outline-offset: -2px; background: #eef1ff; }
+  .tree-twirl { border: none; background: none; cursor: pointer; color: var(--faint); width: 18px; flex-shrink: 0; font-size: 11px; transition: transform .12s; }
+  .tree-twirl.open { transform: rotate(90deg); }
+  .tree-twirl-spacer { width: 18px; flex-shrink: 0; display: inline-block; }
+  .tree-node { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; background: none; border: none; border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+  .tree-node:hover { background: #f4f6ff; }
+  .tree-node.on { background: #eef1ff; font-weight: 600; }
+  .tree-ico { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+  .tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-count { color: var(--faint); font-size: 12px; }
+  .tree-rename { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--accent); border-radius: 6px; font: inherit; font-size: 13.5px; }
+  .tree-rename:focus { outline: none; }
+  .tree-new { text-align: left; border: 1px dashed var(--line-2); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; margin-top: 6px; }
+  .tree-new:hover { border-color: var(--accent); color: var(--accent); }
+  .hist-main { flex: 1; min-width: 0; }
+  .hist-bar { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px; }
+  .hist-where { font-size: 16px; font-weight: 600; }
+  .hist-count { color: var(--faint); font-size: 13px; }
+  .ctx { position: fixed; z-index: 61; min-width: 180px; background: #fff; border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 5px; display: flex; flex-direction: column; gap: 1px; }
+  .ctx-item { text-align: left; background: none; border: none; border-radius: 7px; padding: 8px 11px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+  .ctx-item:hover { background: #eef1ff; }
+  .ctx-item.danger { color: #c0392b; }
+  .ctx-item.danger:hover { background: #fde8e8; }
   .job-rename { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 4px; font: inherit; color: var(--ink); }
   .job-rename:focus { outline: none; }
   .hdr-folder { position: relative; margin-right: 12px; }
