@@ -1962,6 +1962,7 @@
           ondragstart={(e) => {
             draggedJobId = j.id;
             if (e.dataTransfer) {
+              e.dataTransfer.setData("text/plain", j.id);
               e.dataTransfer.effectAllowed = "move";
               const row = (e.currentTarget as HTMLElement).closest(".job-item");
               if (row) e.dataTransfer.setDragImage(row, 12, 12);
@@ -2010,8 +2011,9 @@
             class:on={!selectedFolder && !jobSearch.trim()}
             class:drop={dropTarget === ""}
             onclick={() => { selectedFolder = ""; jobSearch = ""; }}
-            ondragover={(e) => { e.preventDefault(); dropTarget = ""; }}
-            ondragleave={() => (dropTarget = null)}
+            ondragenter={(e) => { e.preventDefault(); dropTarget = ""; }}
+            ondragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; dropTarget = ""; }}
+            ondragleave={(e) => { if (e.currentTarget === e.target) dropTarget = null; }}
             ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, ""); dropTarget = null; }}
           >
             <span class="tree-twirl-spacer"></span>
@@ -2024,8 +2026,9 @@
               class="tree-rowwrap"
               class:drop={dropTarget === n.path}
               style="padding-left:{n.depth * 14}px"
-              ondragover={(e) => { e.preventDefault(); dropTarget = n.path; }}
-              ondragleave={() => (dropTarget = null)}
+              ondragenter={(e) => { e.preventDefault(); dropTarget = n.path; }}
+              ondragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; dropTarget = n.path; }}
+              ondragleave={(e) => { if (e.currentTarget === e.target) dropTarget = null; }}
               ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, n.path); dropTarget = null; }}
             >
               {#if n.hasChildren}
