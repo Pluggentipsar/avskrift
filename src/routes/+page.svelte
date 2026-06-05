@@ -1392,6 +1392,8 @@
   let folderPath = $state<string[]>([]); // current drill-down location in History (category segments)
   let currentCategory = $state(""); // folder of the active job (path, "/"-separated)
   let lastCategory = $state(""); // remembered folder, applied to the next new job
+  let folderPickerFor = $state<string | null>(null); // which folder dropdown is open ("header" | job id | null)
+  let newFolderName = $state(""); // create-folder input inside the dropdown
   let currentJobId = $state<string | null>(null);
   let currentJobCreatedAt = $state<string | null>(null);
 
@@ -1450,6 +1452,31 @@
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => a.name.localeCompare(b.name, "sv"));
     return { subfolders, jobs: here };
+  });
+
+  /** Every folder path that exists across all jobs, incl. intermediate ancestors, for the picker. */
+  const allFolders = $derived.by(() => {
+    const set = new Set<string>();
+    for (const cat of jobCategories) {
+      const parts = catSegments(cat);
+      for (let i = 1; i <= parts.length; i++) set.add(parts.slice(0, i).join("/"));
+    }
+    return [...set]
+      .sort((a, b) => a.localeCompare(b, "sv"))
+      .map((path) => ({ path, name: path.split("/").pop() ?? path, depth: path.split("/").length - 1 }));
+  });
+
+  /** Recursive job count per folder path (a job in Elever/Kalle counts for Elever too). */
+  const folderCounts = $derived.by(() => {
+    const m = new Map<string, number>();
+    for (const j of allJobs) {
+      const parts = catSegments(j.category);
+      for (let i = 1; i <= parts.length; i++) {
+        const p = parts.slice(0, i).join("/");
+        m.set(p, (m.get(p) ?? 0) + 1);
+      }
+    }
+    return m;
   });
 
   function fmtBytes(n: number): string {
@@ -1648,6 +1675,31 @@
 </script>
 
 <div class="app">
+  {#snippet folderPicker(current: string, onPick: (p: string) => void)}
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="fp-backdrop" onclick={() => (folderPickerFor = null)} role="presentation"></div>
+    <div class="fp-menu">
+      <button class="fp-item" class:on={!current} onclick={() => onPick("")}>Ingen mapp</button>
+      {#each allFolders as f (f.path)}
+        <div class="fp-row" style="padding-left:{f.depth * 15}px">
+          <button class="fp-item" class:on={current === f.path} onclick={() => onPick(f.path)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+            <span class="fp-name">{f.name}</span>
+            <span class="fp-count">{folderCounts.get(f.path) ?? 0}</span>
+          </button>
+          <button class="fp-sub" title={"Skapa undermapp i " + f.name} onclick={() => (newFolderName = f.path + "/")}>+</button>
+        </div>
+      {/each}
+      <div class="fp-create">
+        <input
+          bind:value={newFolderName}
+          placeholder="Ny mapp… ( / för undermapp)"
+          onkeydown={(e) => { if (e.key === "Enter" && newFolderName.trim()) onPick(newFolderName.trim()); }}
+        />
+        <button class="btn small" disabled={!newFolderName.trim()} onclick={() => onPick(newFolderName.trim())}>Skapa</button>
+      </div>
+    </div>
+  {/snippet}
   <header>
     <button class="brandbtn" onclick={newProject} title="Hem — börja nytt">
       <svg class="logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
@@ -1673,14 +1725,17 @@
     </nav>
     <div class="spacer"></div>
     {#if hasActiveJob}
-      <label class="hdr-folder" title="Mapp för det här projektet – t.ex. Elever/Kalle/HT22">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
-        <input list="job-categories" value={currentCategory} placeholder="Mapp…" onchange={(e) => setCurrentCategory(e.currentTarget.value)} />
-      </label>
+      <div class="hdr-folder">
+        <button class="hdr-folder-btn" onclick={() => (folderPickerFor = folderPickerFor === "header" ? null : "header")} title="Mapp för det här projektet">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+          <span class="hdr-folder-name">{currentCategory || "Mapp…"}</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        {#if folderPickerFor === "header"}{@render folderPicker(currentCategory, (p) => { folderPickerFor = null; newFolderName = ""; void setCurrentCategory(p); })}{/if}
+      </div>
     {/if}
     <div class="lockbadge"><span class="dot"></span> Allt körs lokalt</div>
   </header>
-  <datalist id="job-categories">{#each jobCategories as c}<option value={c}></option>{/each}</datalist>
 
   {#snippet sourcePicker()}
     <section>
@@ -1807,14 +1862,13 @@
             <span class="job-date">{fmtJobDate(j.updatedAt)}{j.audioBytes ? " · " + fmtBytes(j.audioBytes) : ""}</span>
           </button>
         {/if}
-        <input
-          class="job-cat"
-          list="job-categories"
-          value={j.category}
-          placeholder="Mapp…"
-          title="Mapp – skriv en sökväg, t.ex. Elever/Kalle/HT22 (autoförslag på befintliga)"
-          onchange={(e) => setJobCategory(j, e.currentTarget.value)}
-        />
+        <div class="job-cat-wrap">
+          <button class="job-cat-btn" onclick={() => (folderPickerFor = folderPickerFor === j.id ? null : j.id)} title="Flytta till mapp">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+            <span>{j.category || "Mapp…"}</span>
+          </button>
+          {#if folderPickerFor === j.id}{@render folderPicker(j.category, (p) => { folderPickerFor = null; newFolderName = ""; void setJobCategory(j, p); })}{/if}
+        </div>
         <button class="job-act" onclick={() => startRename(j)}>Byt namn</button>
         {#if j.audioBytes}
           <button class="job-act" onclick={() => deleteJobAudio(j)} title="Ta bort ljudfilen men behåll texten">Ta bort ljud</button>
@@ -2839,16 +2893,36 @@
   .folder-count { color: var(--faint); font-size: 12px; }
   .job-path { color: var(--faint); font-weight: 400; }
   .job-item { flex-wrap: wrap; }
-  .job-cat { width: 130px; padding: 5px 8px; border: 1px solid var(--line-2); border-radius: 7px; font: inherit; font-size: 12.5px; color: var(--ink); }
-  .job-cat:focus { outline: none; border-color: var(--accent); }
+  .job-cat-wrap { position: relative; }
+  .job-cat-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 7px; background: #fff; font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .job-cat-btn svg { width: 14px; height: 14px; color: var(--accent); flex-shrink: 0; }
+  .job-cat-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-cat-btn:hover { border-color: var(--accent); color: var(--ink); }
   .job-act { border: 1px solid var(--line-2); background: #fff; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; padding: 5px 9px; border-radius: 7px; white-space: nowrap; }
   .job-act:hover { border-color: var(--accent); color: var(--accent); }
   .job-rename { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 4px; font: inherit; color: var(--ink); }
   .job-rename:focus { outline: none; }
-  .hdr-folder { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 9px; margin-right: 12px; color: var(--muted); }
-  .hdr-folder svg { width: 15px; height: 15px; color: var(--accent); }
-  .hdr-folder input { border: none; background: none; font: inherit; font-size: 13px; color: var(--ink); width: 150px; }
-  .hdr-folder input:focus { outline: none; }
+  .hdr-folder { position: relative; margin-right: 12px; }
+  .hdr-folder-btn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 11px; background: #fff; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; max-width: 240px; }
+  .hdr-folder-btn:hover { border-color: var(--accent); }
+  .hdr-folder-btn svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+  .hdr-folder-name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hdr-folder-btn .chev { width: 13px; height: 13px; color: var(--faint); }
+  .fp-backdrop { position: fixed; inset: 0; z-index: 60; }
+  .fp-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 61; min-width: 240px; max-width: 320px; max-height: 360px; overflow: auto; background: #fff; border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 16px 44px rgba(0,0,0,.18); padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+  .hdr-folder .fp-menu { left: auto; right: 0; }
+  .fp-row { display: flex; align-items: center; }
+  .fp-item { flex: 1; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: none; border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; min-width: 0; }
+  .fp-item:hover { background: #eef1ff; }
+  .fp-item.on { background: #eef1ff; font-weight: 600; }
+  .fp-item svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; }
+  .fp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fp-count { color: var(--faint); font-size: 12px; }
+  .fp-sub { border: none; background: none; color: var(--faint); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
+  .fp-sub:hover { background: #eef1ff; color: var(--accent); }
+  .fp-create { display: flex; gap: 6px; padding: 8px 6px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+  .fp-create input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 7px; font: inherit; font-size: 13px; }
+  .fp-create input:focus { outline: none; border-color: var(--accent); }
   @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
   .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
