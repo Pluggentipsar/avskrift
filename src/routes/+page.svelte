@@ -1400,7 +1400,9 @@
   let selectedFolder = $state(""); // selected folder in the History tree ("" = Alla / root)
   let expandedFolders = $state<string[]>([]); // expanded tree nodes (paths)
   let pendingFolders = $state<string[]>([]); // created-but-empty folders (the path model can't store these in jobs)
-  let draggedJobId = $state<string | null>(null);
+  let dragging = $state<{ id: string; label: string } | null>(null); // pointer-drag of a project
+  let dragX = $state(0);
+  let dragY = $state(0);
   let dropTarget = $state<string | null>(null); // folder path currently hovered as a drop target ("" = root)
   let renamingFolder = $state<string | null>(null);
   let folderRenameText = $state("");
@@ -1530,6 +1532,34 @@
     const x = Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8));
     const y = Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8));
     ctxMenu = { x, y, kind, target };
+  }
+
+  // ---- Pointer-based drag-and-drop (more reliable than HTML5 DnD across the webview) ----
+  function startDrag(e: MouseEvent, j: JobMeta) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    dragging = { id: j.id, label: j.title };
+    dragX = e.clientX;
+    dragY = e.clientY;
+    dropTarget = null;
+  }
+
+  function onDragMove(e: MouseEvent) {
+    if (!dragging) return;
+    dragX = e.clientX;
+    dragY = e.clientY;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const folderEl = el?.closest("[data-folder]");
+    dropTarget = folderEl ? folderEl.getAttribute("data-folder") : null;
+  }
+
+  async function onDragUp() {
+    if (!dragging) return;
+    const id = dragging.id;
+    const target = dropTarget;
+    dragging = null;
+    dropTarget = null;
+    if (target !== null) await moveJobToFolder(id, target);
   }
 
   /** Distinct categories across all jobs, for the category datalist suggestions. */
@@ -1785,7 +1815,12 @@
   }
 </script>
 
-<div class="app">
+<svelte:window onmousemove={onDragMove} onmouseup={onDragUp} />
+{#if dragging}
+  <div class="drag-ghost" style="left:{dragX}px; top:{dragY}px">{dragging.label}</div>
+{/if}
+
+<div class="app" class:grabbing={!!dragging}>
   {#snippet folderPicker(current: string, onPick: (p: string) => void)}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="fp-backdrop" onclick={() => (folderPickerFor = null)} role="presentation"></div>
@@ -1954,22 +1989,8 @@
   {:else if screen === "history"}
     {#snippet jobRow(j: JobMeta, showPath: boolean)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <li class="job-item" class:dragging={draggedJobId === j.id} oncontextmenu={(e) => openCtx(e, "job", j.id)}>
-        <span
-          class="drag-handle"
-          draggable="true"
-          title="Dra för att flytta till en mapp"
-          ondragstart={(e) => {
-            draggedJobId = j.id;
-            if (e.dataTransfer) {
-              e.dataTransfer.setData("text/plain", j.id);
-              e.dataTransfer.effectAllowed = "move";
-              const row = (e.currentTarget as HTMLElement).closest(".job-item");
-              if (row) e.dataTransfer.setDragImage(row, 12, 12);
-            }
-          }}
-          ondragend={() => (draggedJobId = null)}
-        >⠿</span>
+      <li class="job-item" class:dragging={dragging?.id === j.id} oncontextmenu={(e) => openCtx(e, "job", j.id)}>
+        <span class="drag-handle" title="Dra för att flytta till en mapp" onmousedown={(e) => startDrag(e, j)}>⠿</span>
         {#if renamingJobId === j.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input
@@ -2010,11 +2031,8 @@
             class="tree-node root"
             class:on={!selectedFolder && !jobSearch.trim()}
             class:drop={dropTarget === ""}
+            data-folder=""
             onclick={() => { selectedFolder = ""; jobSearch = ""; }}
-            ondragenter={(e) => { e.preventDefault(); dropTarget = ""; }}
-            ondragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; dropTarget = ""; }}
-            ondragleave={(e) => { if (e.currentTarget === e.target) dropTarget = null; }}
-            ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, ""); dropTarget = null; }}
           >
             <span class="tree-twirl-spacer"></span>
             <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
@@ -2022,15 +2040,7 @@
           </button>
           {#each visibleTree as n (n.path)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="tree-rowwrap"
-              class:drop={dropTarget === n.path}
-              style="padding-left:{n.depth * 14}px"
-              ondragenter={(e) => { e.preventDefault(); dropTarget = n.path; }}
-              ondragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; dropTarget = n.path; }}
-              ondragleave={(e) => { if (e.currentTarget === e.target) dropTarget = null; }}
-              ondrop={(e) => { e.preventDefault(); if (draggedJobId) void moveJobToFolder(draggedJobId, n.path); dropTarget = null; }}
-            >
+            <div class="tree-rowwrap" class:drop={dropTarget === n.path} data-folder={n.path} style="padding-left:{n.depth * 14}px">
               {#if n.hasChildren}
                 <button class="tree-twirl" class:open={expandedFolders.includes(n.path)} onclick={() => toggleExpand(n.path)} aria-label="Fäll ut/ihop">▸</button>
               {:else}
@@ -3076,7 +3086,10 @@
   .job-menu { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 8px; border-radius: 6px; }
   .job-menu:hover { background: #eef1ff; color: var(--accent); }
   .drag-handle { cursor: grab; color: var(--faint); font-size: 13px; padding: 0 4px; user-select: none; flex-shrink: 0; line-height: 1; }
+  .drag-handle:hover { color: var(--accent); }
   .drag-handle:active { cursor: grabbing; }
+  .app.grabbing { user-select: none; cursor: grabbing; }
+  .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(36,64,255,.4); }
   .job-cat-wrap .fp-menu { left: auto; right: 0; }
   .hist { display: flex; gap: 18px; align-items: flex-start; }
   .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
