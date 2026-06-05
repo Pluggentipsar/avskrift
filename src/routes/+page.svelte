@@ -1523,7 +1523,13 @@
 
   function openCtx(e: MouseEvent, kind: "folder" | "job", target: string) {
     e.preventDefault();
-    ctxMenu = { x: e.clientX, y: e.clientY, kind, target };
+    e.stopPropagation();
+    // Clamp to the viewport so the menu never opens off-screen (rows sit near the right edge).
+    const w = 200;
+    const h = kind === "folder" ? 140 : 220;
+    const x = Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8));
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8));
+    ctxMenu = { x, y, kind, target };
   }
 
   /** Distinct categories across all jobs, for the category datalist suggestions. */
@@ -1826,7 +1832,7 @@
         <button class:on={screen === "deidentify"} onclick={() => go("deidentify")}>Avidentifiering</button>
         <button class:on={screen === "summarize"} onclick={() => go("summarize")}>Sammanfattning</button>
       {/if}
-      <button class:on={screen === "history"} onclick={() => go("history")}>Historik</button>
+      <button class:on={screen === "history"} onclick={() => go("history")}>Mina projekt</button>
     </nav>
     <div class="spacer"></div>
     {#if hasActiveJob}
@@ -1920,8 +1926,8 @@
               <path d="M12 7v5l3.5 2" stroke="#2440ff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
-          <h3>Tidigare jobb</h3>
-          <p>{allJobs.length} sparade {allJobs.length === 1 ? "jobb" : "jobb"} — öppna och fortsätt där du slutade.</p>
+          <h3>Mina projekt</h3>
+          <p>{allJobs.length} sparade {allJobs.length === 1 ? "projekt" : "projekt"} — öppna och fortsätt där du slutade.</p>
         </button>
       </div>
 
@@ -1948,14 +1954,21 @@
   {:else if screen === "history"}
     {#snippet jobRow(j: JobMeta, showPath: boolean)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <li
-        class="job-item"
-        class:dragging={draggedJobId === j.id}
-        draggable="true"
-        ondragstart={(e) => { draggedJobId = j.id; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
-        ondragend={() => (draggedJobId = null)}
-        oncontextmenu={(e) => openCtx(e, "job", j.id)}
-      >
+      <li class="job-item" class:dragging={draggedJobId === j.id} oncontextmenu={(e) => openCtx(e, "job", j.id)}>
+        <span
+          class="drag-handle"
+          draggable="true"
+          title="Dra för att flytta till en mapp"
+          ondragstart={(e) => {
+            draggedJobId = j.id;
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              const row = (e.currentTarget as HTMLElement).closest(".job-item");
+              if (row) e.dataTransfer.setDragImage(row, 12, 12);
+            }
+          }}
+          ondragend={() => (draggedJobId = null)}
+        >⠿</span>
         {#if renamingJobId === j.id}
           <!-- svelte-ignore a11y_autofocus -->
           <input
@@ -3059,6 +3072,9 @@
   .job-cat-btn:hover { border-color: var(--accent); color: var(--ink); }
   .job-menu { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 8px; border-radius: 6px; }
   .job-menu:hover { background: #eef1ff; color: var(--accent); }
+  .drag-handle { cursor: grab; color: var(--faint); font-size: 13px; padding: 0 4px; user-select: none; flex-shrink: 0; line-height: 1; }
+  .drag-handle:active { cursor: grabbing; }
+  .job-cat-wrap .fp-menu { left: auto; right: 0; }
   .hist { display: flex; gap: 18px; align-items: flex-start; }
   .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
   .tree-rowwrap { display: flex; align-items: center; border-radius: 8px; }
