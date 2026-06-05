@@ -226,6 +226,7 @@
   let toast = $state("");
 
   const selectedDownloaded = $derived(models.find((m) => m.id === selectedModel)?.downloaded ?? false);
+  const hasActiveJob = $derived(!!(transcript || analysis || summaryDraft));
 
   $effect(() => {
     refreshModels();
@@ -234,6 +235,8 @@
     invoke<TemplateInfo[]>("list_summary_templates").then((t) => (summaryTemplates = t)).catch(() => {});
     const saved = localStorage.getItem("avskrift_terms");
     if (saved) terms = JSON.parse(saved);
+    lastCategory = localStorage.getItem("avskrift.lastCategory") ?? "";
+    currentCategory = lastCategory;
     // Pick a sensible default Whisper model + meeting mode for this machine (user can override).
     const savedModel = localStorage.getItem("avskrift_model");
     selectedModel = savedModel || hwDefaultModel();
@@ -242,6 +245,9 @@
 
   // Remember the chosen Whisper model across sessions.
   $effect(() => { localStorage.setItem("avskrift_model", selectedModel); });
+
+  // Remember the last folder so new jobs are filed there automatically.
+  $effect(() => { localStorage.setItem("avskrift.lastCategory", lastCategory); });
 
   $effect(() => {
     const p = listen<string>("avskrift:progress", (e) => (progressMsg = e.payload));
@@ -552,6 +558,7 @@
       dirty = false;
       view = "transcript";
       currentJobId = null; // a fresh transcription starts a new history entry
+      currentCategory = lastCategory; // file it under the remembered folder by default
       currentJobCreatedAt = null;
       await saveCurrentJob("transcribe");
     } catch (e) {
@@ -1013,6 +1020,7 @@
       view = "transcript";
       currentJobId = null;
       currentJobCreatedAt = null;
+      currentCategory = lastCategory;
       screen = "transcribe";
       await saveCurrentJob("meeting");
       showToast("Möte transkriberat");
@@ -1194,6 +1202,8 @@
     screen = s;
     error = "";
     if (s === "history") {
+      folderPath = [];
+      jobSearch = "";
       void refreshJobs();
       void searchJobs();
     }
@@ -1237,6 +1247,7 @@
     liveUtterances = [];
     currentJobId = null;
     currentJobCreatedAt = null;
+    currentCategory = lastCategory;
     view = "transcript";
     go("home");
   }
@@ -1378,6 +1389,9 @@
   let jobSearch = $state(""); // full-text query for History
   let renamingJobId = $state<string | null>(null);
   let renameText = $state("");
+  let folderPath = $state<string[]>([]); // current drill-down location in History (category segments)
+  let currentCategory = $state(""); // folder of the active job (path, "/"-separated)
+  let lastCategory = $state(""); // remembered folder, applied to the next new job
   let currentJobId = $state<string | null>(null);
   let currentJobCreatedAt = $state<string | null>(null);
 
@@ -1408,18 +1422,34 @@
   /** Distinct categories across all jobs, for the category datalist suggestions. */
   const jobCategories = $derived([...new Set(allJobs.map((j) => j.category).filter(Boolean))].sort());
 
-  /** History jobs grouped by category ("Okategoriserat" last). */
-  const historyGroups = $derived.by(() => {
-    const m = new Map<string, JobMeta[]>();
+  /** Parse a category string into clean path segments ("Elever/Kalle/HT22" → [Elever,Kalle,HT22]). */
+  function catSegments(cat: string): string[] {
+    return cat
+      ? cat
+          .split("/")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  }
+
+  /** Drill-down view of History at `folderPath`: immediate sub-folders (with recursive job counts)
+   *  and the jobs that live directly in this folder. */
+  const folderView = $derived.by(() => {
+    const subs = new Map<string, number>();
+    const here: JobMeta[] = [];
     for (const j of historyJobs) {
-      const k = j.category || "Okategoriserat";
-      const arr = m.get(k);
-      if (arr) arr.push(j);
-      else m.set(k, [j]);
+      const parts = catSegments(j.category);
+      if (parts.length < folderPath.length || !folderPath.every((seg, i) => parts[i] === seg)) continue;
+      if (parts.length === folderPath.length) here.push(j);
+      else {
+        const next = parts[folderPath.length];
+        subs.set(next, (subs.get(next) ?? 0) + 1);
+      }
     }
-    return [...m.entries()].sort((a, b) =>
-      a[0] === "Okategoriserat" ? 1 : b[0] === "Okategoriserat" ? -1 : a[0].localeCompare(b[0], "sv"),
-    );
+    const subfolders = [...subs.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, "sv"));
+    return { subfolders, jobs: here };
   });
 
   function fmtBytes(n: number): string {
@@ -1446,13 +1476,32 @@
   }
 
   async function setJobCategory(j: JobMeta, category: string) {
-    if (category === j.category) return;
+    const cat = category.trim();
+    if (cat === j.category) return;
     try {
-      await invoke("update_job_meta", { id: j.id, title: j.title, category: category.trim() });
+      await invoke("update_job_meta", { id: j.id, title: j.title, category: cat });
+      lastCategory = cat || lastCategory;
+      if (currentJobId === j.id) currentCategory = cat;
       await reloadJobs();
-      showToast(category.trim() ? `Flyttad till ”${category.trim()}”` : "Kategori rensad");
+      showToast(cat ? `Flyttad till ”${cat}”` : "Mapp rensad");
     } catch (e) {
       error = String(e);
+    }
+  }
+
+  /** Set the active job's folder from the workspace field; remembers it and persists if saved. */
+  async function setCurrentCategory(v: string) {
+    const cat = v.trim();
+    currentCategory = cat;
+    lastCategory = cat || lastCategory;
+    const j = allJobs.find((x) => x.id === currentJobId);
+    if (currentJobId && j) {
+      try {
+        await invoke("update_job_meta", { id: currentJobId, title: j.title, category: cat });
+        await reloadJobs();
+      } catch (e) {
+        error = String(e);
+      }
     }
   }
 
@@ -1508,6 +1557,7 @@
       speakerLabels,
       audioPath: type === "transcribe" || type === "meeting" ? audioPath : null,
       micWavPath: type === "meeting" ? meetingMicWav : null,
+      category: currentCategory,
       sourceText: type !== "transcribe" && srcMode !== "transcript" && srcMode !== "file" ? srcText : null,
       sourcePath: type !== "transcribe" && srcMode === "file" ? srcPath : null,
       enabled: ALL_KEYS.filter((k) => enabled[k]),
@@ -1537,6 +1587,7 @@
       deidentDoc = false;
       currentJobId = j.id;
       currentJobCreatedAt = j.createdAt ?? null;
+      currentCategory = j.category ?? "";
       speakerLabels = j.speakerLabels ?? {};
       if (Array.isArray(j.terms)) terms = j.terms;
       if (typeof j.useAi === "boolean") useAi = j.useAi;
@@ -1621,8 +1672,15 @@
       <button class:on={screen === "history"} onclick={() => go("history")}>Historik</button>
     </nav>
     <div class="spacer"></div>
+    {#if hasActiveJob}
+      <label class="hdr-folder" title="Mapp för det här projektet – t.ex. Elever/Kalle/HT22">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+        <input list="job-categories" value={currentCategory} placeholder="Mapp…" onchange={(e) => setCurrentCategory(e.currentTarget.value)} />
+      </label>
+    {/if}
     <div class="lockbadge"><span class="dot"></span> Allt körs lokalt</div>
   </header>
+  <datalist id="job-categories">{#each jobCategories as c}<option value={c}></option>{/each}</datalist>
 
   {#snippet sourcePicker()}
     <section>
@@ -1728,65 +1786,74 @@
     </div>
 
   {:else if screen === "history"}
+    {#snippet jobRow(j: JobMeta, showPath: boolean)}
+      <li class="job-item">
+        {#if renamingJobId === j.id}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            class="job-rename"
+            bind:value={renameText}
+            autofocus
+            onblur={() => commitRename(j)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") commitRename(j);
+              if (e.key === "Escape") renamingJobId = null;
+            }}
+          />
+        {:else}
+          <button class="job-row" onclick={() => openJobById(j.id)}>
+            <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
+            <span class="job-title">{j.title}{#if showPath && j.category}<span class="job-path"> · {j.category}</span>{/if}</span>
+            <span class="job-date">{fmtJobDate(j.updatedAt)}{j.audioBytes ? " · " + fmtBytes(j.audioBytes) : ""}</span>
+          </button>
+        {/if}
+        <input
+          class="job-cat"
+          list="job-categories"
+          value={j.category}
+          placeholder="Mapp…"
+          title="Mapp – skriv en sökväg, t.ex. Elever/Kalle/HT22 (autoförslag på befintliga)"
+          onchange={(e) => setJobCategory(j, e.currentTarget.value)}
+        />
+        <button class="job-act" onclick={() => startRename(j)}>Byt namn</button>
+        {#if j.audioBytes}
+          <button class="job-act" onclick={() => deleteJobAudio(j)} title="Ta bort ljudfilen men behåll texten">Ta bort ljud</button>
+        {/if}
+        <button class="x" onclick={() => deleteJobById(j.id)} aria-label="Ta bort projekt">×</button>
+      </li>
+    {/snippet}
+
     <div class="home">
       <h2 class="big-title">Tidigare jobb</h2>
       {#if !allJobs.length}
         <p class="hint big-hint">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>
       {:else}
-        <input
-          class="job-search"
-          type="search"
-          placeholder="Sök i namn och innehåll…"
-          bind:value={jobSearch}
-          oninput={searchJobs}
-        />
-        <datalist id="job-categories">{#each jobCategories as c}<option value={c}></option>{/each}</datalist>
-        {#if !historyJobs.length}
-          <p class="hint">Inga träffar för ”{jobSearch}”.</p>
-        {/if}
-        {#each historyGroups as [cat, items] (cat)}
-          <div class="job-group">
-            <h3 class="job-group-title">{cat} <span class="job-group-count">{items.length}</span></h3>
-            <ul class="job-list">
-              {#each items as j (j.id)}
-                <li class="job-item">
-                  {#if renamingJobId === j.id}
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input
-                      class="job-rename"
-                      bind:value={renameText}
-                      autofocus
-                      onblur={() => commitRename(j)}
-                      onkeydown={(e) => {
-                        if (e.key === "Enter") commitRename(j);
-                        if (e.key === "Escape") renamingJobId = null;
-                      }}
-                    />
-                  {:else}
-                    <button class="job-row" onclick={() => openJobById(j.id)}>
-                      <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
-                      <span class="job-title">{j.title}</span>
-                      <span class="job-date">{fmtJobDate(j.updatedAt)}{j.audioBytes ? " · " + fmtBytes(j.audioBytes) : ""}</span>
-                    </button>
-                  {/if}
-                  <input
-                    class="job-cat"
-                    list="job-categories"
-                    value={j.category}
-                    placeholder="Kategori"
-                    title="Kategori / mapp – skriv en ny eller välj en befintlig"
-                    onchange={(e) => setJobCategory(j, e.currentTarget.value)}
-                  />
-                  <button class="job-act" onclick={() => startRename(j)}>Byt namn</button>
-                  {#if j.audioBytes}
-                    <button class="job-act" onclick={() => deleteJobAudio(j)} title="Ta bort ljudfilen men behåll texten">Ta bort ljud</button>
-                  {/if}
-                  <button class="x" onclick={() => deleteJobById(j.id)} aria-label="Ta bort projekt">×</button>
-                </li>
+        <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={searchJobs} />
+        {#if jobSearch.trim()}
+          {#if !historyJobs.length}<p class="hint">Inga träffar för ”{jobSearch}”.</p>{/if}
+          <ul class="job-list">{#each historyJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
+        {:else}
+          <nav class="crumbs">
+            <button class="crumb" class:on={!folderPath.length} onclick={() => (folderPath = [])}>Alla</button>
+            {#each folderPath as seg, i}<span class="crumb-sep">/</span><button class="crumb" onclick={() => (folderPath = folderPath.slice(0, i + 1))}>{seg}</button>{/each}
+          </nav>
+          {#if folderView.subfolders.length}
+            <div class="folders">
+              {#each folderView.subfolders as f (f.name)}
+                <button class="folder" onclick={() => (folderPath = [...folderPath, f.name])}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+                  <span class="folder-name">{f.name}</span>
+                  <span class="folder-count">{f.count}</span>
+                </button>
               {/each}
-            </ul>
-          </div>
-        {/each}
+            </div>
+          {/if}
+          {#if folderView.jobs.length}
+            <ul class="job-list">{#each folderView.jobs as j (j.id)}{@render jobRow(j, false)}{/each}</ul>
+          {:else if !folderView.subfolders.length}
+            <p class="hint">Den här mappen är tom.</p>
+          {/if}
+        {/if}
       {/if}
     </div>
 
@@ -2759,9 +2826,18 @@
   .ed-del:hover { background: #fde8e8; color: #c0392b; }
   .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; margin-bottom: 18px; display: block; }
   .job-search:focus { outline: none; border-color: var(--accent); }
-  .job-group { margin-bottom: 18px; }
-  .job-group-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
-  .job-group-count { font-weight: 500; color: var(--faint); }
+  .crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 14px; }
+  .crumb { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; padding: 2px 5px; border-radius: 6px; }
+  .crumb.on { color: var(--ink); }
+  .crumb:hover { background: #eef1ff; }
+  .crumb-sep { color: var(--faint); }
+  .folders { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .folder { display: inline-flex; align-items: center; gap: 8px; background: #f6f7ff; border: 1px solid #dfe3ff; border-radius: 10px; padding: 9px 13px; cursor: pointer; font: inherit; font-size: 14px; color: var(--ink); }
+  .folder:hover { border-color: var(--accent); background: #eef1ff; }
+  .folder svg { width: 17px; height: 17px; color: var(--accent); }
+  .folder-name { font-weight: 600; }
+  .folder-count { color: var(--faint); font-size: 12px; }
+  .job-path { color: var(--faint); font-weight: 400; }
   .job-item { flex-wrap: wrap; }
   .job-cat { width: 130px; padding: 5px 8px; border: 1px solid var(--line-2); border-radius: 7px; font: inherit; font-size: 12.5px; color: var(--ink); }
   .job-cat:focus { outline: none; border-color: var(--accent); }
@@ -2769,6 +2845,10 @@
   .job-act:hover { border-color: var(--accent); color: var(--accent); }
   .job-rename { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 4px; font: inherit; color: var(--ink); }
   .job-rename:focus { outline: none; }
+  .hdr-folder { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); border-radius: 8px; padding: 4px 9px; margin-right: 12px; color: var(--muted); }
+  .hdr-folder svg { width: 15px; height: 15px; color: var(--accent); }
+  .hdr-folder input { border: none; background: none; font: inherit; font-size: 13px; color: var(--ink); width: 150px; }
+  .hdr-folder input:focus { outline: none; }
   @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
   .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
