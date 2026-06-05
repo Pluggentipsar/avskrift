@@ -33,6 +33,60 @@ pub fn from_labeled(mut utterances: Vec<Utterance>) -> Vec<Utterance> {
     utterances
 }
 
+/// Drop "Jag" (mic) utterances that are really the meeting audio bleeding into the microphone — an
+/// echo of a near-simultaneous "Mötet" (system) utterance. Without headphones the mic also picks up
+/// the speakers, so the other person would otherwise show up under "Jag" too.
+///
+/// Conservative on purpose: only removes a mic utterance of ≥4 words whose words are mostly (≥70 %)
+/// found in a time-overlapping system utterance — so genuine speech, and short replies like
+/// "ja"/"okej", are always kept.
+pub fn drop_meeting_echo(utterances: Vec<Utterance>) -> Vec<Utterance> {
+    let refs: Vec<(f64, f64, Vec<String>)> = utterances
+        .iter()
+        .filter(|u| u.speaker.as_deref() == Some("Mötet"))
+        .map(|u| (u.start, u.end, norm_tokens(&u.text)))
+        .collect();
+    if refs.is_empty() {
+        return utterances;
+    }
+    utterances
+        .into_iter()
+        .filter(|u| {
+            if u.speaker.as_deref() != Some("Jag") {
+                return true;
+            }
+            let toks = norm_tokens(&u.text);
+            if toks.len() < 4 {
+                return true; // keep short genuine responses ("ja", "okej, det gör vi")
+            }
+            let is_echo = refs
+                .iter()
+                .any(|(rs, re, rtoks)| time_near(u.start, u.end, *rs, *re) && contained_ratio(&toks, rtoks) >= 0.7);
+            !is_echo
+        })
+        .collect()
+}
+
+/// Lowercased alphanumeric word tokens.
+fn norm_tokens(text: &str) -> Vec<String> {
+    text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+}
+
+/// Whether `[s,e]` and `[rs,re]` overlap or sit within 3 s of each other (echo is near-simultaneous,
+/// but the two streams' chunk boundaries differ).
+fn time_near(s: f64, e: f64, rs: f64, re: f64) -> bool {
+    s < re + 3.0 && rs < e + 3.0
+}
+
+/// Fraction of `a`'s tokens that also appear in `b`.
+fn contained_ratio(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() {
+        return 0.0;
+    }
+    let set: std::collections::HashSet<&String> = b.iter().collect();
+    a.iter().filter(|t| set.contains(t)).count() as f64 / a.len() as f64
+}
+
 /// Re-attribute the utterances currently labelled `meeting_label` (e.g. "Mötet") to diarised
 /// speakers "TALARE_1".. by dominant temporal overlap with `turns`; utterances with any other
 /// speaker (e.g. "Jag") are left untouched. First-appearance numbering, like [`with_speakers`].
@@ -102,6 +156,28 @@ fn dominant_speaker(start: f64, end: f64, turns: &[SpeakerTurn]) -> Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drops_mic_echo_but_keeps_genuine_speech() {
+        let u = |s: f64, e: f64, spk: &str, t: &str| Utterance {
+            start: s,
+            end: e,
+            speaker: Some(spk.to_string()),
+            words: vec![],
+            text: t.to_string(),
+        };
+        let utts = vec![
+            u(1.0, 4.0, "Mötet", "vi måste boka ett uppföljningsmöte snart"),
+            u(1.3, 4.1, "Jag", "vi måste boka ett uppföljningsmöte snart"), // echo of the above
+            u(5.0, 6.0, "Jag", "ja"),                                       // short reply — keep
+            u(8.0, 10.0, "Jag", "det där låter som en bra plan tycker jag"), // genuine — keep
+        ];
+        let out = drop_meeting_echo(utts);
+        assert_eq!(out.len(), 3);
+        assert!(!out.iter().any(|u| u.speaker.as_deref() == Some("Jag") && u.text.contains("uppföljningsmöte")));
+        assert!(out.iter().any(|u| u.speaker.as_deref() == Some("Jag") && u.text == "ja"));
+        assert!(out.iter().any(|u| u.speaker.as_deref() == Some("Jag") && u.text.contains("bra plan")));
+    }
 
     #[test]
     fn assigns_dominant_overlap_and_relabels() {

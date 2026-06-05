@@ -1,6 +1,7 @@
 //! Tauri command surface for Avskrift: download/list models, transcribe (+diarise), anonymise the
 //! transcript, and export. Heavy work runs on a blocking thread pool via `tauri::async_runtime`.
 
+mod aec;
 mod ai;
 mod align;
 mod audio;
@@ -382,6 +383,8 @@ struct MeetingResult {
     transcript: Transcript,
     mic_wav_path: String,
     system_wav_path: String,
+    /// Mixed playback track (mic + meeting, echo removed), if it could be built.
+    mix_wav_path: Option<String>,
     duration_s: f64,
 }
 
@@ -410,21 +413,26 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
         // queued chunks and exits. Wait for it, then finalise from the live-accumulated utterances.
         progress("Slutför transkribering…");
         let _ = handle.join();
-        align::from_labeled(backend.live_utterances.lock().unwrap().clone())
+        align::drop_meeting_echo(align::from_labeled(backend.live_utterances.lock().unwrap().clone()))
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
-        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false)?
+        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, true)?
     };
 
     let transcript =
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
+
+    // Build the mixed playback track (your echo-cleaned mic + the meeting), so you hear yourself.
+    progress("Skapar uppspelningsmix…");
+    let mix_wav_path = write_meeting_mix(&files.mic_wav, &files.sys_wav, true);
     progress("Klar");
 
     Ok(MeetingResult {
         transcript,
         mic_wav_path: files.mic_wav,
         system_wav_path: files.sys_wav,
+        mix_wav_path,
         duration_s: files.duration_s,
     })
 }
@@ -482,6 +490,38 @@ fn run_diarize_meeting(app: &AppHandle, args: DiarizeMeetingArgs) -> anyhow::Res
 /// Batch-transcribe a meeting's two source WAVs (mic = "Jag", system = "Mötet") with `model` and
 /// merge them into one time-ordered, speaker-labelled list. A missing or empty WAV simply
 /// contributes nothing. Shared by `stop_meeting` ("efter mötet") and `retranscribe_meeting`.
+/// Derive the mixed-playback path `…-mix.wav` from the system WAV path `…-system.wav`.
+fn mix_path_for(sys_wav: &str) -> Option<String> {
+    if sys_wav.ends_with("-system.wav") {
+        return Some(sys_wav.replace("-system.wav", "-mix.wav"));
+    }
+    let p = Path::new(sys_wav);
+    Some(p.with_file_name(format!("{}-mix.wav", p.file_stem()?.to_str()?)).to_string_lossy().to_string())
+}
+
+/// Write a single mixed playback WAV (your echo-cleaned mic + the meeting) so a recording can be
+/// played back as one track with both voices and no echo. Returns the written path, or None if the
+/// source streams are missing/empty or writing failed (playback then falls back to the system WAV).
+fn write_meeting_mix(mic_wav: &str, sys_wav: &str, echo_cancel: bool) -> Option<String> {
+    let mic = audio::load(Path::new(mic_wav)).ok().filter(|a| !a.samples.is_empty())?.samples;
+    let sys = audio::load(Path::new(sys_wav)).ok().filter(|a| !a.samples.is_empty())?.samples;
+    let cleaned = if echo_cancel { aec::cancel_echo(&mic, &sys) } else { mic };
+    let mixed = aec::mix(&cleaned, &sys);
+    let out = mix_path_for(sys_wav)?;
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: audio::TARGET_SR,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(&out, spec).ok()?;
+    for &s in &mixed {
+        w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16).ok()?;
+    }
+    w.finalize().ok()?;
+    Some(out)
+}
+
 fn transcribe_meeting_wavs(
     app: &AppHandle,
     mic_wav: &str,
@@ -489,44 +529,61 @@ fn transcribe_meeting_wavs(
     model: &str,
     language: &str,
     word_timestamps: bool,
+    echo_cancel: bool,
 ) -> anyhow::Result<Vec<transcript::Utterance>> {
     let backend = app.state::<Backend>();
     let model_path = backend.paths.whisper_file(model);
     let progress = |m: &str| emit(app, m);
-    let transcribe_stream = |wav: &str,
-                             label: &str,
-                             base: i32,
-                             span: i32|
-     -> anyhow::Result<Vec<transcript::Utterance>> {
-        let path = Path::new(wav);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let audio = audio::load(path)?;
-        if audio.samples.is_empty() {
-            return Ok(Vec::new());
-        }
-        let app_pct = app.clone();
-        let raw = {
-            let mut tr = backend.transcriber.lock().unwrap();
-            tr.transcribe(model, &model_path, &audio.samples, language, word_timestamps, false, &progress, move |p| {
-                let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
-            })?
-        };
-        Ok(align::without_speakers(raw)
-            .into_iter()
-            .map(|mut u| {
-                u.speaker = Some(label.to_string());
-                u
-            })
-            .collect())
-    };
 
-    progress("Transkriberar din röst…");
-    let mut utts = transcribe_stream(mic_wav, "Jag", 0, 50)?;
-    progress("Transkriberar mötet…");
-    utts.extend(transcribe_stream(sys_wav, "Mötet", 50, 50)?);
-    Ok(align::from_labeled(utts))
+    // Load both source streams (mono 16 kHz); a missing/empty file → None.
+    let load = |wav: &str| -> Option<Vec<f32>> {
+        let p = Path::new(wav);
+        if !p.exists() {
+            return None;
+        }
+        audio::load(p).ok().filter(|a| !a.samples.is_empty()).map(|a| a.samples)
+    };
+    let mut mic_samples = load(mic_wav);
+    let sys_samples = load(sys_wav);
+
+    // Echo cancellation: strip the meeting audio that leaked into the mic (speakers → mic) before
+    // transcribing "Jag", so the other person stops appearing in your track. Falls back internally
+    // to the untouched mic if it didn't help.
+    if echo_cancel {
+        if let (Some(mic), Some(sys)) = (mic_samples.as_ref(), sys_samples.as_ref()) {
+            progress("Tar bort eko ur mikrofonen…");
+            mic_samples = Some(aec::cancel_echo(mic, sys));
+        }
+    }
+
+    let transcribe_samples =
+        |samples: &[f32], label: &str, base: i32, span: i32| -> anyhow::Result<Vec<transcript::Utterance>> {
+            let app_pct = app.clone();
+            let raw = {
+                let mut tr = backend.transcriber.lock().unwrap();
+                tr.transcribe(model, &model_path, samples, language, word_timestamps, false, &progress, move |p| {
+                    let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
+                })?
+            };
+            Ok(align::without_speakers(raw)
+                .into_iter()
+                .map(|mut u| {
+                    u.speaker = Some(label.to_string());
+                    u
+                })
+                .collect())
+        };
+
+    let mut utts = Vec::new();
+    if let Some(mic) = mic_samples.as_ref() {
+        progress("Transkriberar din röst…");
+        utts.extend(transcribe_samples(mic, "Jag", 0, 50)?);
+    }
+    if let Some(sys) = sys_samples.as_ref() {
+        progress("Transkriberar mötet…");
+        utts.extend(transcribe_samples(sys, "Mötet", 50, 50)?);
+    }
+    Ok(align::drop_meeting_echo(align::from_labeled(utts)))
 }
 
 #[derive(serde::Deserialize)]
@@ -538,26 +595,37 @@ struct RetranscribeMeetingArgs {
     model: String,
     /// ISO code or "auto".
     language: String,
+    /// Remove the meeting audio that bled into the mic (speakers → mic) before transcribing "Jag".
+    #[serde(default)]
+    echo_cancel: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetranscribeResult {
+    transcript: Transcript,
+    /// Rebuilt mixed playback track (mic + meeting, echo removed), if it could be built.
+    mix_wav_path: Option<String>,
 }
 
 /// Re-transcribe a finished meeting from its saved source WAVs with a chosen Whisper model: a full
 /// batch pass (better than the live/chunked run, especially with a larger model), re-merged into
 /// "Jag" / "Mötet" and stored. Run `diarize_meeting` afterwards to re-split "Mötet" into speakers.
 #[tauri::command]
-async fn retranscribe_meeting(app: AppHandle, args: RetranscribeMeetingArgs) -> Result<Transcript, String> {
+async fn retranscribe_meeting(app: AppHandle, args: RetranscribeMeetingArgs) -> Result<RetranscribeResult, String> {
     tauri::async_runtime::spawn_blocking(move || run_retranscribe_meeting(&app, args))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
 
-fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> anyhow::Result<Transcript> {
+fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> anyhow::Result<RetranscribeResult> {
     let mic = args.mic_wav_path.unwrap_or_default();
     let sys = args.system_wav_path.unwrap_or_default();
     if mic.is_empty() && sys.is_empty() {
         anyhow::bail!("Det här mötet har inga sparade ljudfiler att transkribera om.");
     }
-    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language, true)?;
+    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language, true, args.echo_cancel)?;
     if utterances.is_empty() {
         anyhow::bail!("Inget ljud kunde transkriberas – ljudfilerna saknas eller är tomma.");
     }
@@ -565,8 +633,11 @@ fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> a
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
     let backend = app.state::<Backend>();
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
+    // Rebuild the mixed playback track to match the re-transcription's echo-cancel choice.
+    let mix_wav_path =
+        if mic.is_empty() || sys.is_empty() { None } else { write_meeting_mix(&mic, &sys, args.echo_cancel) };
     emit(app, "Klar");
-    Ok(transcript)
+    Ok(RetranscribeResult { transcript, mix_wav_path })
 }
 
 #[derive(serde::Deserialize)]
@@ -934,6 +1005,7 @@ fn delete_job_audio(backend: State<Backend>, id: String) -> Result<jobs::Job, St
     remove_avskrift_audio(&job, &backend.paths.meetings_dir);
     job.audio_path = None;
     job.mic_wav_path = None;
+    job.mix_wav_path = None;
     jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())?;
     Ok(job)
 }
@@ -950,7 +1022,8 @@ fn delete_job(backend: State<Backend>, id: String) -> Result<(), String> {
 /// in-app recordings named `avskrift-inspelning-*`. The user's own uploaded files are left untouched.
 fn remove_avskrift_audio(job: &jobs::Job, meetings_dir: &Path) {
     let temp = std::env::temp_dir();
-    for p in [job.audio_path.as_deref(), job.mic_wav_path.as_deref()].into_iter().flatten() {
+    for p in [job.audio_path.as_deref(), job.mic_wav_path.as_deref(), job.mix_wav_path.as_deref()].into_iter().flatten()
+    {
         let path = Path::new(p);
         let ours = path.starts_with(meetings_dir)
             || (path.starts_with(&temp)

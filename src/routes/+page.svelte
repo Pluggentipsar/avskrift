@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { open, save, ask } from "@tauri-apps/plugin-dialog";
@@ -163,6 +164,7 @@
   let meetingTimer: ReturnType<typeof setInterval> | null = null;
   let meetingSysWav = $state<string | null>(null);
   let meetingMicWav = $state<string | null>(null);
+  let meetingMixWav = $state<string | null>(null); // mixed playback track (mic + meeting, echo removed)
   // Live transcription feed (filled by avskrift:meeting-utterance events during a meeting).
   let liveUtterances = $state<{ source: string; start: number; end: number; text: string }[]>([]);
   let liveFeedEl = $state<HTMLDivElement | null>(null);
@@ -170,6 +172,7 @@
   let meetingShowLive = $state(true); // live-text pane visible during a meeting
   let meetingShowNotes = $state(false); // notes/actions pane visible during a meeting (the "Anteckningar"-knapp)
   let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
+  let retranscribeEchoCancel = $state(true); // strip meeting audio that leaked into the mic before transcribing "Jag"
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
 
   // ---- Meeting Q&A ("Fråga mötet") — works on any transcript ----
@@ -181,8 +184,12 @@
   let audioEl = $state<HTMLAudioElement | null>(null);
   let playing = $state(false);
   let currentTime = $state(0);
-  // Asset-protocol URL so the webview can stream the local file (see tauri.conf assetProtocol).
-  const audioSrc = $derived(audioPath ? convertFileSrc(audioPath) : "");
+  // Asset-protocol URL so the webview can stream the local file (see tauri.conf assetProtocol). For
+  // meetings, prefer the mixed track (your echo-cleaned mic + the meeting) so you hear yourself
+  // without echo; fall back to the system recording when no mix exists.
+  const audioSrc = $derived(
+    meetingMixWav ? convertFileSrc(meetingMixWav) : audioPath ? convertFileSrc(audioPath) : "",
+  );
 
   function seekTo(t: number) {
     if (!audioEl) return;
@@ -570,6 +577,7 @@
       view = "transcript";
       resetWorkspace();
       currentJobId = null; // a fresh transcription starts a new history entry
+      currentJobTitle = "";
       currentCategory = lastCategory; // file it under the remembered folder by default
       currentJobCreatedAt = null;
       await saveCurrentJob("transcribe");
@@ -996,7 +1004,11 @@
       meetingLagging = false;
       await invoke("start_meeting", { args: { model: selectedModel, language, live: meetingLive } });
       resetWorkspace(); // start the meeting's notes/actions clean (saved together when you stop)
+      meetingSysWav = null;
+      meetingMicWav = null;
+      meetingMixWav = null;
       currentJobId = null; // a new meeting is a new project
+      currentJobTitle = "";
       currentJobCreatedAt = null;
       currentCategory = lastCategory;
       meetingShowLive = true;
@@ -1033,11 +1045,16 @@
       dirty = false;
       meetingSysWav = res.systemWavPath ?? null;
       meetingMicWav = res.micWavPath ?? null;
+      meetingMixWav = res.mixWavPath ?? null;
       audioPath = res.systemWavPath ?? null;
       audioName = `Möte (${fmtTime(meetingElapsed)})`;
       view = "transcript";
       // Note: do NOT resetWorkspace() here — notes/actions taken live during the meeting are kept and
       // persisted together with the transcript by saveCurrentJob("meeting") below.
+      // Force a new history entry: a finished meeting is always its own project, even if the user
+      // opened another project while it was transcribing (which would otherwise be overwritten).
+      currentJobId = null;
+      currentJobTitle = "";
       currentJobCreatedAt = null;
       currentCategory = lastCategory;
       screen = "transcribe";
@@ -1077,13 +1094,19 @@
   /** Split the meeting's "Mötet" utterances into distinct speakers via diarisation of the system WAV. */
   async function separateMeetingVoices() {
     if (!meetingSysWav || !transcript || busy) return;
+    const jobId = currentJobId;
+    const sys = meetingSysWav;
     busy = true;
     error = "";
     progressMsg = "Separerar mötesröster…";
     try {
       const t = await invoke<Transcript>("diarize_meeting", {
-        args: { systemWavPath: meetingSysWav, numSpeakers: null },
+        args: { systemWavPath: sys, numSpeakers: null },
       });
+      if (currentJobId !== jobId) {
+        showToast("Avbröts – du bytte projekt under tiden.");
+        return;
+      }
       transcript = t;
       const labels: Record<string, string> = {};
       for (const u of t.utterances) {
@@ -1107,19 +1130,35 @@
    *  better than the live result (pick a larger model for best quality). Resets to Jag/Mötet. */
   async function retranscribeMeeting() {
     if (!meetingMicWav || !meetingSysWav || busy || !selectedDownloaded) return;
+    // Capture which meeting we're working on. This is a multi-minute async job; if the user opens a
+    // different project meanwhile, the result must NOT be saved onto that other project (which would
+    // swap transcripts between meetings). Abort instead.
+    const jobId = currentJobId;
+    const sys = meetingSysWav;
+    const mic = meetingMicWav;
     busy = true;
     error = "";
     transcribePct = 0;
     progressMsg = "Transkriberar om mötet…";
     try {
-      let t = await invoke<Transcript>("retranscribe_meeting", {
-        args: { micWavPath: meetingMicWav, systemWavPath: meetingSysWav, model: selectedModel, language },
+      const result = await invoke<{ transcript: Transcript; mixWavPath: string | null }>("retranscribe_meeting", {
+        args: { micWavPath: mic, systemWavPath: sys, model: selectedModel, language, echoCancel: retranscribeEchoCancel },
       });
-      if (retranscribeDiarize && meetingSysWav) {
+      if (currentJobId !== jobId) {
+        showToast("Omtranskriberingen avbröts – du bytte projekt under tiden. Öppna mötet och kör om.");
+        return;
+      }
+      let t = result.transcript;
+      meetingMixWav = result.mixWavPath ?? null; // refreshed playback mix (matches echo-cancel choice)
+      if (retranscribeDiarize && sys) {
         progressMsg = "Separerar mötesröster…";
         t = await invoke<Transcript>("diarize_meeting", {
-          args: { systemWavPath: meetingSysWav, numSpeakers: null },
+          args: { systemWavPath: sys, numSpeakers: null },
         });
+        if (currentJobId !== jobId) {
+          showToast("Avbröts – du bytte projekt under tiden. Öppna mötet och kör om.");
+          return;
+        }
       }
       transcript = t;
       // Map speaker ids to friendly labels (Jag/Mötet kept as-is; diarised TALARE_n → "Talare n").
@@ -1263,9 +1302,11 @@
     qaHistory = [];
     meetingSysWav = null;
     meetingMicWav = null;
+    meetingMixWav = null;
     liveUtterances = [];
     currentJobId = null;
     currentJobCreatedAt = null;
+    currentJobTitle = "";
     currentJobType = "transcribe";
     currentCategory = lastCategory;
     resetWorkspace();
@@ -1427,6 +1468,7 @@
   let newFolderName = $state(""); // create-folder input inside the dropdown
   let currentJobId = $state<string | null>(null);
   let currentJobCreatedAt = $state<string | null>(null);
+  let currentJobTitle = $state(""); // stable title for the active job (set once; survives re-transcribe/reopen)
   let currentJobType = $state<"transcribe" | "meeting" | "deidentify" | "summarize">("transcribe");
 
   // ---- Meeting workspace (B): notes, participants, actions, follow-up ----
@@ -1738,6 +1780,7 @@
     if (!t || t === j.title) return;
     try {
       await invoke("update_job_meta", { id: j.id, title: t, category: j.category });
+      if (currentJobId === j.id) currentJobTitle = t; // keep the active job's stable title in sync
       await reloadJobs();
     } catch (e) {
       error = String(e);
@@ -1780,6 +1823,7 @@
       if (currentJobId === j.id) {
         meetingSysWav = null;
         meetingMicWav = null;
+        meetingMixWav = null;
         audioPath = null;
       }
       await reloadJobs();
@@ -1816,17 +1860,21 @@
       currentJobId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
       currentJobCreatedAt = now;
     }
+    // Derive the title once and keep it stable — so re-transcribing or reopening a meeting doesn't
+    // rename the project (which made it look like a brand-new/second project).
+    if (!currentJobTitle) currentJobTitle = deriveTitle(type);
     const job = {
       version: 1,
       id: currentJobId,
       jobType: type,
-      title: deriveTitle(type),
+      title: currentJobTitle,
       createdAt: currentJobCreatedAt ?? now,
       updatedAt: now,
       transcript: type === "transcribe" || type === "meeting" ? transcript : null,
       speakerLabels,
       audioPath: type === "transcribe" || type === "meeting" ? audioPath : null,
       micWavPath: type === "meeting" ? meetingMicWav : null,
+      mixWavPath: type === "meeting" ? meetingMixWav : null,
       category: currentCategory,
       sourceText: type !== "transcribe" && srcMode !== "transcript" && srcMode !== "file" ? srcText : null,
       sourcePath: type !== "transcribe" && srcMode === "file" ? srcPath : null,
@@ -2037,12 +2085,20 @@
     try {
       const j = await invoke<any>("open_job", { id });
       // Reset working state, then hydrate from the job.
+      audioEl?.pause();
+      playing = false;
+      currentTime = 0;
+      audioPath = null; // clear first so the player can't briefly point at the previous project's audio
+      meetingSysWav = null;
+      meetingMicWav = null;
+      meetingMixWav = null;
       transcript = null;
       analysis = null;
       summaryDraft = "";
       deidentDoc = false;
       currentJobId = j.id;
       currentJobType = j.jobType ?? "transcribe";
+      currentJobTitle = j.title ?? "";
       currentJobCreatedAt = j.createdAt ?? null;
       currentCategory = j.category ?? "";
       speakerLabels = j.speakerLabels ?? {};
@@ -2069,6 +2125,7 @@
         audioName = audioPath ? audioPath.split(/[\\/]/).pop() ?? audioPath : null;
         meetingSysWav = j.jobType === "meeting" ? j.audioPath ?? null : null;
         meetingMicWav = j.jobType === "meeting" ? j.micWavPath ?? null : null;
+        meetingMixWav = j.jobType === "meeting" ? j.mixWavPath ?? null : null;
         summaryDraft = j.summaryDraft ?? "";
         view = j.summaryDraft ? "summary" : "transcript";
         screen = "transcribe";
@@ -2087,6 +2144,9 @@
       // Keep the backend transcript in sync with what's shown, so export uses the right one
       // (export reads backend.transcript; de-identify already uses the frontend transcript).
       if (transcript) await invoke("update_transcript", { transcript }).catch(() => {});
+      // Force the player to load THIS project's audio (a changed src alone doesn't always reload).
+      await tick();
+      audioEl?.load();
       error = "";
       showToast("Jobb öppnat");
     } catch (e) {
@@ -2599,6 +2659,10 @@
             <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M12 7.8v5.4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.1" fill="currentColor"/></svg>
             <span>Berätta för deltagarna att du spelar in. Du ansvarar för att inspelningen sker lagligt och med samtycke.</span>
           </div>
+          <div class="m-tip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="13" width="4.5" height="7" rx="1.6"/><rect x="16.5" y="13" width="4.5" height="7" rx="1.6"/></svg>
+            <span><strong>Använd hörlurar</strong> för att hålla <em>Jag</em> och <em>Mötet</em> åtskilda. Utan hörlurar fångar mikrofonen även mötesljudet från högtalarna, så den andra personen kan dyka upp under ”Jag”.</span>
+          </div>
           <div class="m-fields">
             <label class="m-field"><span>Modell</span>
               <select class="profile" bind:value={selectedModel}>
@@ -2893,6 +2957,7 @@
               {#each models as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
             </select>
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeDiarize} /><span>Separera mötesröster automatiskt efteråt</span></label>
+            <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeEchoCancel} /><span>Ta bort eko ur min mik<em>tar bort mötesljudet som läckt in i mikrofonen (om du kört på högtalare)</em></span></label>
             {#if !selectedDownloaded}
               {#if downloading === selectedModel}
                 <div class="dl mt"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
@@ -3552,6 +3617,9 @@
   .meeting-card { max-width: 560px; margin: 12px auto 0; display: flex; flex-direction: column; gap: 14px; text-align: left; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 26px 28px; box-shadow: var(--shadow-md); }
   .consent { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 3px; background: color-mix(in srgb, #f59e0b 12%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent); font-size: 13px; line-height: 1.45; color: #7c5410; }
   .consent svg { width: 22px; height: 22px; flex-shrink: 0; color: #b45309; }
+  .m-tip { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 6%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--bg)); font-size: 13px; line-height: 1.45; color: var(--ink); }
+  .m-tip svg { width: 21px; height: 21px; flex-shrink: 0; color: var(--accent); margin-top: 1px; }
+  .m-tip em { font-style: normal; font-weight: 600; }
   .m-fields { display: flex; gap: 12px; }
   .m-field { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: #5b6270; }
   .m-field .profile { width: 100%; }

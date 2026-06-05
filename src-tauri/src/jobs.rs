@@ -58,6 +58,10 @@ pub struct Job {
     /// Mic-stream WAV for meetings (kept so re-transcribe works after reopen; deletable to save space).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_wav_path: Option<String>,
+    /// Mixed playback WAV for meetings (your echo-cleaned mic + the meeting in one track), so you
+    /// hear yourself on playback without echo. Regenerated on stop / re-transcribe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix_wav_path: Option<String>,
     /// User-chosen folder/category for grouping in History ("" = uncategorised).
     #[serde(default)]
     pub category: String,
@@ -118,7 +122,7 @@ pub struct JobMeta {
 }
 
 fn meta_of(job: &Job) -> JobMeta {
-    let audio_bytes = [job.audio_path.as_deref(), job.mic_wav_path.as_deref()]
+    let audio_bytes = [job.audio_path.as_deref(), job.mic_wav_path.as_deref(), job.mix_wav_path.as_deref()]
         .into_iter()
         .flatten()
         .filter_map(|p| std::fs::metadata(p).ok())
