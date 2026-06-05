@@ -1193,7 +1193,10 @@
   function go(s: Screen) {
     screen = s;
     error = "";
-    if (s === "history") refreshJobs();
+    if (s === "history") {
+      void refreshJobs();
+      void searchJobs();
+    }
   }
 
   /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
@@ -1368,9 +1371,13 @@
   }
 
   // ---- Jobs / history (auto-saved past work) ----
-  type JobMeta = { id: string; title: string; jobType: string; createdAt: string; updatedAt: string };
+  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number };
   let allJobs = $state<JobMeta[]>([]);
   let recentJobs = $state<JobMeta[]>([]);
+  let historyJobs = $state<JobMeta[]>([]); // what the History screen shows (search-filtered)
+  let jobSearch = $state(""); // full-text query for History
+  let renamingJobId = $state<string | null>(null);
+  let renameText = $state("");
   let currentJobId = $state<string | null>(null);
   let currentJobCreatedAt = $state<string | null>(null);
 
@@ -1380,6 +1387,87 @@
       recentJobs = allJobs.slice(0, 6);
     } catch {
       /* history is best-effort */
+    }
+  }
+
+  /** Load the History list, honouring the current full-text search query (matches title + content). */
+  async function searchJobs() {
+    try {
+      historyJobs = await invoke<JobMeta[]>("search_jobs", { query: jobSearch });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /** Refresh the home recent strip and (when open) the History list after a job mutation. */
+  async function reloadJobs() {
+    await refreshJobs();
+    if (screen === "history") await searchJobs();
+  }
+
+  /** Distinct categories across all jobs, for the category datalist suggestions. */
+  const jobCategories = $derived([...new Set(allJobs.map((j) => j.category).filter(Boolean))].sort());
+
+  /** History jobs grouped by category ("Okategoriserat" last). */
+  const historyGroups = $derived.by(() => {
+    const m = new Map<string, JobMeta[]>();
+    for (const j of historyJobs) {
+      const k = j.category || "Okategoriserat";
+      const arr = m.get(k);
+      if (arr) arr.push(j);
+      else m.set(k, [j]);
+    }
+    return [...m.entries()].sort((a, b) =>
+      a[0] === "Okategoriserat" ? 1 : b[0] === "Okategoriserat" ? -1 : a[0].localeCompare(b[0], "sv"),
+    );
+  });
+
+  function fmtBytes(n: number): string {
+    if (!n) return "";
+    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(n >= 10 * 1024 * 1024 ? 0 : 1) + " MB";
+    return Math.max(1, Math.round(n / 1024)) + " kB";
+  }
+
+  function startRename(j: JobMeta) {
+    renamingJobId = j.id;
+    renameText = j.title;
+  }
+
+  async function commitRename(j: JobMeta) {
+    const t = renameText.trim();
+    renamingJobId = null;
+    if (!t || t === j.title) return;
+    try {
+      await invoke("update_job_meta", { id: j.id, title: t, category: j.category });
+      await reloadJobs();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function setJobCategory(j: JobMeta, category: string) {
+    if (category === j.category) return;
+    try {
+      await invoke("update_job_meta", { id: j.id, title: j.title, category: category.trim() });
+      await reloadJobs();
+      showToast(category.trim() ? `Flyttad till ”${category.trim()}”` : "Kategori rensad");
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function deleteJobAudio(j: JobMeta) {
+    try {
+      await invoke("delete_job_audio", { id: j.id });
+      if (currentJobId === j.id) {
+        meetingSysWav = null;
+        meetingMicWav = null;
+        audioPath = null;
+      }
+      await reloadJobs();
+      showToast("Ljudfilen borttagen – texten finns kvar");
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -1645,18 +1733,60 @@
       {#if !allJobs.length}
         <p class="hint big-hint">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>
       {:else}
-        <ul class="job-list">
-          {#each allJobs as j (j.id)}
-            <li class="job-item">
-              <button class="job-row" onclick={() => openJobById(j.id)}>
-                <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
-                <span class="job-title">{j.title}</span>
-                <span class="job-date">{fmtJobDate(j.updatedAt)}</span>
-              </button>
-              <button class="x" onclick={() => deleteJobById(j.id)} aria-label="Ta bort">×</button>
-            </li>
-          {/each}
-        </ul>
+        <input
+          class="job-search"
+          type="search"
+          placeholder="Sök i namn och innehåll…"
+          bind:value={jobSearch}
+          oninput={searchJobs}
+        />
+        <datalist id="job-categories">{#each jobCategories as c}<option value={c}></option>{/each}</datalist>
+        {#if !historyJobs.length}
+          <p class="hint">Inga träffar för ”{jobSearch}”.</p>
+        {/if}
+        {#each historyGroups as [cat, items] (cat)}
+          <div class="job-group">
+            <h3 class="job-group-title">{cat} <span class="job-group-count">{items.length}</span></h3>
+            <ul class="job-list">
+              {#each items as j (j.id)}
+                <li class="job-item">
+                  {#if renamingJobId === j.id}
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <input
+                      class="job-rename"
+                      bind:value={renameText}
+                      autofocus
+                      onblur={() => commitRename(j)}
+                      onkeydown={(e) => {
+                        if (e.key === "Enter") commitRename(j);
+                        if (e.key === "Escape") renamingJobId = null;
+                      }}
+                    />
+                  {:else}
+                    <button class="job-row" onclick={() => openJobById(j.id)}>
+                      <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
+                      <span class="job-title">{j.title}</span>
+                      <span class="job-date">{fmtJobDate(j.updatedAt)}{j.audioBytes ? " · " + fmtBytes(j.audioBytes) : ""}</span>
+                    </button>
+                  {/if}
+                  <input
+                    class="job-cat"
+                    list="job-categories"
+                    value={j.category}
+                    placeholder="Kategori"
+                    title="Kategori / mapp – skriv en ny eller välj en befintlig"
+                    onchange={(e) => setJobCategory(j, e.currentTarget.value)}
+                  />
+                  <button class="job-act" onclick={() => startRename(j)}>Byt namn</button>
+                  {#if j.audioBytes}
+                    <button class="job-act" onclick={() => deleteJobAudio(j)} title="Ta bort ljudfilen men behåll texten">Ta bort ljud</button>
+                  {/if}
+                  <button class="x" onclick={() => deleteJobById(j.id)} aria-label="Ta bort projekt">×</button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/each}
       {/if}
     </div>
 
@@ -2627,6 +2757,18 @@
   .ed-spk { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 6px; color: var(--ink); }
   .ed-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 6px; }
   .ed-del:hover { background: #fde8e8; color: #c0392b; }
+  .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 9px; font: inherit; margin-bottom: 18px; display: block; }
+  .job-search:focus { outline: none; border-color: var(--accent); }
+  .job-group { margin-bottom: 18px; }
+  .job-group-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
+  .job-group-count { font-weight: 500; color: var(--faint); }
+  .job-item { flex-wrap: wrap; }
+  .job-cat { width: 130px; padding: 5px 8px; border: 1px solid var(--line-2); border-radius: 7px; font: inherit; font-size: 12.5px; color: var(--ink); }
+  .job-cat:focus { outline: none; border-color: var(--accent); }
+  .job-act { border: 1px solid var(--line-2); background: #fff; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; padding: 5px 9px; border-radius: 7px; white-space: nowrap; }
+  .job-act:hover { border-color: var(--accent); color: var(--accent); }
+  .job-rename { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 4px; font: inherit; color: var(--ink); }
+  .job-rename:focus { outline: none; }
   @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
   .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(36,64,255,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
