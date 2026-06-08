@@ -137,6 +137,8 @@ pub struct ModelPaths {
     pub jobs_dir: PathBuf,
     /// Directory holding meeting recordings — two source WAVs per meeting (app data dir, writable).
     pub meetings_dir: PathBuf,
+    /// Single JSON file holding free-standing åtaganden (cross-project tasks not tied to a job).
+    pub tasks_file: PathBuf,
 }
 
 impl ModelPaths {
@@ -214,6 +216,7 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     let summary_dir = writable("summary-models");
     let jobs_dir = writable("jobs");
     let meetings_dir = writable("meetings");
+    let tasks_file = writable("standalone-tasks.json");
     let _ = std::fs::create_dir_all(&whisper_dir);
     let _ = std::fs::create_dir_all(&summary_dir);
     let _ = std::fs::create_dir_all(&jobs_dir);
@@ -231,5 +234,6 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
         summary_dir,
         jobs_dir,
         meetings_dir,
+        tasks_file,
     }
 }

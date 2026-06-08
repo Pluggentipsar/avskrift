@@ -242,6 +242,7 @@
     refreshModels();
     refreshSummaryModels();
     refreshJobs();
+    loadAllActions();
     invoke<TemplateInfo[]>("list_summary_templates").then((t) => (summaryTemplates = t)).catch(() => {});
     const saved = localStorage.getItem("avskrift_terms");
     if (saved) terms = JSON.parse(saved);
@@ -1254,7 +1255,7 @@
   // ============================================================================
   // Task-oriented screens, standalone de-identify/summarize, and jobs history
   // ============================================================================
-  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history";
+  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history" | "tasks";
   let screen = $state<Screen>("home");
   function go(s: Screen) {
     screen = s;
@@ -1265,6 +1266,8 @@
       void refreshJobs();
       void searchJobs();
     }
+    // The Åtaganden overview and the Home card both read the cross-project action list — keep it fresh.
+    if (s === "tasks" || s === "home") void loadAllActions();
   }
 
   /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
@@ -1485,6 +1488,253 @@
     !!(notes.trim() || followup.trim() || actions.length || participants.some((p) => p.name.trim() || p.role.trim())),
   );
 
+  // ============================================================================
+  // Åtaganden — cross-project action-item overview (decoupled from any one project)
+  // ============================================================================
+  type ActionRow = {
+    source: "job" | "standalone";
+    jobId: string;
+    jobTitle: string;
+    jobType: string;
+    category: string;
+    taskId: string;
+    index: number;
+    text: string;
+    done: boolean;
+    assignee: string;
+    due: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  let allActions = $state<ActionRow[]>([]);
+  let taskStatus = $state<"open" | "done" | "all">("open");
+  let taskQuery = $state("");
+  let taskAssignee = $state(""); // "" = alla ansvariga
+  let taskFolder = $state(""); // "" = alla mappar (prefix-match → undermappar inräknade)
+  let taskDue = $state<"all" | "overdue" | "week" | "none">("all");
+  let taskSort = $state<"due" | "updated" | "project">("due");
+  let taskGroup = $state<"flat" | "project" | "assignee">("flat");
+  let taskBusy = $state(false);
+  // Add-form
+  let newTaskText = $state("");
+  let newTaskAssignee = $state("");
+  let newTaskDue = $state("");
+  let newTaskTarget = $state("standalone"); // "standalone" | "folder:<path>" | "job:<id>"
+
+  async function loadAllActions() {
+    try {
+      allActions = await invoke<ActionRow[]>("list_all_actions");
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  function isISODate(s: string): boolean {
+    return /^\d{4}-\d{2}-\d{2}$/.test((s || "").trim());
+  }
+  function todayISO(): string {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  }
+  /** Classify a due value. Only ISO dates (YYYY-MM-DD) are interpreted; free text ("fredag") → "text". */
+  function dueState(due: string): "none" | "text" | "overdue" | "today" | "soon" | "future" {
+    const t = (due || "").trim();
+    if (!t) return "none";
+    if (!isISODate(t)) return "text";
+    const today = todayISO();
+    if (t < today) return "overdue";
+    if (t === today) return "today";
+    const diff = (new Date(t + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000;
+    return diff <= 7 ? "soon" : "future";
+  }
+  function projName(a: ActionRow): string {
+    return a.source === "standalone" ? "Fristående" : a.jobTitle || "Namnlöst";
+  }
+  function rowKey(a: ActionRow): string {
+    return a.source === "standalone" ? "t:" + a.taskId : "j:" + a.jobId + ":" + a.index;
+  }
+  // Sort key: not-done before done, then dated (ascending) before undated.
+  function dueSortKey(a: ActionRow): string {
+    const t = (a.due || "").trim();
+    return (a.done ? "1" : "0") + (isISODate(t) ? "1" + t : "2");
+  }
+
+  const taskAssignees = $derived.by(() => {
+    const s = new Set<string>();
+    for (const a of allActions) {
+      const v = a.assignee.trim();
+      if (v) s.add(v);
+    }
+    return [...s].sort((x, y) => x.localeCompare(y, "sv"));
+  });
+
+  // Folders that actually contain åtaganden (jobs OR loose tasks) — drives the filter menu.
+  const taskFolders = $derived.by(() => {
+    const s = new Set<string>();
+    for (const a of allActions) {
+      const cat = (a.category || "").trim().replace(/^\/+|\/+$/g, "");
+      if (!cat) continue;
+      const parts = cat.split("/");
+      for (let i = 1; i <= parts.length; i++) s.add(parts.slice(0, i).join("/")); // include ancestors
+    }
+    return [...s].sort((x, y) => x.localeCompare(y, "sv"));
+  });
+
+  // Folders you can file a new task into — every known project folder, plus any that already hold tasks.
+  const addFolders = $derived.by(() => {
+    const s = new Set<string>();
+    for (const f of allFolders) s.add(f.path);
+    for (const f of taskFolders) s.add(f);
+    return [...s].sort((x, y) => x.localeCompare(y, "sv"));
+  });
+
+  const taskCounts = $derived.by(() => {
+    let open = 0,
+      overdue = 0,
+      done = 0;
+    for (const a of allActions) {
+      if (a.done) {
+        done++;
+        continue;
+      }
+      open++;
+      if (dueState(a.due) === "overdue") overdue++;
+    }
+    return { open, overdue, done, total: allActions.length };
+  });
+
+  const filteredActions = $derived.by(() => {
+    const q = taskQuery.trim().toLowerCase();
+    const rows = allActions.filter((a) => {
+      if (taskStatus === "open" && a.done) return false;
+      if (taskStatus === "done" && !a.done) return false;
+      if (taskAssignee && a.assignee.trim() !== taskAssignee) return false;
+      if (taskFolder) {
+        const cat = (a.category || "").trim().replace(/^\/+|\/+$/g, "");
+        if (cat !== taskFolder && !cat.startsWith(taskFolder + "/")) return false;
+      }
+      if (taskDue !== "all") {
+        const ds = dueState(a.due);
+        if (taskDue === "overdue" && ds !== "overdue") return false;
+        if (taskDue === "week" && ds !== "today" && ds !== "soon") return false;
+        if (taskDue === "none" && ds !== "none" && ds !== "text") return false;
+      }
+      if (q && !(a.text + " " + a.assignee + " " + a.jobTitle).toLowerCase().includes(q)) return false;
+      return true;
+    });
+    rows.sort((a, b) => {
+      if (taskSort === "updated") return (b.updatedAt || "").localeCompare(a.updatedAt || "");
+      if (taskSort === "project") {
+        const c = projName(a).localeCompare(projName(b), "sv");
+        return c !== 0 ? c : dueSortKey(a).localeCompare(dueSortKey(b));
+      }
+      const c = dueSortKey(a).localeCompare(dueSortKey(b));
+      return c !== 0 ? c : projName(a).localeCompare(projName(b), "sv");
+    });
+    return rows;
+  });
+
+  const groupedActions = $derived.by(() => {
+    if (taskGroup === "flat") return [{ key: "", rows: filteredActions }];
+    const map = new Map<string, ActionRow[]>();
+    for (const a of filteredActions) {
+      const key = taskGroup === "project" ? projName(a) : a.assignee.trim() || "Utan ansvarig";
+      const arr = map.get(key);
+      if (arr) arr.push(a);
+      else map.set(key, [a]);
+    }
+    return [...map.entries()].sort((x, y) => x[0].localeCompare(y[0], "sv")).map(([key, rows]) => ({ key, rows }));
+  });
+
+  /** Write a change back to the owning job/task, then refresh the overview and the project list. */
+  async function updateRow(a: ActionRow, patch: Partial<Pick<ActionRow, "text" | "done" | "assignee" | "due">>) {
+    if (patch.text !== undefined && !patch.text.trim()) {
+      await loadAllActions(); // empty edit → restore the displayed value, don't persist a blank
+      return;
+    }
+    const next = { text: a.text, done: a.done, assignee: a.assignee, due: a.due, ...patch };
+    const now = new Date().toISOString();
+    try {
+      if (a.source === "standalone") {
+        await invoke("update_standalone_task", {
+          args: { task: { id: a.taskId, category: a.category, ...next, createdAt: a.createdAt || now, updatedAt: now } },
+        });
+      } else {
+        await invoke("update_job_action", { args: { jobId: a.jobId, index: a.index, action: next, updatedAt: now } });
+        if (currentJobId === a.jobId) actions = actions.map((x, k) => (k === a.index ? { ...x, ...next } : x));
+      }
+      await loadAllActions();
+      await refreshJobs();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function deleteRow(a: ActionRow) {
+    const now = new Date().toISOString();
+    try {
+      if (a.source === "standalone") {
+        await invoke("delete_standalone_task", { id: a.taskId });
+      } else {
+        await invoke("delete_job_action", { args: { jobId: a.jobId, index: a.index, updatedAt: now } });
+        if (currentJobId === a.jobId) actions = actions.filter((_, k) => k !== a.index);
+      }
+      await loadAllActions();
+      await refreshJobs();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function addTask() {
+    const text = newTaskText.trim();
+    if (!text || taskBusy) return;
+    taskBusy = true;
+    const now = new Date().toISOString();
+    const assignee = newTaskAssignee.trim();
+    const due = newTaskDue.trim();
+    try {
+      if (newTaskTarget.startsWith("job:")) {
+        const jobId = newTaskTarget.slice(4);
+        await invoke("add_job_action", {
+          args: { jobId, action: { text, done: false, assignee, due }, updatedAt: now },
+        });
+        if (currentJobId === jobId) actions = [...actions, { text, done: false, assignee, due }];
+      } else {
+        // "standalone" → no folder · "folder:<path>" → a loose task filed in that folder
+        const category = newTaskTarget.startsWith("folder:") ? newTaskTarget.slice(7) : "";
+        const id = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+        await invoke("add_standalone_task", {
+          args: { task: { id, text, done: false, assignee, due, category, createdAt: now, updatedAt: now } },
+        });
+      }
+      newTaskText = "";
+      newTaskAssignee = "";
+      newTaskDue = "";
+      await loadAllActions();
+      await refreshJobs();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      taskBusy = false;
+    }
+  }
+
+  /** Jump from an åtagande to its source project's notes/actions tab. */
+  function openRowProject(a: ActionRow) {
+    if (a.source !== "job" || !a.jobId) return;
+    void openJobById(a.jobId).then(() => {
+      view = "notes";
+    });
+  }
+
+  // When you filter to a folder, new tasks default into that folder (until you pick another target).
+  $effect(() => {
+    newTaskTarget = taskFolder ? "folder:" + taskFolder : "standalone";
+  });
+
   async function refreshJobs() {
     try {
       allJobs = await invoke<JobMeta[]>("list_jobs");
@@ -1506,6 +1756,7 @@
   /** Refresh the home recent strip and (when open) the History list after a job mutation. */
   async function reloadJobs() {
     await refreshJobs();
+    void loadAllActions(); // job/folder changes (delete, rename, move) ripple into the åtaganden overview
     if (screen === "history") await searchJobs();
     // Empty-folder placeholders that now contain a job are redundant; drop them.
     const real = new Set(
@@ -2232,6 +2483,7 @@
         <button class:on={screen === "summarize"} onclick={() => go("summarize")}>Sammanfattning</button>
       {/if}
       <button class:on={screen === "history"} onclick={() => go("history")}>Mina projekt</button>
+      <button class:on={screen === "tasks"} onclick={() => go("tasks")}>Åtaganden{#if taskCounts.overdue}<span class="nav-badge" title="{taskCounts.overdue} förfallna åtaganden">{taskCounts.overdue}</span>{/if}</button>
     </nav>
     <div class="spacer"></div>
     {#if hasActiveJob}
@@ -2327,6 +2579,18 @@
           </span>
           <h3>Mina projekt</h3>
           <p>{allJobs.length} sparade {allJobs.length === 1 ? "projekt" : "projekt"} — öppna och fortsätt där du slutade.</p>
+        </button>
+        <button class="card" onclick={() => go("tasks")}>
+          <span class="card-ic-wrap">
+            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
+              <path d="M9 6h11M9 12h11M9 18h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M3.3 6l1.2 1.2L7 4.6" stroke="#3a36b0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M3.3 12l1.2 1.2L7 10.6" stroke="#3a36b0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="4.5" cy="18" r="1.2" fill="currentColor"/>
+            </svg>
+          </span>
+          <h3>Åtaganden</h3>
+          <p>{#if taskCounts.open}{taskCounts.open} öppna{#if taskCounts.overdue} · <span class="card-warn">{taskCounts.overdue} förfallna</span>{/if}{:else}Inga öppna{/if} — alla att-göra från dina möten på ett ställe.</p>
         </button>
       </div>
 
@@ -2489,6 +2753,129 @@
         {/if}
       </div>
     {/if}
+
+  {:else if screen === "tasks"}
+    <div class="tasks">
+      <div class="tasks-head">
+        <h2 class="big-title">Åtaganden</h2>
+        <p class="tasks-sub">
+          {taskCounts.open} öppna{#if taskCounts.overdue} · <span class="t-overdue-text">{taskCounts.overdue} förfallna</span>{/if} · {taskCounts.done} klara — samlade från alla projekt
+        </p>
+      </div>
+
+      <form class="task-add" onsubmit={(e) => { e.preventDefault(); addTask(); }}>
+        <input class="ta-text" bind:value={newTaskText} placeholder="Nytt åtagande…" />
+        <input class="ta-who" bind:value={newTaskAssignee} placeholder="Ansvarig (valfritt)" />
+        <input class="ta-due" type="date" bind:value={newTaskDue} aria-label="Datum (valfritt)" />
+        <select class="profile ta-target" bind:value={newTaskTarget} aria-label="Lägg i mapp eller koppla till projekt">
+          <option value="standalone">Fristående (ingen mapp)</option>
+          {#if addFolders.length}
+            <optgroup label="Lägg i mapp">
+              {#each addFolders as f (f)}<option value={"folder:" + f}>{f}</option>{/each}
+            </optgroup>
+          {/if}
+          {#if allJobs.length}
+            <optgroup label="Koppla till projekt">
+              {#each allJobs as j (j.id)}<option value={"job:" + j.id}>{j.title}</option>{/each}
+            </optgroup>
+          {/if}
+        </select>
+        <button class="btn primary" type="submit" disabled={!newTaskText.trim() || taskBusy}>Lägg till</button>
+      </form>
+
+      <div class="tasks-bar">
+        <div class="seg">
+          <button class:on={taskStatus === "open"} onclick={() => (taskStatus = "open")}>Öppna</button>
+          <button class:on={taskStatus === "done"} onclick={() => (taskStatus = "done")}>Klara</button>
+          <button class:on={taskStatus === "all"} onclick={() => (taskStatus = "all")}>Alla</button>
+        </div>
+        <input class="task-search" type="search" bind:value={taskQuery} placeholder="Sök i åtgärder, ansvarig, projekt…" />
+        {#if taskAssignees.length}
+          <select class="profile" bind:value={taskAssignee} aria-label="Ansvarig">
+            <option value="">Alla ansvariga</option>
+            {#each taskAssignees as who (who)}<option value={who}>{who}</option>{/each}
+          </select>
+        {/if}
+        {#if taskFolders.length}
+          <select class="profile" bind:value={taskFolder} aria-label="Mapp">
+            <option value="">Alla mappar</option>
+            {#each taskFolders as f (f)}<option value={f}>{f}</option>{/each}
+          </select>
+        {/if}
+        <select class="profile" bind:value={taskDue} aria-label="Datum">
+          <option value="all">Alla datum</option>
+          <option value="overdue">Förfallna</option>
+          <option value="week">Denna vecka</option>
+          <option value="none">Utan datum</option>
+        </select>
+        <select class="profile" bind:value={taskSort} aria-label="Sortering">
+          <option value="due">Sortera: datum</option>
+          <option value="updated">Sortera: senast ändrad</option>
+          <option value="project">Sortera: projekt</option>
+        </select>
+        <select class="profile" bind:value={taskGroup} aria-label="Gruppering">
+          <option value="flat">Platt lista</option>
+          <option value="project">Gruppera: projekt</option>
+          <option value="assignee">Gruppera: ansvarig</option>
+        </select>
+      </div>
+
+      {#if !filteredActions.length}
+        <p class="hint big-hint" style="padding:26px 2px">
+          {allActions.length
+            ? "Inga åtaganden matchar filtret."
+            : "Inga åtaganden än. Skapa ett ovan, eller lägg till åtgärder inne i ett möte eller projekt."}
+        </p>
+      {:else}
+        {#each groupedActions as g (g.key)}
+          {#if taskGroup !== "flat"}<h3 class="task-group">{g.key}<span class="tg-count">{g.rows.length}</span></h3>{/if}
+          <ul class="task-list">
+            {#each g.rows as a (rowKey(a))}
+              <li class="task-row" class:done={a.done} class:overdue={dueState(a.due) === "overdue" && !a.done}>
+                <input
+                  class="t-check"
+                  type="checkbox"
+                  checked={a.done}
+                  onchange={(e) => updateRow(a, { done: e.currentTarget.checked })}
+                  aria-label="Markera som klar"
+                />
+                <div class="t-main">
+                  <input class="t-text" value={a.text} onchange={(e) => updateRow(a, { text: e.currentTarget.value })} placeholder="Åtgärd…" />
+                  <div class="t-meta">
+                    {#if a.source === "standalone"}
+                      {#if a.category}
+                        <span class="t-proj free" title={"Mapp: " + a.category}>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
+                          {a.category.split("/").pop()}
+                        </span>
+                      {:else}
+                        <span class="t-proj free">Fristående</span>
+                      {/if}
+                    {:else}
+                      <button class="t-proj" onclick={() => openRowProject(a)} title="Öppna projektet">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h10l4 4v12H5z"/><path d="M9 11h6M9 15h4"/></svg>
+                        {projName(a)}
+                      </button>
+                    {/if}
+                    <input class="t-who" value={a.assignee} onchange={(e) => updateRow(a, { assignee: e.currentTarget.value })} placeholder="Ansvarig" />
+                    <input
+                      class="t-due"
+                      type="date"
+                      value={isISODate(a.due) ? a.due : ""}
+                      onchange={(e) => updateRow(a, { due: e.currentTarget.value })}
+                      aria-label="Datum"
+                    />
+                    {#if a.due && !isISODate(a.due)}<span class="t-due-text" title="Datum som text">{a.due}</span>{/if}
+                    {#if dueState(a.due) === "overdue" && !a.done}<span class="t-flag">Förfallen</span>{/if}
+                  </div>
+                </div>
+                <button class="t-del" onclick={() => deleteRow(a)} aria-label="Ta bort" title="Ta bort">×</button>
+              </li>
+            {/each}
+          </ul>
+        {/each}
+      {/if}
+    </div>
 
   {:else if screen === "deidentify"}
     <div class="layout" class:collapsed={sidebarCollapsed}>
@@ -3835,4 +4222,62 @@
   .radio { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
   .src-text { width: 100%; box-sizing: border-box; font: inherit; font-size: 13.5px; line-height: 1.5; border: 1px solid var(--line-2); border-radius: 4px; padding: 9px 11px; resize: vertical; }
   .src-text:focus { outline: none; border-color: var(--accent); }
+
+  /* ---- Åtaganden (cross-project action overview) ---- */
+  .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 6px; font-size: 11px; font-weight: 600; line-height: 1; color: #fff; background: #c0392b; border-radius: 9px; vertical-align: middle; }
+  .card-warn { color: #c0392b; font-weight: 500; }
+
+  .tasks { max-width: 980px; margin: 0 auto; padding: 4px 2px 60px; }
+  .tasks-head { margin-bottom: 18px; }
+  .tasks-head .big-title { margin-bottom: 6px; }
+  .tasks-sub { color: var(--muted); font-size: 13.5px; margin: 0; }
+  .t-overdue-text { color: #c0392b; font-weight: 500; }
+
+  .task-add { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .task-add input, .task-add .profile { font: inherit; font-size: 13.5px; border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); border-radius: 3px; padding: 9px 11px; }
+  .task-add .ta-text { flex: 1 1 240px; min-width: 200px; }
+  .task-add .ta-who { width: 160px; }
+  .task-add .ta-due { width: 150px; }
+  .task-add .ta-target { width: 180px; cursor: pointer; }
+  .task-add input:focus, .task-add .profile:focus { outline: none; border-color: var(--accent); }
+
+  .tasks-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+  .tasks-bar .task-search { flex: 1 1 200px; min-width: 160px; font: inherit; font-size: 13.5px; border: 1px solid var(--line-2); background: var(--bg); color: var(--ink); border-radius: 3px; padding: 8px 11px; }
+  .tasks-bar .task-search:focus { outline: none; border-color: var(--accent); }
+  .tasks-bar .profile { font-size: 13px; padding: 8px 26px 8px 10px; }
+
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 3px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; padding: 8px 13px; border: none; background: var(--bg); color: var(--muted); cursor: pointer; border-right: 1px solid var(--line-2); transition: .12s; }
+  .seg button:last-child { border-right: none; }
+  .seg button:hover { background: var(--canvas); color: var(--ink); }
+  .seg button.on { background: var(--accent); color: #fff; }
+
+  .task-group { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 22px; color: var(--ink); margin: 22px 0 8px; display: flex; align-items: baseline; gap: 9px; }
+  .task-group .tg-count { font-family: inherit; font-size: 13px; color: var(--faint); }
+
+  .task-list { list-style: none; margin: 0 0 6px; padding: 0; }
+  .task-row { display: flex; align-items: flex-start; gap: 11px; padding: 11px 4px; border-bottom: 1px solid var(--line); }
+  .task-row:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); }
+  .task-row.overdue { box-shadow: inset 2px 0 0 #c0392b; }
+  .t-check { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .t-main { flex: 1; min-width: 0; }
+  .t-text { width: 100%; box-sizing: border-box; font: inherit; font-size: 14.5px; color: var(--ink); border: 1px solid transparent; background: transparent; border-radius: 3px; padding: 3px 6px; margin: -3px -6px 2px; }
+  .t-text:hover { border-color: var(--line); }
+  .t-text:focus { outline: none; border-color: var(--accent); background: var(--bg); }
+  .task-row.done .t-text { color: var(--faint); text-decoration: line-through; }
+  .t-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .t-proj { display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); border: none; border-radius: 3px; padding: 3px 8px; cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .t-proj:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .t-proj svg { width: 13px; height: 13px; flex: none; }
+  .t-proj.free { color: var(--muted); background: var(--canvas); border: 1px solid var(--line); cursor: default; }
+  .t-who { width: 130px; font: inherit; font-size: 12.5px; color: var(--muted); border: 1px solid transparent; background: transparent; border-radius: 3px; padding: 3px 6px; }
+  .t-who:hover { border-color: var(--line); }
+  .t-who:focus { outline: none; border-color: var(--accent); background: var(--bg); color: var(--ink); }
+  .t-due { font: inherit; font-size: 12.5px; color: var(--muted); border: 1px solid transparent; background: transparent; border-radius: 3px; padding: 3px 6px; }
+  .t-due:hover { border-color: var(--line); }
+  .t-due:focus { outline: none; border-color: var(--accent); background: var(--bg); color: var(--ink); }
+  .t-due-text { font-size: 12px; color: var(--muted); background: var(--canvas); border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; }
+  .t-flag { font-size: 11px; font-weight: 600; color: #fff; background: #c0392b; border-radius: 3px; padding: 2px 7px; }
+  .t-del { flex: none; font-size: 20px; line-height: 1; color: var(--faint); background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 3px; }
+  .t-del:hover { color: #c0392b; background: #fde8e8; }
 </style>

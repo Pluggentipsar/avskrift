@@ -985,7 +985,8 @@ fn open_job(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
 /// on every job under it. `to` = "" moves jobs to the root.
 #[tauri::command]
 fn move_folder(backend: State<Backend>, from: String, to: String) -> Result<(), String> {
-    jobs::move_folder(&backend.paths.jobs_dir, &from, &to).map_err(|e| e.to_string())
+    jobs::move_folder(&backend.paths.jobs_dir, &from, &to).map_err(|e| e.to_string())?;
+    jobs::move_task_folder(&backend.paths.tasks_file, &from, &to).map_err(|e| e.to_string())
 }
 
 /// Rename / recategorise a job. Does not bump `updated_at`, so the History order is preserved.
@@ -1016,6 +1017,86 @@ fn delete_job(backend: State<Backend>, id: String) -> Result<(), String> {
         remove_avskrift_audio(&job, &backend.paths.meetings_dir);
     }
     jobs::delete(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Cross-project åtaganden (action items) overview
+// ============================================================================
+
+/// Every action across all jobs, plus the free-standing task store, flattened for the overview.
+#[tauri::command]
+fn list_all_actions(backend: State<Backend>) -> Vec<jobs::ActionRow> {
+    jobs::all_actions(&backend.paths.jobs_dir, &backend.paths.tasks_file)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateJobActionArgs {
+    job_id: String,
+    index: usize,
+    action: jobs::Action,
+    updated_at: String,
+}
+
+/// Toggle/edit one job's action straight from the overview (writes back to that job's file).
+#[tauri::command]
+fn update_job_action(backend: State<Backend>, args: UpdateJobActionArgs) -> Result<(), String> {
+    jobs::set_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, args.action, &args.updated_at)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddJobActionArgs {
+    job_id: String,
+    action: jobs::Action,
+    updated_at: String,
+}
+
+/// Add a new action to an existing job from the overview.
+#[tauri::command]
+fn add_job_action(backend: State<Backend>, args: AddJobActionArgs) -> Result<(), String> {
+    jobs::add_job_action(&backend.paths.jobs_dir, &args.job_id, args.action, &args.updated_at)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteJobActionArgs {
+    job_id: String,
+    index: usize,
+    updated_at: String,
+}
+
+/// Remove one job's action from the overview.
+#[tauri::command]
+fn delete_job_action(backend: State<Backend>, args: DeleteJobActionArgs) -> Result<(), String> {
+    jobs::delete_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, &args.updated_at)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskArgs {
+    task: jobs::StandaloneTask,
+}
+
+/// Create a free-standing task (not tied to any job).
+#[tauri::command]
+fn add_standalone_task(backend: State<Backend>, args: TaskArgs) -> Result<(), String> {
+    jobs::add_task(&backend.paths.tasks_file, args.task).map_err(|e| e.to_string())
+}
+
+/// Toggle/edit a free-standing task.
+#[tauri::command]
+fn update_standalone_task(backend: State<Backend>, args: TaskArgs) -> Result<(), String> {
+    jobs::update_task(&backend.paths.tasks_file, args.task).map_err(|e| e.to_string())
+}
+
+/// Delete a free-standing task by id.
+#[tauri::command]
+fn delete_standalone_task(backend: State<Backend>, id: String) -> Result<(), String> {
+    jobs::delete_task(&backend.paths.tasks_file, &id).map_err(|e| e.to_string())
 }
 
 /// Remove audio files that Avskrift itself created — meeting WAVs in `meetings_dir`, or temporary
@@ -1097,6 +1178,13 @@ pub fn run() {
             move_folder,
             delete_job_audio,
             delete_job,
+            list_all_actions,
+            update_job_action,
+            add_job_action,
+            delete_job_action,
+            add_standalone_task,
+            update_standalone_task,
+            delete_standalone_task,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
