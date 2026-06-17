@@ -1,6 +1,6 @@
 {
   "name": "avskrift",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Lokal transkribering, diarisering och avidentifiering av svenskt tal",
   "type": "module",
   "scripts": {

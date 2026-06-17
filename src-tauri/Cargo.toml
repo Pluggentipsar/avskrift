@@ -1,6 +1,6 @@
 [package]
 name = "avskrift"
-version = "0.3.1"
+version = "0.4.0"
 description = "Lokal transkribering, diarisering och avidentifiering av svenskt tal"
 authors = ["Pluggentipsar"]
 edition = "2021"
@@ -36,6 +36,9 @@ once_cell = "1"
 regex = "1"
 aho-corasick = "1"
 num_cpus = "1"
+# Webview-inspelningen ("Inspelning") skickar WAV-bytes som base64-sträng över IPC i stället för en
+# JS-array med en byte per element (det senare frös appen vid stopp på längre inspelningar).
+base64 = "0.22"
 
 # --- Avidentifiering (NER via ort) ---
 ort = "=2.0.0-rc.12"

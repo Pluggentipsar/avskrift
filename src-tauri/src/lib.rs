@@ -40,10 +40,10 @@ struct Backend {
     summarizer: Mutex<Option<(String, Summarizer)>>,
     /// The live meeting recording (dual WASAPI streams), while one is in progress.
     meeting: Mutex<Option<capture::MeetingCapture>>,
-    /// Background worker that transcribes meeting chunks live; joined on stop.
-    meeting_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-    /// Utterances accumulated live during the current / just-finished meeting.
-    live_utterances: Mutex<Vec<transcript::Utterance>>,
+    /// Background worker that transcribes meeting chunks live; joined on stop. It RETURNS the
+    /// utterances it accumulated (rather than writing shared state), so finalisation can run detached
+    /// while a brand-new meeting starts without the two racing over a shared buffer.
+    meeting_worker: Mutex<Option<std::thread::JoinHandle<Vec<transcript::Utterance>>>>,
     paths: ModelPaths,
 }
 
@@ -275,8 +275,16 @@ struct StartMeetingArgs {
 /// captured as two separate source streams (see [`capture`]). A background worker transcribes
 /// chunks live and emits `avskrift:meeting-utterance` events. Returns once both streams are open;
 /// errors if a recording is already running, the model is missing, or an endpoint can't be opened.
+///
+/// Async + `spawn_blocking`: opening the two WASAPI endpoints blocks until both report ready, and a
+/// synchronous command would run that on the WebView2 main thread and freeze the UI while a slow or
+/// contended audio device initialises. Off-thread keeps the window responsive during start.
 #[tauri::command]
-fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
+async fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || run_start_meeting(&app, args)).await.map_err(|e| e.to_string())?
+}
+
+fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<(), String> {
     let backend = app.state::<Backend>();
     let mut slot = backend.meeting.lock().unwrap();
     if slot.is_some() {
@@ -292,9 +300,6 @@ fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
     let sys_wav = backend.paths.meetings_dir.join(format!("mote-{ts}-system.wav"));
 
     let (cap, chunks) = capture::MeetingCapture::start(mic_wav, sys_wav)?;
-
-    // Fresh live transcript for this meeting.
-    backend.live_utterances.lock().unwrap().clear();
 
     if args.live {
         // One worker drains chunks from BOTH streams and transcribes them serially on the shared
@@ -315,18 +320,21 @@ fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
 }
 
 /// Transcribe live meeting chunks until the capture channel closes (recording stopped). Each
-/// utterance is emitted to the UI and accumulated in `backend.live_utterances` for finalisation.
+/// utterance is emitted to the UI live and accumulated into the returned vec, which `stop_meeting`
+/// collects via `JoinHandle::join` to finalise — no shared state, so a new meeting can start
+/// immediately while this one's finalisation runs in the background.
 fn meeting_worker(
     app: AppHandle,
     chunks: capture::ChunkReceiver,
     model: String,
     language: String,
     started: std::time::Instant,
-) {
+) -> Vec<transcript::Utterance> {
     let backend = app.state::<Backend>();
     let model_path = backend.paths.whisper_file(&model);
     let noop = |_: &str| {};
     let mut warned_lag = false;
+    let mut utterances: Vec<transcript::Utterance> = Vec::new();
 
     while let Ok(chunk) = chunks.recv() {
         // Normal latency is ~one chunk length; >30 s behind means the machine can't keep up live.
@@ -357,7 +365,7 @@ fn meeting_worker(
                 "avskrift:meeting-utterance",
                 serde_json::json!({ "source": label, "start": start, "end": end, "text": seg.text }),
             );
-            backend.live_utterances.lock().unwrap().push(transcript::Utterance {
+            utterances.push(transcript::Utterance {
                 start,
                 end,
                 speaker: Some(label.to_string()),
@@ -366,54 +374,101 @@ fn meeting_worker(
             });
         }
     }
+    utterances
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StopMeetingArgs {
-    /// Whisper model id to transcribe both streams with.
+    /// Whisper model id to transcribe both streams with (used only in "efter mötet" mode).
     model: String,
     /// ISO code or "auto".
     language: String,
+    /// Frontend-generated id correlating this meeting to its saved project; echoed back in the
+    /// `avskrift:meeting-done` / `avskrift:meeting-failed` event so the UI knows which one finished.
+    token: String,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MeetingResult {
-    transcript: Transcript,
-    mic_wav_path: String,
-    system_wav_path: String,
-    /// Mixed playback track (mic + meeting, echo removed), if it could be built.
-    mix_wav_path: Option<String>,
-    duration_s: f64,
-}
-
-/// Stop the meeting, then batch-transcribe both source WAVs and merge them into one
-/// speaker-attributed transcript ("Jag" / "Mötet"), stored for downstream summarise/anonymise/export.
+/// Stop the meeting and finalise it in the BACKGROUND. The capture is stopped synchronously (so the
+/// WASAPI endpoints are freed and the UI can immediately start a new meeting), then transcription +
+/// echo-cancel + mix run on a detached task that emits `avskrift:meeting-done` with the finished
+/// transcript and file paths (or `avskrift:meeting-failed` on error), tagged with `args.token`. The
+/// finalised meeting is NOT written into the shared transcript slot — the frontend saves it straight
+/// to history, so it never clobbers whatever project the user moved on to while it transcribed.
 #[tauri::command]
-async fn stop_meeting(app: AppHandle, args: StopMeetingArgs) -> Result<MeetingResult, String> {
-    tauri::async_runtime::spawn_blocking(move || run_stop_meeting(&app, args))
+async fn stop_meeting(app: AppHandle, args: StopMeetingArgs) -> Result<(), String> {
+    // Synchronous + quick: stop both capture streams and take the live worker, under the meeting
+    // locks, so a concurrent start_meeting can't interleave. Errors (e.g. no meeting running) surface
+    // to the caller immediately.
+    let app_stop = app.clone();
+    let (worker, files) = tauri::async_runtime::spawn_blocking(move || stop_capture(&app_stop))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Detached: the heavy transcription/mix runs to completion on its own blocking task (dropping the
+    // handle does not cancel it) and reports via events. The meeting/worker slots are already free, so
+    // the user can start the next meeting right away.
+    let _ = tauri::async_runtime::spawn_blocking(move || finalize_meeting(&app, worker, files, args));
+    Ok(())
 }
 
-fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<MeetingResult> {
+/// Stop both capture streams (freeing the audio endpoints) and take the live worker handle, all under
+/// the meeting locks so a concurrent `start_meeting` can't interleave. Returns the worker (if live)
+/// plus the finished source files.
+fn stop_capture(
+    app: &AppHandle,
+) -> anyhow::Result<(Option<std::thread::JoinHandle<Vec<transcript::Utterance>>>, capture::MeetingFiles)> {
     let backend = app.state::<Backend>();
-    let progress = |m: &str| emit(app, m);
-
     let cap = backend.meeting.lock().unwrap().take().ok_or_else(|| anyhow::anyhow!("Ingen mötesinspelning pågår."))?;
-
-    progress("Avslutar inspelning…");
-    let files = cap.stop().map_err(|e| anyhow::anyhow!(e))?;
-
     let worker = backend.meeting_worker.lock().unwrap().take();
+    emit(app, "Avslutar inspelning…");
+    let files = cap.stop().map_err(|e| anyhow::anyhow!(e))?;
+    Ok((worker, files))
+}
+
+/// Background finalisation: build the speaker-attributed transcript and the playback mix, then emit
+/// the result tagged with the meeting's token. Runs detached from any shared backend state.
+fn finalize_meeting(
+    app: &AppHandle,
+    worker: Option<std::thread::JoinHandle<Vec<transcript::Utterance>>>,
+    files: capture::MeetingFiles,
+    args: StopMeetingArgs,
+) {
+    match build_meeting(app, worker, &files, &args) {
+        Ok((transcript, mix_wav_path)) => {
+            let _ = app.emit(
+                "avskrift:meeting-done",
+                serde_json::json!({
+                    "token": args.token,
+                    "transcript": transcript,
+                    "micWavPath": files.mic_wav,
+                    "systemWavPath": files.sys_wav,
+                    "mixWavPath": mix_wav_path,
+                    "durationS": files.duration_s,
+                }),
+            );
+        }
+        Err(e) => {
+            let _ = app.emit("avskrift:meeting-failed", serde_json::json!({ "token": args.token, "error": e.to_string() }));
+        }
+    }
+}
+
+/// Build a meeting's transcript ("Jag" / "Mötet") from the live worker's utterances, or by batch-
+/// transcribing both source WAVs in "efter mötet" mode, plus the echo-cleaned playback mix.
+fn build_meeting(
+    app: &AppHandle,
+    worker: Option<std::thread::JoinHandle<Vec<transcript::Utterance>>>,
+    files: &capture::MeetingFiles,
+    args: &StopMeetingArgs,
+) -> anyhow::Result<(Transcript, Option<String>)> {
     let utterances = if let Some(handle) = worker {
         // LIVE mode: the capture threads ended → chunk senders dropped → the worker drains the last
-        // queued chunks and exits. Wait for it, then finalise from the live-accumulated utterances.
-        progress("Slutför transkribering…");
-        let _ = handle.join();
-        align::drop_meeting_echo(align::from_labeled(backend.live_utterances.lock().unwrap().clone()))
+        // queued chunks and exits, returning everything it transcribed.
+        emit(app, "Slutför transkribering…");
+        let live = handle.join().map_err(|_| anyhow::anyhow!("transkriberingstråden kraschade"))?;
+        align::drop_meeting_echo(align::from_labeled(live))
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
         transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, true)?
@@ -421,20 +476,11 @@ fn run_stop_meeting(app: &AppHandle, args: StopMeetingArgs) -> anyhow::Result<Me
 
     let transcript =
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
-    *backend.transcript.lock().unwrap() = Some(transcript.clone());
 
     // Build the mixed playback track (your echo-cleaned mic + the meeting), so you hear yourself.
-    progress("Skapar uppspelningsmix…");
+    emit(app, "Skapar uppspelningsmix…");
     let mix_wav_path = write_meeting_mix(&files.mic_wav, &files.sys_wav, true);
-    progress("Klar");
-
-    Ok(MeetingResult {
-        transcript,
-        mic_wav_path: files.mic_wav,
-        system_wav_path: files.sys_wav,
-        mix_wav_path,
-        duration_s: files.duration_s,
-    })
+    Ok((transcript, mix_wav_path))
 }
 
 #[derive(serde::Deserialize)]
@@ -677,14 +723,32 @@ fn run_ask(app: &AppHandle, args: AskArgs) -> anyhow::Result<String> {
 
 // ---- Recording ----
 
-/// Persist a recording captured in the webview (16-bit PCM WAV bytes) to a temp file and return its
-/// path, so the existing `transcribe` pipeline can pick it up like any other audio file.
+/// Persist a recording captured in the webview to a temp file and return its path, so the existing
+/// `transcribe` pipeline can pick it up like any other audio file. The webview sends the 16-bit PCM
+/// WAV as a **base64 string** (not a byte-per-element JS array): the old `Vec<u8>` form was serialized
+/// to JSON one number per byte, which froze the app on stop for anything longer than a minute or two.
+/// Runs the decode + disk write on a blocking thread so a large write can't stall the UI thread.
 #[tauri::command]
-fn save_recording(data: Vec<u8>) -> Result<String, String> {
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("avskrift-inspelning-{ts}.wav"));
-    std::fs::write(&path, &data).map_err(|e| format!("kunde inte spara inspelningen: {e}"))?;
-    Ok(path.to_string_lossy().to_string())
+async fn save_recording(data: String) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("ingen inspelning att spara".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|e| format!("ogiltig inspelningsdata: {e}"))?;
+        // A bare WAV header is 44 bytes; anything at or below that carries no audio.
+        if bytes.len() <= 44 {
+            return Err("inspelningen innehåller inget ljud".to_string());
+        }
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("avskrift-inspelning-{ts}.wav"));
+        std::fs::write(&path, &bytes).map_err(|e| format!("kunde inte spara inspelningen: {e}"))?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- Editing & projects ----
@@ -1139,7 +1203,6 @@ pub fn run() {
                 summarizer: Mutex::new(None),
                 meeting: Mutex::new(None),
                 meeting_worker: Mutex::new(None),
-                live_utterances: Mutex::new(Vec::new()),
                 paths,
             });
             Ok(())

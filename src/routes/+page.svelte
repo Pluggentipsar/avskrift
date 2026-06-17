@@ -149,6 +149,7 @@
 
   // ---- Recording ----
   let recording = $state(false);
+  let recSaving = $state(false); // encoding + saving the take after stop (so a slow save isn't mistaken for a hang)
   let recElapsed = $state(0);
   let recCtx: AudioContext | null = null;
   let recStream: MediaStream | null = null;
@@ -174,6 +175,15 @@
   let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
   let retranscribeEchoCancel = $state(true); // strip meeting audio that leaked into the mic before transcribing "Jag"
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
+  // Meetings whose transcription is running in the background after stop. Each lands in Mina projekt
+  // when done (avskrift:meeting-done); the snapshot holds the workspace captured at stop time, since
+  // the live workspace is reset for the next meeting.
+  type MeetingSnapshot = {
+    id: string; title: string; createdAt: string; category: string;
+    notes: string; participants: { name: string; role: string }[]; actions: ActionItem[]; followup: string;
+  };
+  let bgMeetings = $state<{ id: string; title: string }[]>([]);
+  const pendingMeetings = new Map<string, MeetingSnapshot>();
 
   // ---- Meeting Q&A ("Fråga mötet") — works on any transcript ----
   let qaQuestion = $state("");
@@ -280,12 +290,22 @@
       (e) => { liveUtterances = [...liveUtterances, e.payload]; },
     );
     const ml = listen<boolean>("avskrift:meeting-lag", () => (meetingLagging = true));
+    // A background meeting finished transcribing → save it straight to Mina projekt.
+    const md = listen<any>("avskrift:meeting-done", (e) => { void onMeetingDone(e.payload); });
+    const mf = listen<{ token: string; error: string }>("avskrift:meeting-failed", (e) => {
+      const snap = pendingMeetings.get(e.payload.token);
+      pendingMeetings.delete(e.payload.token);
+      bgMeetings = bgMeetings.filter((m) => m.id !== e.payload.token);
+      error = `Mötet kunde inte transkriberas${snap ? ` (${snap.title})` : ""}: ${e.payload.error}`;
+    });
     return () => {
       p.then((f) => f());
       d.then((f) => f());
       pc.then((f) => f());
       mu.then((f) => f());
       ml.then((f) => f());
+      md.then((f) => f());
+      mf.then((f) => f());
     };
   });
 
@@ -955,31 +975,57 @@
     if (!recording) return;
     recording = false;
     if (recTimer) clearInterval(recTimer);
+    if (recNode) recNode.onaudioprocess = null; // stop accumulating immediately
     recNode?.disconnect();
     recStream?.getTracks().forEach((t) => t.stop());
     await recCtx?.close();
 
-    // Flatten captured chunks, downsample to 16 kHz, encode a 16-bit PCM WAV (small IPC payload,
-    // matches the pipeline's target rate).
+    // Flatten captured chunks, downsample to 16 kHz, encode a 16-bit PCM WAV (matches the pipeline's
+    // target rate).
     const total = recChunks.reduce((n, c) => n + c.length, 0);
-    const pcm = new Float32Array(total);
-    let off = 0;
-    for (const c of recChunks) { pcm.set(c, off); off += c.length; }
-    const down = downsampleTo16k(pcm, recSampleRate);
-    const wav = encodeWav(down, 16000);
-    recChunks = [];
-    recCtx = recNode = recStream = null;
-
+    if (total === 0) {
+      recChunks = [];
+      recCtx = recNode = recStream = null;
+      error = "Ingen ljud spelades in – kontrollera att mikrofonen fungerar och har behörighet.";
+      return;
+    }
+    recSaving = true;
+    error = "";
     try {
-      const path = await invoke<string>("save_recording", { data: Array.from(new Uint8Array(wav)) });
+      const pcm = new Float32Array(total);
+      let off = 0;
+      for (const c of recChunks) { pcm.set(c, off); off += c.length; }
+      const down = downsampleTo16k(pcm, recSampleRate);
+      const wav = encodeWav(down, 16000);
+      recChunks = [];
+      recCtx = recNode = recStream = null;
+      // Send the WAV as a base64 string, NOT Array.from(new Uint8Array(...)). The latter becomes a
+      // JS number-per-byte array that Tauri JSON-serializes over IPC — millions of elements for a
+      // few minutes of audio, which froze the app on stop and never saved. base64 is one compact
+      // string the backend decodes on a blocking thread.
+      const b64 = bytesToBase64(new Uint8Array(wav));
+      const path = await invoke<string>("save_recording", { data: b64 });
       audioPath = path;
       audioName = `Inspelning (${fmtTime(recElapsed)})`;
       transcript = null;
       analysis = null;
       showToast("Inspelning klar");
     } catch (e) {
-      error = String(e);
+      error = "Kunde inte spara inspelningen: " + String(e);
+    } finally {
+      recSaving = false;
     }
+  }
+
+  /** Base64-encode bytes in chunks (a single String.fromCharCode(...wholeArray) overflows the call
+   *  stack on large buffers). */
+  function bytesToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
   }
 
   // ---- Meeting capture (backend dual-stream WASAPI; see capture.rs) ----
@@ -1027,46 +1073,86 @@
     if (!meetingActive) return;
     meetingActive = false;
     if (meetingTimer) clearInterval(meetingTimer);
-    meetingBusy = true;
-    transcribePct = 0;
+    meetingBusy = true; // brief: only while the capture streams are stopped, not the transcription
     progressMsg = "Avslutar inspelning…";
+
+    // Snapshot this meeting's workspace NOW. Transcription runs in the background and the live
+    // workspace is reset for the next meeting, so notes/actions must be captured before that.
+    const token = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    const snap: MeetingSnapshot = {
+      id: token,
+      title: `Möte ${fmtJobDate(new Date().toISOString())}`,
+      createdAt: new Date().toISOString(),
+      category: currentCategory || lastCategory,
+      notes,
+      participants: [...participants],
+      actions: [...actions],
+      followup,
+    };
+    pendingMeetings.set(token, snap);
+    bgMeetings = [...bgMeetings, { id: token, title: snap.title }];
+
     try {
-      const res = await invoke<any>("stop_meeting", {
-        args: { model: selectedModel, language },
-      });
-      transcript = res.transcript;
-      // Speaker ids are already "Jag" / "Mötet"; map each to itself so the rename UI lists them.
-      const labels: Record<string, string> = {};
-      for (const u of res.transcript.utterances) {
-        if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
-      }
-      speakerLabels = labels;
-      analysis = null;
-      summaryDraft = "";
-      dirty = false;
-      meetingSysWav = res.systemWavPath ?? null;
-      meetingMicWav = res.micWavPath ?? null;
-      meetingMixWav = res.mixWavPath ?? null;
-      audioPath = res.systemWavPath ?? null;
-      audioName = `Möte (${fmtTime(meetingElapsed)})`;
-      view = "transcript";
-      // Note: do NOT resetWorkspace() here — notes/actions taken live during the meeting are kept and
-      // persisted together with the transcript by saveCurrentJob("meeting") below.
-      // Force a new history entry: a finished meeting is always its own project, even if the user
-      // opened another project while it was transcribing (which would otherwise be overwritten).
-      currentJobId = null;
-      currentJobTitle = "";
-      currentJobCreatedAt = null;
-      currentCategory = lastCategory;
-      screen = "transcribe";
-      await saveCurrentJob("meeting");
-      showToast("Möte transkriberat");
+      // Returns once the streams are stopped; the transcript + mix are delivered later via
+      // avskrift:meeting-done and saved to Mina projekt by onMeetingDone().
+      await invoke("stop_meeting", { args: { model: selectedModel, language, token } });
+      showToast("Mötet transkriberas i bakgrunden – det dyker upp i Mina projekt när det är klart.");
     } catch (e) {
       error = String(e);
+      pendingMeetings.delete(token);
+      bgMeetings = bgMeetings.filter((m) => m.id !== token);
     } finally {
       meetingBusy = false;
       transcribePct = null;
       progressMsg = "";
+      // Reset for a fresh meeting — the finished one saves itself to Mina projekt when its event lands.
+      resetWorkspace();
+      liveUtterances = [];
+      meetingLagging = false;
+      meetingSysWav = meetingMicWav = meetingMixWav = null;
+      currentJobId = null;
+      currentJobTitle = "";
+      currentJobCreatedAt = null;
+      meetingElapsed = 0;
+    }
+  }
+
+  /** A background meeting finished transcribing: build its project from the snapshot + result and save
+   *  it straight to Mina projekt (never steals focus from whatever the user is doing now). */
+  async function onMeetingDone(payload: any) {
+    const snap = pendingMeetings.get(payload?.token);
+    pendingMeetings.delete(payload?.token);
+    bgMeetings = bgMeetings.filter((m) => m.id !== payload?.token);
+    if (!snap) return;
+    const t = payload.transcript;
+    // Speaker ids are already "Jag" / "Mötet"; map each to itself so the rename UI lists them.
+    const labels: Record<string, string> = {};
+    for (const u of t?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
+    const job = {
+      version: 1,
+      id: snap.id,
+      jobType: "meeting",
+      title: snap.title,
+      createdAt: snap.createdAt,
+      updatedAt: new Date().toISOString(),
+      transcript: t,
+      speakerLabels: labels,
+      audioPath: payload.systemWavPath ?? null,
+      micWavPath: payload.micWavPath ?? null,
+      mixWavPath: payload.mixWavPath ?? null,
+      category: snap.category,
+      notes: snap.notes,
+      participants: snap.participants,
+      actions: snap.actions,
+      followup: snap.followup,
+    };
+    try {
+      await invoke("save_job", { job });
+      await refreshJobs();
+      await loadAllActions();
+      showToast(`Möte klart: ${snap.title}`);
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -2482,10 +2568,18 @@
         <button class:on={screen === "deidentify"} onclick={() => go("deidentify")}>Avidentifiering</button>
         <button class:on={screen === "summarize"} onclick={() => go("summarize")}>Sammanfattning</button>
       {/if}
+      {#if meetingActive || meetingBusy}
+        <button class:on={screen === "meeting"} onclick={() => go("meeting")}>Möte<span class="nav-dot" title={meetingBusy ? "Transkriberar mötet…" : "Mötesinspelning pågår"}></span></button>
+      {/if}
       <button class:on={screen === "history"} onclick={() => go("history")}>Mina projekt</button>
       <button class:on={screen === "tasks"} onclick={() => go("tasks")}>Åtaganden{#if taskCounts.overdue}<span class="nav-badge" title="{taskCounts.overdue} förfallna åtaganden">{taskCounts.overdue}</span>{/if}</button>
     </nav>
     <div class="spacer"></div>
+    {#if bgMeetings.length}
+      <div class="working" aria-live="polite" title="Möten transkriberas i bakgrunden – de sparas i Mina projekt när de är klara">
+        <span class="working-dot"></span>Transkriberar {bgMeetings.length} möte{bgMeetings.length > 1 ? "n" : ""}…
+      </div>
+    {/if}
     {#if hasActiveJob}
       <div class="hdr-folder">
         <button class="hdr-folder-btn" onclick={() => (folderPickerFor = folderPickerFor === "header" ? null : "header")} title="Mapp för det här projektet">
@@ -3078,32 +3172,39 @@
           {/if}
           <button class="btn primary block big mt" onclick={startMeeting} disabled={!selectedDownloaded}>Starta inspelning</button>
           <p class="hint">Starta mötet (Teams/Zoom/webbläsare) först, så att mötesljudet spelas upp.</p>
-        {:else if meetingActive}
+        {:else if meetingActive || meetingBusy}
           <div class="m-live-head">
-            <div class="big-rec"><span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}</div>
+            {#if meetingActive}
+              <div class="big-rec"><span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}</div>
+            {:else}
+              <!-- Finalisation runs in the background; keep the notes/actions reachable while it does. -->
+              <div class="working" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Transkriberar mötet…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
+            {/if}
             <div class="m-live-toggles">
               <button class="btn small" class:on={meetingShowLive} onclick={toggleLivePane} title="Visa/dölj live-texten">Live-text</button>
               <button class="btn small" class:on={meetingShowNotes} onclick={toggleNotesPane} title="Visa/dölj anteckningar">Anteckningar</button>
             </div>
-            <button class="btn primary" onclick={stopMeeting}>Stoppa &amp; transkribera</button>
+            {#if meetingActive}
+              <button class="btn primary" onclick={stopMeeting}>Stoppa &amp; transkribera</button>
+            {/if}
           </div>
-          {#if meetingLagging}
+          {#if meetingLagging && meetingActive}
             <div class="banner warn">Transkriberingen släpar efter på den här datorn. All text kommer ikapp när du stoppar — men välj gärna en mindre modell, eller stäng av ”Live-text” nästa gång.</div>
           {/if}
           <div class="m-split" class:single={!(meetingShowLive && meetingShowNotes)}>
             {#if meetingShowLive}
               <div class="m-pane m-pane-live">
                 <div class="m-pane-head"><h3>Live-text</h3></div>
-                {#if meetingLive}
-                  {#if liveUtterances.length}
-                    <div class="live-feed" bind:this={liveFeedEl}>
-                      {#each liveUtterances as u}
-                        <p class="live-line"><span class="live-who {u.source === 'Jag' ? 'me' : 'them'}">{u.source}</span> {u.text}</p>
-                      {/each}
-                    </div>
-                  {:else}
-                    <p class="hint" style="text-align:center">Lyssnar… text dyker upp inom ~10 s när någon talar. Mötesljudet fångas bara medan något faktiskt spelas upp i datorn.</p>
-                  {/if}
+                {#if meetingLive && liveUtterances.length}
+                  <div class="live-feed" bind:this={liveFeedEl}>
+                    {#each liveUtterances as u}
+                      <p class="live-line"><span class="live-who {u.source === 'Jag' ? 'me' : 'them'}">{u.source}</span> {u.text}</p>
+                    {/each}
+                  </div>
+                {:else if meetingBusy}
+                  <p class="hint" style="text-align:center">Färdigställer transkriptet… det öppnas automatiskt när det är klart. Du kan fortsätta med anteckningarna under tiden.</p>
+                {:else if meetingLive}
+                  <p class="hint" style="text-align:center">Lyssnar… text dyker upp inom ~10 s när någon talar. Mötesljudet fångas bara medan något faktiskt spelas upp i datorn.</p>
                 {:else}
                   <p class="hint" style="text-align:center">Spelar in din röst + mötesljudet. Allt transkriberas när du stoppar.</p>
                 {/if}
@@ -3131,13 +3232,6 @@
               </div>
             {/if}
           </div>
-        {:else}
-          <div class="state">
-            <div class="spinner"></div>
-            <p class="state-title">{progressMsg || "Transkriberar mötet…"}</p>
-            <p class="state-sub">Båda spåren transkriberas och slås ihop till ett transkript. Allt körs lokalt.</p>
-            {#if transcribePct !== null}<p class="hint">{transcribePct}%</p>{/if}
-          </div>
         {/if}
       </div>
     </div>
@@ -3153,6 +3247,8 @@
               <span class="recdot"></span> Spelar in… {fmtTime(recElapsed)}
               <button class="btn block" onclick={stopRecording}>Stoppa inspelning</button>
             </div>
+          {:else if recSaving}
+            <div class="working" aria-live="polite"><span class="working-dot"></span>Sparar inspelning…</div>
           {:else if audioName}
             <div class="file-chip">
               <span title={audioPath}>{audioName}</span>
