@@ -85,6 +85,11 @@ pub struct Job {
     /// hear yourself on playback without echo. Regenerated on stop / re-transcribe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mix_wav_path: Option<String>,
+    /// True while a meeting's transcription is still running in the background, or was interrupted by
+    /// a crash/force-quit before it finished. The source audio is saved, so the project can be
+    /// re-transcribed from the History view to recover the text.
+    #[serde(default)]
+    pub transcription_pending: bool,
     /// User-chosen folder/category for grouping in History ("" = uncategorised).
     #[serde(default)]
     pub category: String,
@@ -142,6 +147,9 @@ pub struct JobMeta {
     pub actions_total: usize,
     pub actions_done: usize,
     pub has_notes: bool,
+    /// True if this meeting's transcription is unfinished (in progress or interrupted) — the list
+    /// shows a "re-transcribe" hint and the audio is kept so the text can be recovered.
+    pub transcription_pending: bool,
 }
 
 /// One row in the cross-project "Åtaganden" overview — an action lifted out of its job, or a
@@ -185,6 +193,7 @@ fn meta_of(job: &Job) -> JobMeta {
         actions_total: job.actions.len(),
         actions_done: job.actions.iter().filter(|a| a.done).count(),
         has_notes: !job.notes.trim().is_empty(),
+        transcription_pending: job.transcription_pending,
     }
 }
 

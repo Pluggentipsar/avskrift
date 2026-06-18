@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import { getVersion } from "@tauri-apps/api/app";
   import { listen } from "@tauri-apps/api/event";
   import { open, save, ask } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
@@ -182,7 +183,7 @@
     id: string; title: string; createdAt: string; category: string;
     notes: string; participants: { name: string; role: string }[]; actions: ActionItem[]; followup: string;
   };
-  let bgMeetings = $state<{ id: string; title: string }[]>([]);
+  let bgMeetings = $state<{ id: string; title: string; msg: string }[]>([]);
   const pendingMeetings = new Map<string, MeetingSnapshot>();
 
   // ---- Meeting Q&A ("Fråga mötet") — works on any transcript ----
@@ -244,6 +245,7 @@
   let downloadPct = $state(0);
   let error = $state("");
   let toast = $state("");
+  let appVersion = $state(""); // shown in the header so it's clear which version is running
 
   const selectedDownloaded = $derived(models.find((m) => m.id === selectedModel)?.downloaded ?? false);
   const hasActiveJob = $derived(!!(transcript || analysis || summaryDraft));
@@ -267,6 +269,7 @@
     const savedModel = localStorage.getItem("avskrift_model");
     selectedModel = savedModel || hwDefaultModel();
     meetingLive = !isWeakHardware();
+    void getVersion().then((v) => (appVersion = v)).catch(() => {});
   });
 
   // Remember the chosen Whisper model across sessions.
@@ -290,13 +293,20 @@
       (e) => { liveUtterances = [...liveUtterances, e.payload]; },
     );
     const ml = listen<boolean>("avskrift:meeting-lag", () => (meetingLagging = true));
+    // Background-meeting progress → update the header chip so a long run doesn't look stuck.
+    const mp = listen<{ token: string; msg: string }>("avskrift:meeting-progress", (e) => {
+      bgMeetings = bgMeetings.map((m) => (m.id === e.payload.token ? { ...m, msg: e.payload.msg } : m));
+    });
     // A background meeting finished transcribing → save it straight to Mina projekt.
     const md = listen<any>("avskrift:meeting-done", (e) => { void onMeetingDone(e.payload); });
     const mf = listen<{ token: string; error: string }>("avskrift:meeting-failed", (e) => {
       const snap = pendingMeetings.get(e.payload.token);
       pendingMeetings.delete(e.payload.token);
       bgMeetings = bgMeetings.filter((m) => m.id !== e.payload.token);
-      error = `Mötet kunde inte transkriberas${snap ? ` (${snap.title})` : ""}: ${e.payload.error}`;
+      // The recoverable project (with its audio) was already saved at stop; leave it in History so the
+      // user can re-transcribe it — don't discard it just because the auto-run failed.
+      void refreshJobs();
+      error = `Mötet kunde inte transkriberas automatiskt${snap ? ` (${snap.title})` : ""} – ljudet är sparat, öppna projektet i Mina projekt och välj "Transkribera om". (${e.payload.error})`;
     });
     return () => {
       p.then((f) => f());
@@ -304,6 +314,7 @@
       pc.then((f) => f());
       mu.then((f) => f());
       ml.then((f) => f());
+      mp.then((f) => f());
       md.then((f) => f());
       mf.then((f) => f());
     };
@@ -1090,13 +1101,32 @@
       followup,
     };
     pendingMeetings.set(token, snap);
-    bgMeetings = [...bgMeetings, { id: token, title: snap.title }];
+    bgMeetings = [...bgMeetings, { id: token, title: snap.title, msg: "Transkriberar…" }];
 
     try {
-      // Returns once the streams are stopped; the transcript + mix are delivered later via
-      // avskrift:meeting-done and saved to Mina projekt by onMeetingDone().
-      await invoke("stop_meeting", { args: { model: selectedModel, language, token } });
+      // Returns once the streams are stopped, with the source-WAV paths. Transcript + mix come later
+      // via avskrift:meeting-done (onMeetingDone saves the result then). If THIS call throws, no
+      // background run was started, so we drop the tracking in the catch.
+      const ack = await invoke<{ micWavPath: string; systemWavPath: string; durationS: number }>("stop_meeting", {
+        args: { model: selectedModel, language, token },
+      });
       showToast("Mötet transkriberas i bakgrunden – det dyker upp i Mina projekt när det är klart.");
+      // Crash-safe: persist a RECOVERABLE project right away (audio + notes, transcription pending), so a
+      // crash before the background run finishes still leaves the meeting in History to re-transcribe.
+      // A failure HERE must NOT discard the snapshot: the background run is already underway, and
+      // onMeetingDone will still save the finished transcript (falling back to this snapshot).
+      try {
+        await saveMeetingJob(snap, {
+          transcript: { utterances: [], language, model: selectedModel, diarized: true },
+          systemWavPath: ack.systemWavPath,
+          micWavPath: ack.micWavPath,
+          mixWavPath: null,
+          pending: true,
+        });
+        void refreshJobs();
+      } catch (e) {
+        error = "Kunde inte spara mötesutkastet: " + String(e) + " (transkriberingen fortsätter i bakgrunden).";
+      }
     } catch (e) {
       error = String(e);
       pendingMeetings.delete(token);
@@ -1117,17 +1147,15 @@
     }
   }
 
-  /** A background meeting finished transcribing: build its project from the snapshot + result and save
-   *  it straight to Mina projekt (never steals focus from whatever the user is doing now). */
-  async function onMeetingDone(payload: any) {
-    const snap = pendingMeetings.get(payload?.token);
-    pendingMeetings.delete(payload?.token);
-    bgMeetings = bgMeetings.filter((m) => m.id !== payload?.token);
-    if (!snap) return;
-    const t = payload.transcript;
+  /** Build + save a meeting project (used both for the recoverable stub at stop and the final update
+   *  when transcription completes — same id, so the second call overwrites the first). */
+  async function saveMeetingJob(
+    snap: MeetingSnapshot,
+    opts: { transcript: any; systemWavPath: string | null; micWavPath: string | null; mixWavPath: string | null; pending: boolean },
+  ) {
     // Speaker ids are already "Jag" / "Mötet"; map each to itself so the rename UI lists them.
     const labels: Record<string, string> = {};
-    for (const u of t?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
+    for (const u of opts.transcript?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
     const job = {
       version: 1,
       id: snap.id,
@@ -1135,22 +1163,78 @@
       title: snap.title,
       createdAt: snap.createdAt,
       updatedAt: new Date().toISOString(),
-      transcript: t,
+      transcript: opts.transcript,
       speakerLabels: labels,
-      audioPath: payload.systemWavPath ?? null,
-      micWavPath: payload.micWavPath ?? null,
-      mixWavPath: payload.mixWavPath ?? null,
+      audioPath: opts.systemWavPath,
+      micWavPath: opts.micWavPath,
+      mixWavPath: opts.mixWavPath,
+      transcriptionPending: opts.pending,
       category: snap.category,
       notes: snap.notes,
       participants: snap.participants,
       actions: snap.actions,
       followup: snap.followup,
     };
+    await invoke("save_job", { job });
+  }
+
+  /** A background meeting finished transcribing: save the real transcript + mix and clear the pending
+   *  flag. Merges onto the CURRENT on-disk job so notes/actions edited while it transcribed are kept;
+   *  falls back to the stop-time snapshot if the recoverable stub was never written. Never steals
+   *  focus, but refreshes the view if the user happens to have this meeting open. */
+  async function onMeetingDone(payload: any) {
+    const token = payload?.token;
+    if (!token) return;
+    const snap = pendingMeetings.get(token);
+    bgMeetings = bgMeetings.filter((m) => m.id !== token);
     try {
+      // Use the on-disk job as the authoritative workspace source when it exists (it carries any edits
+      // made while the meeting was pending); fall back to the stop-time snapshot if the stub was never
+      // written. Whichever it is, it's the single source for notes/actions/etc. so a cleared field stays
+      // cleared. The transcript + audio paths always come from the just-finished run (payload).
+      let base: any = null;
+      try { base = await invoke<any>("open_job", { id: token }); } catch { base = null; }
+      const ws = base ?? snap;
+      if (!ws) return; // no on-disk job and no snapshot — bail without clobbering anything
+      const t = payload.transcript;
+      const labels: Record<string, string> = {};
+      for (const u of t?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
+      const job = {
+        version: 1,
+        id: token,
+        jobType: "meeting",
+        title: ws.title || `Möte ${fmtJobDate(new Date().toISOString())}`,
+        createdAt: ws.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        transcript: t,
+        speakerLabels: labels,
+        audioPath: payload.systemWavPath ?? ws.audioPath ?? null,
+        micWavPath: payload.micWavPath ?? ws.micWavPath ?? null,
+        mixWavPath: payload.mixWavPath ?? null,
+        transcriptionPending: false,
+        category: ws.category ?? "",
+        notes: ws.notes ?? "",
+        participants: ws.participants ?? [],
+        actions: ws.actions ?? [],
+        followup: ws.followup ?? "",
+      };
       await invoke("save_job", { job });
+      pendingMeetings.delete(token); // only after a successful save, so a transient failure can retry
+      // If the user has this meeting open, refresh the live view so it doesn't keep showing the empty
+      // stub + "ej klar"-banner for a meeting that just completed.
+      if (currentJobId === token) {
+        transcript = t;
+        speakerLabels = labels;
+        audioPath = job.audioPath;
+        meetingSysWav = job.audioPath;
+        meetingMicWav = job.micWavPath;
+        meetingMixWav = job.mixWavPath;
+        currentJobPending = false;
+        await invoke("update_transcript", { transcript: t }).catch(() => {});
+      }
       await refreshJobs();
       await loadAllActions();
-      showToast(`Möte klart: ${snap.title}`);
+      showToast(`Möte klart: ${job.title}`);
     } catch (e) {
       error = String(e);
     }
@@ -1262,6 +1346,7 @@
       undoStack = [];
       editingIdx = null;
       await saveCurrentJob("meeting");
+      currentJobPending = false; // now it has a transcript — clear the "unfinished" banner/badge
       showToast(retranscribeDiarize ? "Mötet omtranskriberat · röster separerade" : "Mötet transkriberat om");
     } catch (e) {
       error = String(e);
@@ -1394,6 +1479,7 @@
     meetingMixWav = null;
     liveUtterances = [];
     currentJobId = null;
+    currentJobPending = false;
     currentJobCreatedAt = null;
     currentJobTitle = "";
     currentJobType = "transcribe";
@@ -1533,7 +1619,7 @@
   }
 
   // ---- Jobs / history (auto-saved past work) ----
-  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number; actionsTotal: number; actionsDone: number; hasNotes: boolean };
+  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number; actionsTotal: number; actionsDone: number; hasNotes: boolean; transcriptionPending: boolean };
   let allJobs = $state<JobMeta[]>([]);
   let recentJobs = $state<JobMeta[]>([]);
   let historyJobs = $state<JobMeta[]>([]); // what the History screen shows (search-filtered)
@@ -1556,6 +1642,7 @@
   let folderPickerFor = $state<string | null>(null); // which folder dropdown is open ("header" | job id | null)
   let newFolderName = $state(""); // create-folder input inside the dropdown
   let currentJobId = $state<string | null>(null);
+  let currentJobPending = $state(false); // opened a meeting whose transcription is unfinished (recoverable)
   let currentJobCreatedAt = $state<string | null>(null);
   let currentJobTitle = $state(""); // stable title for the active job (set once; survives re-transcribe/reopen)
   let currentJobType = $state<"transcribe" | "meeting" | "deidentify" | "summarize">("transcribe");
@@ -2212,6 +2299,9 @@
       audioPath: type === "transcribe" || type === "meeting" ? audioPath : null,
       micWavPath: type === "meeting" ? meetingMicWav : null,
       mixWavPath: type === "meeting" ? meetingMixWav : null,
+      // Preserve the crash-recovery flag across workspace edits — omitting it would let a note edit on
+      // a still-pending meeting silently clear the "ej klar" badge/banner (serde defaults it to false).
+      transcriptionPending: currentJobPending,
       category: currentCategory,
       sourceText: type !== "transcribe" && srcMode !== "transcript" && srcMode !== "file" ? srcText : null,
       sourcePath: type !== "transcribe" && srcMode === "file" ? srcPath : null,
@@ -2437,6 +2527,7 @@
       currentJobType = j.jobType ?? "transcribe";
       currentJobTitle = j.title ?? "";
       currentJobCreatedAt = j.createdAt ?? null;
+      currentJobPending = !!j.transcriptionPending;
       currentCategory = j.category ?? "";
       speakerLabels = j.speakerLabels ?? {};
       notes = typeof j.notes === "string" ? j.notes : "";
@@ -2576,8 +2667,8 @@
     </nav>
     <div class="spacer"></div>
     {#if bgMeetings.length}
-      <div class="working" aria-live="polite" title="Möten transkriberas i bakgrunden – de sparas i Mina projekt när de är klara">
-        <span class="working-dot"></span>Transkriberar {bgMeetings.length} möte{bgMeetings.length > 1 ? "n" : ""}…
+      <div class="working" aria-live="polite" title="Möten transkriberas i bakgrunden – de sparas i Mina projekt när de är klara. Du kan stänga appen; ljudet är sparat och går att transkribera om.">
+        <span class="working-dot"></span>{bgMeetings.length > 1 ? `Transkriberar ${bgMeetings.length} möten…` : (bgMeetings[0].msg || "Transkriberar möte…")}
       </div>
     {/if}
     {#if hasActiveJob}
@@ -2590,7 +2681,7 @@
         {#if folderPickerFor === "header"}{@render folderPicker(currentCategory, (p) => { folderPickerFor = null; newFolderName = ""; void setCurrentCategory(p); })}{/if}
       </div>
     {/if}
-    <div class="lockbadge"><span class="dot"></span> Allt körs lokalt</div>
+    <div class="lockbadge"><span class="dot"></span> Allt körs lokalt{#if appVersion} · v{appVersion}{/if}</div>
   </header>
 
   {#snippet sourcePicker()}
@@ -2730,6 +2821,7 @@
           <button class="job-row" onclick={() => openJobById(j.id)}>
             <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
             <span class="job-title">{j.title}{#if showPath && j.category}<span class="job-path"> · {j.category}</span>{/if}</span>
+            {#if j.transcriptionPending}<span class="job-chip pending" title="Transkriberingen är inte klar – öppna och välj Transkribera om">⏳ ej klar</span>{/if}
             {#if j.actionsTotal || j.hasNotes}
               <span class="job-ws">
                 {#if j.hasNotes}<span class="job-chip" title="Har anteckningar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h10l4 4v12H5z"/><path d="M9 11h6M9 15h4"/></svg></span>{/if}
@@ -3499,6 +3591,21 @@
             <p class="state-sub">{transcribePct}% — transkriberar</p>
           {:else}
             <p class="state-sub">Allt körs lokalt på din dator. Första körningen laddar modellen.</p>
+          {/if}
+        </div>
+      {:else if currentJobPending && !(transcript?.utterances?.length)}
+        <div class="state">
+          {#if bgMeetings.some((m) => m.id === currentJobId)}
+            <div class="spinner"></div>
+            <p class="state-title">Transkriberas i bakgrunden…</p>
+            <p class="state-sub">Transkriptet dyker upp här automatiskt när det är klart. Du kan stänga appen – ljudet är sparat.</p>
+          {:else}
+            <svg class="state-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#b45309" stroke-width="1.7"/><path d="M12 7.4v5l3 2" stroke="#b45309" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <p class="state-title">Transkriberingen är inte klar</p>
+            <p class="state-sub">Det här mötet avbröts innan transkriberingen blev klar. Ljudet är sparat.</p>
+            {#if meetingMicWav && meetingSysWav}
+              {#if selectedDownloaded}<button class="btn primary mt" onclick={retranscribeMeeting} disabled={busy}>Transkribera om</button>{:else}<p class="hint">Hämta modellen i panelen till vänster för att transkribera om mötet.</p>{/if}
+            {/if}
           {/if}
         </div>
       {:else if !transcript}
@@ -4309,6 +4416,7 @@
   .job-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--muted); background: #f1f2f4; border-radius: 3px; padding: 2px 8px; }
   .job-chip svg { width: 13px; height: 13px; }
   .job-chip.done { color: #0d9488; background: #e7f6f3; }
+  .job-chip.pending { color: #b45309; background: #fef3c7; }
   .nav-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
   .home-open { display: inline-block; margin-top: 30px; }
   .big-hint { font-size: 14px; line-height: 1.6; max-width: 520px; }
