@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 use crate::ai::LlmDetector;
 use crate::docio::{self, Format};
@@ -38,7 +38,7 @@ struct Analysis {
 }
 
 pub struct Engine {
-    model: Mutex<Option<NerModel>>,
+    model: Mutex<crate::memory::Cache<NerModel>>,
     llm: Mutex<Option<LlmDetector>>,
     paths: ModelPaths,
     last: Mutex<Option<Analysis>>,
@@ -74,19 +74,82 @@ pub struct AnalyzeResult {
     pub spans: Vec<SpanInfo>,
     pub counts: HashMap<String, usize>,
     pub warnings: Vec<String>,
+    pub snapshot: ReviewSnapshot,
+}
+
+/// Offsets belong to this immutable UTF-8 text, never to the next model run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ReviewSnapshot {
+    pub text: String,
+    pub spans: Vec<Span>,
+    pub para_ranges: Vec<(usize,usize)>,
+}
+
+impl ReviewSnapshot {
+    pub(crate) fn validate(&self, expected_text: &str) -> Result<()> {
+        if self.text != expected_text { anyhow::bail!("granskningen hör till en annan textversion; originalet är kvar"); }
+        let valid=|start:usize,end:usize| start <= end && end <= self.text.len()
+            && self.text.is_char_boundary(start) && self.text.is_char_boundary(end);
+        let mut end=0;
+        for span in &self.spans {
+            if !valid(span.start,span.end) || span.start == span.end || span.start < end
+                || self.text.get(span.start..span.end) != Some(span.text.as_str()) {
+                anyhow::bail!("ogiltiga maskeringar i den sparade versionen");
+            }
+            end=span.end;
+        }
+        end=0;
+        for &(start,next) in &self.para_ranges {
+            if !valid(start,next) || start < end { anyhow::bail!("ogiltiga stycken i den sparade versionen"); }
+            end=next;
+        }
+        if self.para_ranges.is_empty() { anyhow::bail!("granskningen saknar stycken"); }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod saved_review_tests {
+    use super::*;
+    #[test]
+    fn restores_custom_swedish_mask_without_loading_a_model_and_rejects_bad_offsets() {
+        let text="Åsa bor här";
+        let snapshot=ReviewSnapshot{text:text.into(),spans:vec![Span::manual(0,4,"Åsa",Category::Person,Some("Eleven".into()))],para_ranges:vec![(0,text.len())]};
+        let engine=Engine::new(ModelPaths{model:"missing".into(),tokenizer:"missing".into(),labels:"missing".into(),llm_model:"missing".into(),llm_tokenizer:"missing".into()});
+        let serialized=serde_json::to_vec(&snapshot).unwrap();
+        let restored=engine.restore_review(serde_json::from_slice(&serialized).unwrap(),text.into()).unwrap();
+        assert_eq!(restored.spans[0].replacement,"Eleven");
+        assert_eq!(engine.anonymized_text(vec![]).unwrap(),"Eleven bor här");
+        let across=ReviewSnapshot{text:"Åsa\nbor här".into(),spans:vec![Span::manual(0,8,"Åsa\nbor",Category::Person,Some("Eleven".into()))],para_ranges:vec![(0,4),(5,13)]};
+        engine.restore_review(across,"Åsa\nbor här".into()).unwrap();
+        assert!(engine.anonymized_segments(vec![]).is_err());
+        assert!(engine.add_manual_span(0,8,Category::Person,None).is_err());
+        assert_eq!(engine.anonymized_text(vec![]).unwrap(),"Eleven här");
+        engine.restore_review(snapshot.clone(),text.into()).unwrap();
+        assert_eq!(engine.anonymized_text(vec![0]).unwrap(),text);
+        assert!(engine.restore_review(snapshot.clone(),"Åsa flyttar".into()).is_err());
+        let mut broken=snapshot.clone(); broken.spans[0].end=1;
+        assert!(engine.restore_review(broken,text.into()).is_err());
+        let mut overlap=snapshot;overlap.spans.push(overlap.spans[0].clone());
+        assert!(engine.restore_review(overlap,text.into()).is_err());
+        assert_eq!(engine.anonymized_text(vec![]).unwrap(),"Eleven bor här");
+    }
 }
 
 impl Engine {
+    pub fn restore_review(&self, snapshot: ReviewSnapshot, expected_text: String) -> Result<AnalyzeResult> {
+        snapshot.validate(&expected_text)?;
+        let result=build_result(&snapshot.text,&snapshot.spans,Vec::new(),&snapshot.para_ranges);
+        *self.last.lock().unwrap()=Some(Analysis{text:snapshot.text,spans:snapshot.spans,para_ranges:snapshot.para_ranges,source_path:None});
+        Ok(result)
+    }
     pub fn new(paths: ModelPaths) -> Self {
-        Engine { model: Mutex::new(None), llm: Mutex::new(None), paths, last: Mutex::new(None) }
+        Engine { model: Mutex::new(crate::memory::Cache::new()), llm: Mutex::new(None), paths, last: Mutex::new(None) }
     }
 
-    fn ensure_model(&self) -> Result<()> {
-        let mut guard = self.model.lock().unwrap();
-        if guard.is_none() {
-            *guard = Some(NerModel::load(&self.paths.model, &self.paths.tokenizer, &self.paths.labels)?);
-        }
-        Ok(())
+    pub(crate) fn sweep(&self, now:std::time::Instant, pressure:bool) {
+        if let Ok(mut model)=self.model.try_lock() { model.sweep(now,pressure); }
     }
 
     fn ensure_llm(&self) -> Result<()> {
@@ -105,18 +168,22 @@ impl Engine {
         use_ai: bool,
         progress: &dyn Fn(&str),
     ) -> Result<Vec<Span>> {
+        crate::work::check()?;
         let mut spans: Vec<Span> = Vec::new();
 
         if MODEL_CATEGORIES.iter().any(|c| enabled.contains(c)) {
             progress("Förbereder NER-modell…");
-            self.ensure_model()?;
-            progress("Analyserar text…");
-            let guard = self.model.lock().unwrap();
-            if let Some(model) = guard.as_ref() {
-                spans.extend(model.detect(text)?);
+            let mut guard = self.model.lock().unwrap();
+            if guard.value.is_none() {
+                guard.value = Some(NerModel::load(&self.paths.model, &self.paths.tokenizer, &self.paths.labels)?);
             }
+            progress("Analyserar text…");
+            let detected = guard.value.as_ref().unwrap().detect(text);
+            guard.touch();
+            spans.extend(detected?);
         }
 
+        crate::work::check()?;
         spans.extend(rules::all(text));
         spans.extend(gazetteer::diagnoser(text));
         spans.extend(gazetteer::mediciner(text));
@@ -124,6 +191,7 @@ impl Engine {
         spans.extend(gazetteer::platser(text));
         spans.extend(Dictionary::new(terms, Category::Egen, true).detect(text));
 
+        crate::work::check()?;
         if use_ai {
             if !self.paths.llm_model.exists() {
                 return Err(anyhow!(
@@ -155,7 +223,7 @@ impl Engine {
         let spans = self.detect(&text, &enabled, &terms, use_ai, progress)?;
         let para_ranges = vec![(0, text.len())];
         let result = build_result(&text, &spans, Vec::new(), &para_ranges);
-        *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None });
+        crate::work::commit(|| *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None }))?;
         Ok(result)
     }
 
@@ -174,13 +242,13 @@ impl Engine {
         let mut warnings = Vec::new();
         if doc.has_tables {
             warnings.push(
-                "Dokumentet innehåller tabeller. Text i tabeller hanteras inte i denna version och tas inte med i resultatet.".to_string(),
+                "Text från tabeller ingår i läsordning. Tabellernas layout följer inte med vid export.".to_string(),
             );
         }
 
         let result = build_result(&doc.text, &spans, warnings, &doc.para_ranges);
-        *self.last.lock().unwrap() =
-            Some(Analysis { text: doc.text, spans, para_ranges: doc.para_ranges, source_path: Some(path) });
+        crate::work::commit(|| *self.last.lock().unwrap() =
+            Some(Analysis { text: doc.text, spans, para_ranges: doc.para_ranges, source_path: Some(path) }))?;
         Ok(result)
     }
 
@@ -208,7 +276,7 @@ impl Engine {
         let enabled: HashSet<Category> = enabled.into_iter().collect();
         let spans = self.detect(&text, &enabled, &terms, use_ai, progress)?;
         let result = build_result(&text, &spans, Vec::new(), &para_ranges);
-        *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None });
+        crate::work::commit(|| *self.last.lock().unwrap() = Some(Analysis { text, spans, para_ranges, source_path: None }))?;
         Ok(result)
     }
 
@@ -232,6 +300,9 @@ impl Engine {
             return Err(anyhow!("ogiltigt textintervall"));
         }
         let surface = analysis.text[start..end].to_string();
+        if !analysis.para_ranges.iter().any(|&(ps,pe)| start >= ps && end <= pe) {
+            return Err(anyhow!("Markera text inom ett stycke i taget."));
+        }
         let custom = custom.filter(|c| !c.trim().is_empty());
         analysis.spans.retain(|s| !(start < s.end && s.start < end));
         analysis.spans.push(Span::manual(start, end, &surface, category, custom));
@@ -249,6 +320,7 @@ impl Engine {
             analysis.spans.iter().enumerate().filter(|(i, _)| !rejected.contains(i)).map(|(_, s)| s.clone()).collect();
         let mut pseudo = Pseudonymizer::new();
         let mut out = Vec::with_capacity(analysis.para_ranges.len());
+        ensure_paragraph_masks(&accepted, &analysis.para_ranges)?;
         for &(ps, pe) in &analysis.para_ranges {
             let local: Vec<Span> = accepted
                 .iter()
@@ -283,6 +355,7 @@ impl Engine {
                 docio::save_text(&out_path, &res.text)?;
             }
             Format::Docx => {
+                ensure_paragraph_masks(&accepted, &analysis.para_ranges)?;
                 let mut paragraphs = Vec::with_capacity(analysis.para_ranges.len());
                 for &(ps, pe) in &analysis.para_ranges {
                     let local: Vec<Span> = accepted
@@ -328,11 +401,18 @@ impl Engine {
     }
 }
 
+fn ensure_paragraph_masks(spans: &[Span], ranges: &[(usize,usize)]) -> Result<()> {
+    if spans.iter().any(|span| !ranges.iter().any(|&(start,end)| span.start >= start && span.end <= end)) {
+        anyhow::bail!("En maskering går över en styckegräns. Dela maskeringen per stycke eller exportera hela den maskerade texten.");
+    }
+    Ok(())
+}
+
 fn build_result(text: &str, spans: &[Span], warnings: Vec<String>, para_ranges: &[(usize, usize)]) -> AnalyzeResult {
     let mut segments = build_segments(text, spans);
     // Tag each segment with its paragraph/utterance index so the UI can show speaker labels.
     for seg in &mut segments {
-        seg.para = para_ranges.iter().rposition(|(s, _)| seg.start >= *s).unwrap_or(0);
+        seg.para = para_ranges.partition_point(|(s, _)| *s <= seg.start).saturating_sub(1);
     }
 
     let mut pseudo = Pseudonymizer::new();
@@ -352,7 +432,8 @@ fn build_result(text: &str, spans: &[Span], warnings: Vec<String>, para_ranges: 
         })
         .collect();
 
-    AnalyzeResult { text: text.to_string(), segments, spans: span_info, counts, warnings }
+    AnalyzeResult { text: text.to_string(), segments, spans: span_info, counts, warnings,
+        snapshot: ReviewSnapshot{text:text.to_string(),spans:spans.to_vec(),para_ranges:para_ranges.to_vec()} }
 }
 
 fn build_segments(text: &str, spans: &[Span]) -> Vec<Segment> {
@@ -442,6 +523,17 @@ fn ai_spans(text: &str, proposals: &[String]) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraph_lookup_preserves_empty_paragraphs_and_separators() {
+        let text = "Åsa\n\nErik\nHej";
+        let ranges = [(0, 4), (5, 5), (6, 10), (11, 14)];
+        let result = build_result(text, &[], vec![], &ranges);
+        for seg in result.segments {
+            let expected = ranges.iter().rposition(|(start, _)| seg.start >= *start).unwrap_or(0);
+            assert_eq!(seg.para, expected);
+        }
+    }
 
     fn test_engine() -> Engine {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/model");

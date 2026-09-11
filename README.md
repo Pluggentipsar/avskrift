@@ -4,14 +4,50 @@ Ett skrivbordsprogram som **transkriberar svenskt tal till text, skiljer talare 
 och avidentifierar** känsliga personuppgifter — allt **lokalt** på datorn. Inget ljud och ingen
 text lämnar maskinen.
 
-Byggt i samma anda som [Avidentifierare](../): en fil att installera, dubbelklicka och köra. Ingen
-Python, ingen molntjänst, inga externa runtimes — allt bäddas in i binären.
+Programmet distribueras som färdiga Windows-paket med nödvändiga bibliotek och resurser.
+Ingen Python eller molntjänst behövs för att använda appen.
 
 > Syskonprojekt till [TystText/transav](https://github.com/Pluggentipsar/transav), men paketerat
 > som en enbinärs Tauri/Rust-app i stället för Next.js + Python-backend.
 
 ## Funktioner
 
+- **Version 0.6.0 / arbetsyta 9** — ett sammanhängande mötesflöde med ljudtest, kanalval,
+  anteckningar, beslut, åtgärder och uppföljning. Byt namn direkt i mötet, fäst eller arkivera
+  arbeten och exportera ett samlat mötesunderlag. Svagt mikrofonljud hanteras bättre.
+  Se [releasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.6.0)
+  och [mötesguiden](docs/ARBETSYTA-STEG-9.md).
+
+- **Arbetsyta 8** — lokalt sökindex, snabbare projektlistor och åtaganden, tydlig sökstatus
+  och återuppbyggnad av biblioteket. Se [nyheter, tester och mätningar](docs/ARBETSYTA-STEG-8.md).
+
+- **Arbetsyta 7** — strömmande ljudomvandling, avbrytbara förgrundsarbeten och företräde för
+  diktering mellan modellsteg. Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-7.md).
+
+- **Arbetsyta 6** — gemensam modellcache, automatisk GPU-budget, frigöring av inaktiva modeller
+  och CPU-reservväg vid återhämtningsbara GPU-fel.
+  Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-6.md).
+
+- **Arbetsyta 5** — tokenbaserad uppdelning av långa AI-underlag, sammanställning i flera
+  omgångar och tydligt förlopp med bevarade tidigare resultat vid fel.
+  Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-5.md).
+
+- **Arbetsyta 4** — samlad modellhantering, lugnare transkriptvy, sökning i hela underlaget,
+  justerbar textstorlek och rendering av avsnitt nära läsytan för långa möten.
+  Se [nyheter, tester och paket](docs/ARBETSYTA-STEG-4.md).
+
+- **Arbetsyta 3** — källutkast för möten, diktatbearbetning med godkännande, original och
+  maskerad text bredvid varandra samt egna mallar och granskningsprofiler.
+  Se [nyheter och användning](docs/ARBETSYTA-STEG-3.md).
+
+- **Arbetsyta 2** — original och återställbara versioner, sparade manuella maskningar,
+  autosparad källtext, sparade diktat i biblioteket och import av Word-tabelltext.
+  Se [nyheter, paket och begränsningar](docs/ARBETSYTA-STEG-2.md).
+
+- **Diktera i andra program (Windows)** — håll Ctrl+Shift+Space och släpp för att transkribera,
+  eller växla start/stopp med Ctrl+Alt+Space. Med lokal
+  KB-Whisper och infogning i det fokuserade textfältet. Med indikator, sökbara diktat,
+  kopiering och valfri sparad historik. Ljudet hålls i minnet. Se [Diktering](docs/DIKTERING.md).
 - **Transkribering** med **KB-Whisper** (KBLab) — välj modellstorlek (tiny → large) efter dator och
   noggrannhetsbehov. Modeller hämtas vid behov; den minsta kan bäddas in i installern.
   Med **valbar GPU-acceleration** (CUDA / Metal / Vulkan) och **ordnivå-tidsstämplar**.
@@ -52,8 +88,8 @@ Tauri 2 (Rust-backend) + SvelteKit (gränssnitt).
 | Tal → text | `whisper-rs` (whisper.cpp) | KB-Whisper (GGML) |
 | Diarisering | `sherpa-rs` (sherpa-onnx) | pyannote-segmentering + talar-embedding (ONNX) |
 | NER | `ort` (ONNX Runtime) | KB-BERT (int8 ONNX) |
-| AI-lager (PII) | `candle` | Qwen2.5-1.5B (GGUF) |
-| Sammanfattning | `candle` | Qwen2.5 1,5B/3B/7B (GGUF, valbar) |
+| AI-lager (PII) | `llama-cpp-2` (llama.cpp) | Qwen2.5-1.5B (GGUF) |
+| Sammanfattning | `llama-cpp-2` (llama.cpp) | Qwen2.5 1,5B/3B/7B (GGUF, valbar) |
 | Word-I/O | `docx-rs` | — |
 
 ## Bygga från källkod
@@ -75,15 +111,22 @@ model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF, PII-lager)
 model-tools\fetch-summary.ps1 -Size 3b         # Qwen2.5-3B (GGUF, sammanfattning) – valfritt
 
 npm run tauri dev      # utveckling
-npm run tauri build    # NSIS-installer (CPU)
+
+# Optimerade portabla Windows-byggen (se verktygskrav i docs/PRESTANDA.md):
+npm run desktop:gpu -- -TargetDir C:\avb -LibClangPath C:\LLVM\bin
+npm run desktop:cpu -- -TargetDir C:\avc -LibClangPath C:\LLVM\bin
 
 # GPU-byggen — accelererar både Whisper (tal->text) och Qwen (AI-lagret):
 npm run tauri build -- --features cuda     # NVIDIA  (Whisper + Qwen)
 npm run tauri build -- --features metal    # Apple Silicon (Whisper + Qwen)
-npm run tauri build -- --features vulkan   # plattformsoberoende GPU (endast Whisper)
+npm run tauri build -- --features vulkan   # plattformsoberoende GPU (Whisper + Qwen)
 ```
 
-> GPU-byggena gäller **KB-Whisper** (via whisper.cpp) och **Qwen** (via candle). KB-BERT (NER via
+Windows-paketen hamnar i `dist/Avskrift-Vulkan` respektive `dist/Avskrift-CPU`.
+Behåll hela paketmappen tillsammans. Se [prestanda och Windows-byggen](docs/PRESTANDA.md)
+för bygginställningar, mätningar och skillnaden mellan första start och fortsatt diktering.
+
+> GPU-byggena gäller **KB-Whisper** (via whisper.cpp) och **Qwen** (via llama.cpp). KB-BERT (NER via
 > ONNX Runtime) kör alltid på CPU — det är redan snabbt och använder ett annat GPU-API.
 
 ## Modeller & licenser

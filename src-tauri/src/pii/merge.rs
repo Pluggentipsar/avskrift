@@ -26,15 +26,16 @@ pub fn resolve(spans: Vec<Span>, enabled: &HashSet<Category>) -> Vec<Span> {
         priority(b).cmp(&priority(a)).then((b.end - b.start).cmp(&(a.end - a.start))).then(a.start.cmp(&b.start))
     });
 
-    let mut kept: Vec<Span> = Vec::new();
+    let mut kept = std::collections::BTreeMap::<usize, Span>::new();
     for s in cand {
-        let overlaps = kept.iter().any(|k| s.start < k.end && k.start < s.end);
+        // Accepted spans are disjoint. Only the last span starting before this one's end
+        // can overlap it; avoid rescanning every earlier accepted hit in a long document.
+        let overlaps = kept.range(..s.end).next_back().is_some_and(|(_, k)| k.end > s.start);
         if !overlaps {
-            kept.push(s);
+            kept.insert(s.start, s);
         }
     }
-    kept.sort_by_key(|s| s.start);
-    kept
+    kept.into_values().collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +86,36 @@ pub fn apply(text: &str, spans: &[Span], pseudo: &mut Pseudonymizer) -> AppliedR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_overlap_matches_priority_scan_for_nested_and_adjacent_spans() {
+        let mut seed = 57usize;
+        let mut spans = Vec::new();
+        for i in 0..3000 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let start = seed % 10000;
+            let source = match i % 3 {
+                0 => Source::Rule,
+                1 => Source::Model,
+                _ => Source::Manual,
+            };
+            spans.push(Span::new(start, start + (i % 23) + 1, "test", Category::Person, source, 1.0));
+        }
+        let mut candidates = spans.clone();
+        candidates.sort_by(|a, b| {
+            priority(b).cmp(&priority(a)).then((b.end - b.start).cmp(&(a.end - a.start))).then(a.start.cmp(&b.start))
+        });
+        let mut expected: Vec<Span> = Vec::new();
+        for s in candidates {
+            if !expected.iter().any(|k| s.start < k.end && k.start < s.end) {
+                expected.push(s);
+            }
+        }
+        expected.sort_by_key(|s| s.start);
+        let actual = resolve(spans, &enabled_all());
+        let positions = |spans: &[Span]| spans.iter().map(|s| (s.start, s.end, s.source)).collect::<Vec<_>>();
+        assert_eq!(positions(&actual), positions(&expected));
+    }
 
     fn enabled_all() -> HashSet<Category> {
         Category::ALL.into_iter().collect()

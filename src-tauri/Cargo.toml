@@ -1,6 +1,6 @@
 [package]
 name = "avskrift"
-version = "0.5.0"
+version = "0.6.0"
 description = "Lokal transkribering, diarisering och avidentifiering av svenskt tal"
 authors = ["Pluggentipsar"]
 edition = "2021"
@@ -26,11 +26,13 @@ metal = ["whisper-rs/metal", "llama-cpp-2/metal"]
 vulkan = ["whisper-rs/vulkan", "llama-cpp-2/vulkan"]
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Rebuildable local library/search cache; SQLite is compiled into the program.
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
 anyhow = "1"
 once_cell = "1"
 regex = "1"
@@ -49,6 +51,8 @@ docx-rs = "0.4"
 # Ersatte candle (likvärdig kvalitet, men långsammare på CPU). `dynamic-link` bygger llama.cpp + dess
 # ggml som egna DLL:er så de inte krockar vid länkning med whisper.cpp:s statiska ggml (LNK2005).
 llama-cpp-2 = { version = "0.1.146", features = ["dynamic-link"] }
+# Resolve device queries from the text engine DLLs explicitly (Whisper has a separate ggml).
+libloading = "0.8.9"
 
 # --- Tal -> text ---
 # whisper.cpp-bindningar. KB-Whisper konverteras till GGML/GGUF och läses härifrån.
@@ -64,6 +68,7 @@ symphonia = { version = "0.5", features = [
     "mp3", "aac", "isomp4", "alac", "flac", "ogg", "vorbis", "wav", "pcm",
 ] }
 rubato = "0.15"
+rustfft = "6.4"
 
 # On-demand download of Whisper models (small, blocking HTTP client).
 ureq = "2"
@@ -74,6 +79,7 @@ ureq = "2"
 opt-level = 3
 
 [target."cfg(windows)".dependencies]
+windows = { version = "0.61", features = ["Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Threading"] }
 # Mötesinspelning: två WASAPI-strömmar (mic = eCapture, möte = eRender loopback).
 wasapi = "0.23.0"
 # WAV-skrivning för mötets två källspår (16-bit PCM mono, native rate; resamplas vid inläsning).

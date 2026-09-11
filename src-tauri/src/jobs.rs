@@ -2,12 +2,18 @@
 //! JSON file `<id>.json` in the writable app-data `jobs/` dir, listed in the History screen and
 //! reopenable. The frontend generates the id + timestamps and owns the data; the backend just
 //! persists/lists/loads — it does NOT try to keep multiple jobs live at once (the engine/transcript
-//! state stays single-active-job; reopening a job re-hydrates the frontend and re-runs analysis).
+//! state stays single-active-job; reopening restores the saved review without re-running a model).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+static WRITES: Mutex<()> = Mutex::new(());
+static TASK_WRITES: Mutex<()> = Mutex::new(());
+#[path = "job_index.rs"]
+mod index;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::transcript::Transcript;
@@ -16,6 +22,8 @@ use crate::transcript::Transcript;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Action {
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
     pub text: String,
     #[serde(default)]
     pub done: bool,
@@ -57,8 +65,7 @@ pub struct Participant {
     pub role: String,
 }
 
-/// A persisted job. Inputs + settings + verbatim outputs are stored; the de-identify `AnalyzeResult`
-/// is intentionally NOT stored (Span byte-offsets are brittle) — it is recomputed on reopen.
+/// A persisted work with immutable originals and review offsets tied to their exact source text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -101,7 +108,7 @@ pub struct Job {
     pub source_path: Option<String>,
 
     // --- de-identify settings (category keys are snake_case strings, matching the frontend) ---
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub enabled: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terms: Vec<String>,
@@ -129,12 +136,28 @@ pub struct Job {
     pub actions: Vec<Action>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub followup: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_transcript: Option<Transcript>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_source_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_snapshot: Option<crate::engine::ReviewSnapshot>,
+    #[serde(default)]
+    pub review_is_document: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_basis: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Lightweight listing entry for the History screen.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobMeta {
+    #[serde(default)] pub last_opened: String,
+    #[serde(default)] pub pinned: bool,
+    #[serde(default)] pub archived: bool,
+    #[serde(default)] pub followup: String,
     pub id: String,
     pub title: String,
     pub job_type: String,
@@ -183,6 +206,10 @@ fn meta_of(job: &Job) -> JobMeta {
         .map(|m| m.len())
         .sum();
     JobMeta {
+        last_opened: job.extra.get("lastOpened").and_then(|v|v.as_str()).unwrap_or("").into(),
+        pinned: job.extra.get("pinned").and_then(|v|v.as_bool()).unwrap_or(false),
+        archived: job.extra.get("archived").and_then(|v|v.as_bool()).unwrap_or(false),
+        followup: job.followup.clone(),
         id: job.id.clone(),
         title: job.title.clone(),
         job_type: job.job_type.clone(),
@@ -201,31 +228,203 @@ fn job_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.json"))
 }
 
+fn version_files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json")).collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct VersionMeta { id: String, updated_at: String, title: String }
+
+pub fn versions(dir: &Path, id: &str) -> Result<Vec<VersionMeta>> {
+    valid_id(id)?;
+    let mut files=version_files(&dir.join("versions").join(id));
+    files.sort_by(|a,b| b.cmp(a));
+    Ok(files.into_iter().filter_map(|p| {
+        let job: Job=serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
+        Some(VersionMeta{id:p.file_stem()?.to_str()?.into(),updated_at:job.updated_at,title:job.title})
+    }).collect())
+}
+
+pub fn open_version(dir: &Path, id: &str, version: &str) -> Result<Job> {
+    valid_id(id)?; valid_id(version)?;
+    let bytes=std::fs::read(dir.join("versions").join(id).join(format!("{version}.json")))?;
+    let job: Job=serde_json::from_slice(&bytes)?;
+    if job.id != id { anyhow::bail!("versionen tillhör ett annat projekt"); }
+    Ok(job)
+}
+
+pub fn checkpoint(dir: &Path, id: &str) -> Result<()> {
+    let _guard=WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
+    let job=open(dir,id)?;
+    save_inner(dir,&job,true)
+}
+
+pub fn restore(dir: &Path, id: &str, version: &str, now: String) -> Result<()> {
+    let _guard=WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
+    let mut job=open_version(dir,id,version)?;
+    job.updated_at=now;
+    save_inner(dir,&job,true)
+}
+
 /// Write (or overwrite) a job file.
+#[cfg(test)]
 pub fn save(dir: &Path, job: &Job) -> Result<()> {
+    let _guard = WRITES.lock().map_err(|_| anyhow!("lagringen är upptagen efter ett fel"))?;
+    save_inner(dir, job, false)
+}
+
+pub fn save_keeping_category(dir: &Path, mut job: Job) -> Result<()> {
+    let _guard = WRITES.lock().map_err(|_| anyhow!("lagringen är upptagen efter ett fel"))?;
+    if let Ok(existing) = open(dir,&job.id) {
+        if job.category.is_empty() { job.category=existing.category; }
+        // A delayed autosave from recording/pending UI must not undo native finalisation.
+        if job.transcription_pending && !existing.transcription_pending && existing.transcript.is_some() {
+            job.transcript=existing.transcript; job.transcription_pending=false;
+            job.mix_wav_path=existing.mix_wav_path; job.speaker_labels=existing.speaker_labels;
+            for key in ["meetingWarning","meetingError"] {
+                job.extra.insert(key.into(),existing.extra.get(key).cloned().unwrap_or_else(||serde_json::json!("")));
+            }
+        }
+    }
+    save_inner(dir,&job,false)
+}
+
+/// Serialize read-modify-write operations with saves and index reconciliation.
+pub fn edit(dir: &Path, id: &str, change: impl FnOnce(&mut Job) -> Result<()>) -> Result<Job> {
+    let _guard = WRITES.lock().map_err(|_| anyhow!("lagringen är upptagen efter ett fel"))?;
+    let mut job = open(dir,id)?;
+    change(&mut job)?;
+    save_inner(dir,&job,false)?;
+    Ok(job)
+}
+
+fn valid_id(id: &str) -> Result<()> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        anyhow::bail!("ogiltigt projekt-id");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    #[test]
+    fn migration_retains_original_and_versions_and_refuses_corrupt_overwrite() {
+        let dir=std::env::temp_dir().join(format!("avskrift-versions-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy=serde_json::json!({"version":1,"id":"fixture","jobType":"deidentify","title":"Test","createdAt":"2026-09-11","updatedAt":"2026-09-11","sourceText":"Åsa och Östen","futureField":{"keep":true}});
+        let bytes=serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(job_path(&dir,"fixture"),&bytes).unwrap();
+        let mut job:Job=serde_json::from_value(legacy).unwrap();
+        job.original_source_text=job.source_text.clone();
+        job.source_text=Some("Ändrad text".into());
+        save(&dir,&job).unwrap();
+        assert_eq!(std::fs::read(dir.join("versions/fixture/legacy.json")).unwrap(),bytes);
+        let stored=open(&dir,"fixture").unwrap();
+        assert_eq!(stored.version,2);
+        assert_eq!(stored.original_source_text.as_deref(),Some("Åsa och Östen"));
+        assert_eq!(stored.extra["futureField"]["keep"],true);
+        assert!(!versions(&dir,"fixture").unwrap().is_empty());
+        restore(&dir,"fixture","legacy","2026-09-12".into()).unwrap();
+        assert_eq!(open(&dir,"fixture").unwrap().source_text.as_deref(),Some("Åsa och Östen"));
+        assert!(open_version(&dir,"fixture","../other").is_err());
+        for _ in 0..33 { checkpoint(&dir,"fixture").unwrap(); }
+        assert_eq!(versions(&dir,"fixture").unwrap().len(),31); // thirty plus the migration copy
+        let mut meeting=job.clone();meeting.id="pending".into();
+        meeting.transcript=Some(serde_json::from_value(serde_json::json!({"language":"sv","model":"test","diarized":false,"utterances":[]})).unwrap());
+        save(&dir,&meeting).unwrap();
+        assert!(open(&dir,"pending").unwrap().original_transcript.is_none());
+        meeting.transcript=Some(serde_json::from_value(serde_json::json!({"language":"sv","model":"test","diarized":false,"utterances":[{"start":0,"end":1,"text":"Första texten"}]})).unwrap());
+        save(&dir,&meeting).unwrap();
+        meeting.transcript.as_mut().unwrap().utterances[0].text="Ny text".into();
+        save(&dir,&meeting).unwrap();
+        assert_eq!(open(&dir,"pending").unwrap().original_transcript.unwrap().utterances[0].text,"Första texten");
+        std::fs::write(job_path(&dir,"fixture"),b"broken").unwrap();
+        assert!(save(&dir,&job).is_err());
+        assert_eq!(std::fs::read(job_path(&dir,"fixture")).unwrap(),b"broken");
+        delete(&dir,"fixture").unwrap();
+        assert!(!dir.join("versions/fixture").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+fn save_inner(dir: &Path, job: &Job, checkpoint: bool) -> Result<()> {
+    valid_id(&job.id)?;
+    if job.version > 2 { anyhow::bail!("Projektet kräver en nyare version av AVskrift."); }
+    if let Some(review) = &job.review_snapshot { review.validate(&review.text)?; }
     std::fs::create_dir_all(dir)?;
-    let json = serde_json::to_string_pretty(job)?;
-    std::fs::write(job_path(dir, &job.id), json)?;
+    let path = job_path(dir, &job.id);
+    let mut next = job.clone();
+    if path.exists() {
+        // An unreadable project is never replaced by an empty or partial recovery.
+        let bytes = std::fs::read(&path)?;
+        let old: Job = serde_json::from_slice(&bytes).context("det befintliga projektet kunde inte läsas; filen behålls")?;
+        if old.version > 2 { anyhow::bail!("Projektet kräver en nyare version av AVskrift; filen behålls."); }
+        let versions = dir.join("versions").join(&job.id);
+        if old.version < 2 && !versions.join("legacy.json").exists() {
+            crate::storage::atomic_write(&versions.join("legacy.json"), &bytes)?;
+        }
+        let latest = version_files(&versions).into_iter().filter(|p| p.file_stem().is_some_and(|s| s != "legacy"))
+            .filter_map(|p| std::fs::metadata(p).ok()?.modified().ok()).max();
+        if checkpoint || latest.is_none_or(|t| t.elapsed().is_ok_and(|d| d.as_secs() >= 60)) {
+            let stamp=SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            crate::storage::atomic_write(&versions.join(format!("{stamp}.json")), &bytes)?;
+        }
+        next.original_transcript = old.original_transcript.or(old.transcript).filter(|t| !t.utterances.is_empty()).or(next.original_transcript);
+        next.original_source_text = old.original_source_text.or_else(|| if old.version < 2 { old.source_text } else { None }).or(next.original_source_text);
+        for (key,value) in old.extra { next.extra.entry(key).or_insert(value); }
+    }
+    if next.original_transcript.as_ref().is_none_or(|t| t.utterances.is_empty()) {
+        next.original_transcript = next.transcript.clone().filter(|t| !t.utterances.is_empty());
+    }
+    next.version = 2;
+    crate::storage::atomic_write(&path, &serde_json::to_vec_pretty(&next)?)?;
+    index::changed(dir, &next.id, false);
+    // Retain the migration copy and the 30 most recent checkpoints.
+    let mut files = version_files(&dir.join("versions").join(&job.id));
+    files.retain(|p| p.file_stem().is_some_and(|s| s != "legacy"));
+    files.sort();
+    let excess=files.len().saturating_sub(30);
+    for file in files.into_iter().take(excess) { let _=std::fs::remove_file(file); }
     Ok(())
 }
 
 /// Load a single job by id.
 pub fn open(dir: &Path, id: &str) -> Result<Job> {
+    valid_id(id)?;
     let json = std::fs::read_to_string(job_path(dir, id)).map_err(|e| anyhow!("kunde inte läsa jobbet: {e}"))?;
     serde_json::from_str(&json).map_err(|e| anyhow!("ogiltig jobbfil: {e}"))
 }
 
 /// Delete a job file (no error if it's already gone).
 pub fn delete(dir: &Path, id: &str) -> Result<()> {
+    valid_id(id)?;
+    let _guard=WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
+    let versions=dir.join("versions").join(id);
+    if versions.exists() { std::fs::remove_dir_all(versions)?; }
     let p = job_path(dir, id);
     if p.exists() {
         std::fs::remove_file(p)?;
     }
+    index::changed(dir, id, true);
     Ok(())
 }
 
+/// JSON remains authoritative; an unavailable cache falls back to the original reader.
+pub fn list(dir: &Path) -> Vec<JobMeta> { search(dir, "") }
+pub fn search(dir: &Path, query: &str) -> Vec<JobMeta> {
+    let _guard = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    index::search(dir,query).unwrap_or_else(|_| scan_search(dir,query))
+}
+pub fn rebuild_index(dir: &Path) -> Result<usize> {
+    let _guard = WRITES.lock().map_err(|_| anyhow!("Lagringen behöver startas om."))?;
+    index::rebuild(dir)
+}
+
 /// List all jobs, newest first (by `updated_at`). Unreadable/invalid files are skipped.
-pub fn list(dir: &Path) -> Vec<JobMeta> {
+fn scan_list(dir: &Path) -> Vec<JobMeta> {
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.flatten() {
@@ -246,10 +445,10 @@ pub fn list(dir: &Path) -> Vec<JobMeta> {
 
 /// Jobs whose title, category, transcript, summary or source text contain `query` (case-insensitive).
 /// Empty query returns everything (same as `list`).
-pub fn search(dir: &Path, query: &str) -> Vec<JobMeta> {
+fn scan_search(dir: &Path, query: &str) -> Vec<JobMeta> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
-        return list(dir);
+        return scan_list(dir);
     }
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
@@ -275,6 +474,7 @@ pub fn search(dir: &Path, query: &str) -> Vec<JobMeta> {
 /// "delete folder" (collapse into parent: `to` = the parent path, or "" for the root). Paths are
 /// "/"-separated; jobs not under `from` are untouched.
 pub fn move_folder(dir: &Path, from: &str, to: &str) -> Result<()> {
+    let _guard = WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
     let from = from.trim().trim_matches('/');
     let to = to.trim().trim_matches('/');
     if from.is_empty() || from == to {
@@ -302,7 +502,7 @@ pub fn move_folder(dir: &Path, from: &str, to: &str) -> Result<()> {
                 continue;
             };
             job.category = new;
-            let _ = save(dir, &job);
+            save_inner(dir, &job, false)?;
         }
     }
     Ok(())
@@ -311,6 +511,7 @@ pub fn move_folder(dir: &Path, from: &str, to: &str) -> Result<()> {
 /// Mirror a folder rename / delete onto free-standing tasks (same prefix rewrite as `move_folder`),
 /// so loose åtaganden filed in a folder follow it instead of orphaning into a folder that's gone.
 pub fn move_task_folder(file: &Path, from: &str, to: &str) -> Result<()> {
+    let _guard = TASK_WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
     let from = from.trim().trim_matches('/');
     let to = to.trim().trim_matches('/');
     if from.is_empty() || from == to {
@@ -341,7 +542,18 @@ pub fn move_task_folder(file: &Path, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+fn meeting_fields(job: &Job) -> Vec<String> {
+    let mut out=Vec::new();
+    if let Some(text)=job.extra.get("agenda").and_then(|v|v.as_str()) {out.push(text.to_lowercase());}
+    for key in ["decisions","bookmarks"] {
+        if let Some(items)=job.extra.get(key).and_then(|v|v.as_array()) {
+            for item in items {if let Some(text)=item.get("text").and_then(|v|v.as_str()){out.push(text.to_lowercase());}}
+        }
+    }
+    out
+}
 fn job_matches(job: &Job, q: &str) -> bool {
+    if meeting_fields(job).iter().any(|s|s.contains(q)) {return true;}
     if job.title.to_lowercase().contains(q) || job.category.to_lowercase().contains(q) {
         return true;
     }
@@ -373,17 +585,17 @@ pub fn load_tasks(file: &Path) -> Vec<StandaloneTask> {
 }
 
 /// Persist the whole free-standing task store.
-pub fn save_tasks(file: &Path, tasks: &[StandaloneTask]) -> Result<()> {
+fn save_tasks(file: &Path, tasks: &[StandaloneTask]) -> Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(file, serde_json::to_string_pretty(tasks)?)?;
+    crate::storage::atomic_write(file, &serde_json::to_vec_pretty(tasks)?)?;
     Ok(())
 }
 
 /// Flatten every action across all jobs, plus the free-standing task store, into one list for the
 /// "Åtaganden" overview. Unreadable/invalid job files are skipped (same tolerance as `list`).
-pub fn all_actions(jobs_dir: &Path, tasks_file: &Path) -> Vec<ActionRow> {
+fn scan_actions(jobs_dir: &Path) -> Vec<ActionRow> {
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(jobs_dir) {
         for entry in rd.flatten() {
@@ -412,6 +624,11 @@ pub fn all_actions(jobs_dir: &Path, tasks_file: &Path) -> Vec<ActionRow> {
             }
         }
     }
+    out
+}
+pub fn all_actions(jobs_dir: &Path, tasks_file: &Path) -> Vec<ActionRow> {
+    let _guard = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = index::actions(jobs_dir).unwrap_or_else(|_| scan_actions(jobs_dir));
     for t in load_tasks(tasks_file) {
         out.push(ActionRow {
             source: "standalone".into(),
@@ -433,37 +650,27 @@ pub fn all_actions(jobs_dir: &Path, tasks_file: &Path) -> Vec<ActionRow> {
 }
 
 /// Replace one job's action at `index` (toggle done / edit text·assignee·due). Bumps `updated_at`.
-pub fn set_job_action(dir: &Path, job_id: &str, index: usize, action: Action, updated_at: &str) -> Result<()> {
-    let mut job = open(dir, job_id)?;
-    if index >= job.actions.len() {
-        return Err(anyhow!("åtgärden finns inte längre"));
-    }
-    job.actions[index] = action;
-    job.updated_at = updated_at.to_string();
-    save(dir, &job)
+pub fn set_job_action(dir: &Path, job_id: &str, index: usize, mut action: Action, updated_at: &str) -> Result<()> {
+    edit(dir,job_id,|job| {
+        if index >= job.actions.len() { anyhow::bail!("åtgärden finns inte längre"); }
+        for (key,value) in &job.actions[index].extra {action.extra.entry(key.clone()).or_insert(value.clone());}
+        job.actions[index]=action;job.updated_at=updated_at.to_string();Ok(())
+    })?;Ok(())
 }
 
-/// Append an action to an existing job. Bumps `updated_at`.
 pub fn add_job_action(dir: &Path, job_id: &str, action: Action, updated_at: &str) -> Result<()> {
-    let mut job = open(dir, job_id)?;
-    job.actions.push(action);
-    job.updated_at = updated_at.to_string();
-    save(dir, &job)
+    edit(dir,job_id,|job| {job.actions.push(action);job.updated_at=updated_at.to_string();Ok(())})?;Ok(())
 }
 
-/// Remove one job's action at `index` (no error if it's already gone). Bumps `updated_at`.
 pub fn delete_job_action(dir: &Path, job_id: &str, index: usize, updated_at: &str) -> Result<()> {
-    let mut job = open(dir, job_id)?;
-    if index < job.actions.len() {
-        job.actions.remove(index);
-        job.updated_at = updated_at.to_string();
-        save(dir, &job)?;
-    }
-    Ok(())
+    edit(dir,job_id,|job| {
+        if index < job.actions.len() {job.actions.remove(index);job.updated_at=updated_at.to_string();}Ok(())
+    })?;Ok(())
 }
 
 /// Add a free-standing task to the store.
 pub fn add_task(file: &Path, task: StandaloneTask) -> Result<()> {
+    let _guard = TASK_WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
     let mut tasks = load_tasks(file);
     tasks.push(task);
     save_tasks(file, &tasks)
@@ -471,6 +678,7 @@ pub fn add_task(file: &Path, task: StandaloneTask) -> Result<()> {
 
 /// Replace a free-standing task (matched by id). No-op if the id is gone.
 pub fn update_task(file: &Path, task: StandaloneTask) -> Result<()> {
+    let _guard = TASK_WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
     let mut tasks = load_tasks(file);
     if let Some(slot) = tasks.iter_mut().find(|t| t.id == task.id) {
         *slot = task;
@@ -480,6 +688,7 @@ pub fn update_task(file: &Path, task: StandaloneTask) -> Result<()> {
 
 /// Delete a free-standing task by id.
 pub fn delete_task(file: &Path, id: &str) -> Result<()> {
+    let _guard = TASK_WRITES.lock().map_err(|_| anyhow!("lagringsfel"))?;
     let mut tasks = load_tasks(file);
     tasks.retain(|t| t.id != id);
     save_tasks(file, &tasks)

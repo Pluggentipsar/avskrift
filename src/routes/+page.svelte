@@ -1,5 +1,21 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import {invokeWork,isWorkCancelled} from "$lib/work";
+  import "$lib/meeting-workspace.css";
+  import WorkControl from "$lib/WorkControl.svelte";
+  import { tick, onMount } from "svelte";
+  import TranscriptView from '$lib/TranscriptView.svelte';
+  import ModelSettings from '$lib/ModelSettings.svelte';
+  import Dictation from "$lib/Dictation.svelte";
+  import AppNavigation from "$lib/AppNavigation.svelte";
+  import VersionsDialog from "$lib/VersionsDialog.svelte";
+  import GroundedDraft from '$lib/GroundedDraft.svelte';
+  import ReviewComparison from '$lib/ReviewComparison.svelte';
+  import ReviewProfiles from '$lib/ReviewProfiles.svelte';
+  import type {GroundedWork,SourceUnit} from '$lib/grounded';
+  import ExportDialog, { type ExportChoice } from "$lib/ExportDialog.svelte";
+  import { createSaveQueue } from "$lib/save-queue";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import type { DictationSnapshot } from "$lib/dictation";
   import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { listen } from "@tauri-apps/api/event";
@@ -20,6 +36,7 @@
   type SpanInfo = { id: number; category: string; source: string; text: string; replacement: string };
   type Segment = { text: string; span: number | null; start: number; end: number; word: boolean; para: number };
   type AnalyzeResult = {
+    snapshot?: { text: string; spans: unknown[]; paraRanges: [number,number][] };
     text: string;
     segments: Segment[];
     spans: SpanInfo[];
@@ -82,7 +99,16 @@
   // ---- Transcript / review state ----
   let transcript = $state<Transcript | null>(null);
   let speakerLabels = $state<Record<string, string>>({});
-  let view = $state<"transcript" | "review" | "summary" | "qa" | "notes">("transcript");
+  let view = $state<"transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions">("transcript");
+  let modelsOpen = $state(false);
+  let transcriptToolsOpen = $state(false);
+  let transcriptView = $state<TranscriptView>();
+  function openModels() { modelsOpen = true; }
+  async function setDictationModel(model:string) {
+    if (!dictation || dictation.phase !== 'idle') throw new Error('Stoppa diktatet innan du ändrar modell.');
+    await invoke('configure_dictation', {settings:{...dictation.settings,model}});
+    updateDictation(await invoke<DictationSnapshot>('dictation_snapshot'));
+  }
   let sidebarCollapsed = $state(false); // hide the workspace controls panel to give the content full width
 
   // ---- Summarisation ----
@@ -126,6 +152,7 @@
   let aiPromptDraft = $state("");
   let aiContext = $state("");
   let summaryDraft = $state("");
+  let summaryAnonymized = $state(false);
   const summaryDownloaded = $derived(summaryModels.find((m) => m.id === selectedSummaryModel)?.downloaded ?? false);
 
   // ---- Editing, corrections, projects, export options ----
@@ -134,9 +161,42 @@
   let editMode = $state(false); // when on, a single click opens a line for editing instead of seeking
   let undoStack = $state<Transcript[]>([]); // snapshots before each transcript edit (for Ångra)
   let dirty = $state(false); // unsaved edits since last transcribe/open
+  let saveState = $state<"idle" | "pending" | "saving" | "saved" | "error">("idle");
+  let saveError = $state("");
+  let savedAt = $state("");
+  let originalTranscript = $state<Transcript | null>(null);
+  let originalSourceText = $state<string | null>(null);
+  let groundedWork = $state<GroundedWork|null>(null);
+  let reviewApprovedBasis = $state<string|null>(null);
+  const reviewBasis = $derived.by(()=>JSON.stringify([analysis?.snapshot??analysis?.text,rejectedIds()]));
+  const groundedSources = $derived<SourceUnit[]>(transcript?.utterances.map((u,i)=>({id:`u${i}`,text:(u.speaker?`${speakerLabels[u.speaker]??u.speaker}: `:'')+u.text,start:u.start})).filter(s=>s.text.trim())??[]);
+  const groundedContext = $derived.by(()=>JSON.stringify([currentJobId,audioPath,meetingMixWav]));
+  function saveGrounded(value:GroundedWork){groundedWork=value;saveWorkspace();}
+  async function useGrounded(text:string){
+    const basis=JSON.stringify([groundedContext,groundedSources]);
+    if(!(await checkpointWork()))return;
+    if(basis!==JSON.stringify([groundedContext,groundedSources])){error='Underlaget ändrades. Granska det nya underlaget först.';return;}
+    summaryDraft=text;summaryAnonymized=false;summaryBasis=JSON.stringify({source:'transcript',text:transcript?.utterances.map(u=>u.text).join('\n')});saveWorkspace();
+  }
+  async function seekGrounded(source:SourceUnit){if(source.start===null)return;tab('transcript');await tick();const i=transcript?.utterances.findIndex(u=>u.start===source.start)??-1;await transcriptView?.reveal(i);seekTo(source.start);}
+  function addGroundedAction(text:string, source?:{quote:string;start:number|null}){actions=[...actions,{id:crypto.randomUUID(),text,source:source?{...source,jobId:currentJobId??undefined}:undefined,done:false,assignee:'',due:''}];saveWorkspace();}
+  let summaryBasis = $state<string | null>(null);
+  let versionsOpen = $state(false);
+  let restoringJob = false;
+  let dictationPanel: Dictation;
+  let dictationDirty = $state(false);
+  const reviewStale = $derived.by(() => !!analysis && analysis.text !== (deidentDoc ? srcText : transcript?.utterances.map(u => u.text).join("\n")));
+  const summaryStale = $derived.by(() => {
+    if (!summaryDraft || !summaryBasis) return false;
+    try { const basis=JSON.parse(summaryBasis);return basis.text !== (basis.source === "transcript" ? transcript?.utterances.map(u=>u.text).join("\n") : srcText); }
+    catch { return true; }
+  });
+  let editRevision = 0;
+  const saveQueue = createSaveQueue();
+  let exportOpen = $state(false);
+  let exportInitial = $state("transcript");
+  let exportChoices = $state<ExportChoice[]>([]);
   let correctionInput = $state("");
-  let exportTimestamps = $state(false);
-  let includeTranscript = $state(false);
   let transcribePct = $state<number | null>(null);
 
   let analysis = $state<AnalyzeResult | null>(null);
@@ -174,17 +234,10 @@
   let meetingShowLive = $state(true); // live-text pane visible during a meeting
   let meetingShowNotes = $state(false); // notes/actions pane visible during a meeting (the "Anteckningar"-knapp)
   let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
-  let retranscribeEchoCancel = $state(true); // strip meeting audio that leaked into the mic before transcribing "Jag"
+  let retranscribeEchoCancel = $state(false); // strip meeting audio that leaked into the mic before transcribing "Jag"
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
-  // Meetings whose transcription is running in the background after stop. Each lands in Mina projekt
-  // when done (avskrift:meeting-done); the snapshot holds the workspace captured at stop time, since
-  // the live workspace is reset for the next meeting.
-  type MeetingSnapshot = {
-    id: string; title: string; createdAt: string; category: string;
-    notes: string; participants: { name: string; role: string }[]; actions: ActionItem[]; followup: string;
-  };
+  // Background work keeps its own stable project identity.
   let bgMeetings = $state<{ id: string; title: string; msg: string }[]>([]);
-  const pendingMeetings = new Map<string, MeetingSnapshot>();
 
   // ---- Meeting Q&A ("Fråga mötet") — works on any transcript ----
   let qaQuestion = $state("");
@@ -198,8 +251,9 @@
   // Asset-protocol URL so the webview can stream the local file (see tauri.conf assetProtocol). For
   // meetings, prefer the mixed track (your echo-cleaned mic + the meeting) so you hear yourself
   // without echo; fall back to the system recording when no mix exists.
+  let playbackTrack = $state("mix");
   const audioSrc = $derived(
-    meetingMixWav ? convertFileSrc(meetingMixWav) : audioPath ? convertFileSrc(audioPath) : "",
+    (playbackTrack==="mic"?meetingMicWav:playbackTrack==="system"?meetingSysWav:meetingMixWav||audioPath) ? convertFileSrc((playbackTrack==="mic"?meetingMicWav:playbackTrack==="system"?meetingSysWav:meetingMixWav||audioPath)!) : "",
   );
 
   function seekTo(t: number) {
@@ -223,20 +277,6 @@
     if (!audioEl) return;
     audioEl.paused ? audioEl.play() : audioEl.pause();
   }
-
-  // Index of the utterance currently playing (for highlight), or -1.
-  const activeUtterance = $derived.by(() => {
-    if (!transcript || !playing) return -1;
-    return transcript.utterances.findIndex((u) => currentTime >= u.start && currentTime < u.end);
-  });
-
-  // Keep the currently playing word/segment scrolled into view during playback.
-  $effect(() => {
-    if (!playing || view !== "transcript") return;
-    void currentTime; // re-run as playback advances
-    const el = document.querySelector(".word.playing, .useg.playing");
-    el?.scrollIntoView({ block: "center", behavior: "smooth" });
-  });
 
   // ---- Process state ----
   let busy = $state(false);
@@ -268,12 +308,15 @@
     // Pick a sensible default Whisper model + meeting mode for this machine (user can override).
     const savedModel = localStorage.getItem("avskrift_model");
     selectedModel = savedModel || hwDefaultModel();
+    selectedSummaryModel = localStorage.getItem('avskrift.textModel') || 'qwen2.5-3b';
     meetingLive = !isWeakHardware();
     void getVersion().then((v) => (appVersion = v)).catch(() => {});
   });
 
   // Remember the chosen Whisper model across sessions.
   $effect(() => { localStorage.setItem("avskrift_model", selectedModel); });
+
+  $effect(() => { localStorage.setItem('avskrift.textModel', selectedSummaryModel); });
 
   // Remember the last folder so new jobs are filed there automatically.
   $effect(() => { localStorage.setItem("avskrift.lastCategory", lastCategory); });
@@ -292,27 +335,28 @@
       "avskrift:meeting-utterance",
       (e) => { liveUtterances = [...liveUtterances, e.payload]; },
     );
+    const mw = listen<string>("avskrift:meeting-warning", e=>meetingWarning=e.payload);
     const ml = listen<boolean>("avskrift:meeting-lag", () => (meetingLagging = true));
     // Background-meeting progress → update the header chip so a long run doesn't look stuck.
     const mp = listen<{ token: string; msg: string }>("avskrift:meeting-progress", (e) => {
       bgMeetings = bgMeetings.map((m) => (m.id === e.payload.token ? { ...m, msg: e.payload.msg } : m));
     });
-    // A background meeting finished transcribing → save it straight to Mina projekt.
+    // A background meeting finished transcribing → save it straight to Bibliotek.
     const md = listen<any>("avskrift:meeting-done", (e) => { void onMeetingDone(e.payload); });
     const mf = listen<{ token: string; error: string }>("avskrift:meeting-failed", (e) => {
-      const snap = pendingMeetings.get(e.payload.token);
-      pendingMeetings.delete(e.payload.token);
+
       bgMeetings = bgMeetings.filter((m) => m.id !== e.payload.token);
       // The recoverable project (with its audio) was already saved at stop; leave it in History so the
       // user can re-transcribe it — don't discard it just because the auto-run failed.
       void refreshJobs();
-      error = `Mötet kunde inte transkriberas automatiskt${snap ? ` (${snap.title})` : ""} – ljudet är sparat, öppna projektet i Mina projekt och välj "Transkribera om". (${e.payload.error})`;
+      error = `Mötet kunde inte transkriberas automatiskt – ljudet är sparat, öppna projektet i Bibliotek och välj "Transkribera om". (${e.payload.error})`;
     });
     return () => {
       p.then((f) => f());
       d.then((f) => f());
       pc.then((f) => f());
       mu.then((f) => f());
+      mw.then((f)=>f());
       ml.then((f) => f());
       mp.then((f) => f());
       md.then((f) => f());
@@ -340,11 +384,16 @@
   }
 
   async function openAudio() {
+    if (busy || qaBusy || actionsBusy || recording || meetingActive || meetingBusy) return;
+    if (!(await flushCurrentSave())) return;
     const selected = await open({
       multiple: false,
       filters: [{ name: "Ljud", extensions: ["mp3", "wav", "m4a", "ogg", "flac", "webm", "mp4", "aac"] }],
     });
     if (typeof selected === "string") {
+      await newProject();
+      if (currentJobId || saveState === "error") return;
+      screen = "transcribe";
       audioPath = selected;
       audioName = selected.split(/[\\/]/).pop() ?? selected;
       transcript = null;
@@ -395,10 +444,11 @@
     if (!transcript) return "";
     let bodies = transcript.utterances.map((u) => u.text);
     if (summaryFromAnon && analysis) {
+      if (reviewStale || deidentDoc) throw new Error("Granska det aktuella transkriptet igen innan du använder avidentifierad text.");
       try {
         bodies = await invoke<string[]>("anonymized_segments", { rejected: rejectedIds() });
       } catch (e) {
-        error = String(e);
+        throw e;
       }
     }
     return transcript.utterances
@@ -455,6 +505,7 @@
 
   /** Open the "copy for AI" dialog for a text source, defaulting to the de-identified text. */
   async function openAiCopy(source: "anon" | "summary" | "transcript") {
+    if (source === "anon" && reviewStale) { error = "Underlaget har ändrats. Kör om granskningen före kopiering."; return; }
     aiSource = source;
     aiUseOriginal = false;
     error = "";
@@ -464,7 +515,7 @@
         aiDeid = true;
       } else if (source === "summary") {
         aiText = summaryDraft;
-        aiDeid = summaryFromAnon && !!analysis;
+        aiDeid = summaryAnonymized;
       } else {
         aiText = await summaryInputText();
         aiDeid = false;
@@ -529,7 +580,7 @@
   }
 
   async function runSummarize() {
-    if (!transcript || busy) return;
+    if (!transcript || busy || qaBusy || actionsBusy) return;
     if (!summaryDownloaded) {
       error = "Hämta den valda sammanfattningsmodellen först.";
       return;
@@ -538,10 +589,14 @@
     error = "";
     progressMsg = "Förbereder…";
     try {
+      if (!(await checkpointWork())) return;
+      const anonymized = summaryFromAnon && !!analysis && !deidentDoc && !reviewStale;
       const text = await summaryInputText();
-      summaryDraft = await invoke<string>("summarize", {
+      summaryDraft = await invokeWork<string>("summarize", {
         args: { text, model: selectedSummaryModel, template: selectedTemplate, customHeadings },
       });
+      summaryBasis = JSON.stringify({source:"transcript",text:transcript.utterances.map(u=>u.text).join("\n")});
+      summaryAnonymized = anonymized;
       view = "summary";
       await saveCurrentJob("transcribe");
     } catch (e) {
@@ -558,31 +613,15 @@
     showToast("Kopierat till urklipp");
   }
 
-  async function saveSummary(ext: "txt" | "docx") {
-    if (!summaryDraft) return;
-    const path = await save({
-      defaultPath: `${fileStem}_sammanfattning.${ext}`,
-      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
-    });
-    if (!path) return;
-    try {
-      await invoke("save_summary", {
-        args: { path, text: summaryDraft, includeTranscript, timestamps: exportTimestamps, speakerLabels },
-      });
-      showToast("Filen sparades");
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
   async function runTranscribe() {
     if (!audioPath || busy) return;
+    if (!(await flushCurrentSave())) return;
     busy = true;
     error = "";
     transcribePct = 0;
     progressMsg = "Startar…";
     try {
-      const t = await invoke<Transcript>("transcribe", {
+      const t = await invokeWork<Transcript>("transcribe", {
         args: {
           path: audioPath,
           model: selectedModel,
@@ -594,6 +633,12 @@
         },
       });
       transcript = t;
+      originalTranscript = null;
+      undoStack = []; editingIdx = null;
+      originalSourceText = null;
+      summaryBasis = null;
+      srcText = ""; srcPath = null; srcName = null; srcHasTables = false; srcMode = "transcript";
+      currentJobPending = false;
       // Default speaker labels: "Talare 1" etc.
       const labels: Record<string, string> = {};
       for (const u of t.utterances) {
@@ -651,9 +696,10 @@
   async function pushTranscript() {
     if (!transcript) return;
     dirty = true;
-    analysis = null; // any prior anonymisation no longer matches the edited text
+    // Retain the review against its own source; reviewStale prevents exporting it as current.
     try {
       await invoke("update_transcript", { transcript });
+      saveWorkspace();
     } catch (e) {
       error = String(e);
     }
@@ -692,6 +738,7 @@
 
   async function renameSpeaker(id: string, name: string) {
     speakerLabels[id] = name;
+    saveWorkspace();
     // Labels live in the UI; nothing to push to the transcript itself.
   }
 
@@ -752,6 +799,7 @@
   }
 
   async function openProject() {
+    if (busy || qaBusy || actionsBusy || recording || meetingActive || meetingBusy || !(await flushCurrentSave())) return;
     const path = await open({ multiple: false, filters: [{ name: "Avskrift-projekt", extensions: ["avskrift"] }] });
     if (typeof path !== "string") return;
     try {
@@ -760,6 +808,16 @@
         { path },
       );
       transcript = p.transcript;
+      originalTranscript = null; originalSourceText = null; summaryBasis = null;
+      undoStack = []; editingIdx = null; srcMode = "transcript";
+      srcText = ""; srcPath = null; srcName = null; srcHasTables = false;
+      meetingSysWav = null; meetingMicWav = null; meetingMixWav = null;
+      currentJobId = null;
+      currentJobTitle = "";
+      currentJobCreatedAt = null;
+      currentJobType = "transcribe";
+      currentJobPending = false;
+      resetWorkspace();
       speakerLabels = p.speakerLabels ?? {};
       audioPath = p.audioPath ?? null;
       audioName = audioPath ? audioPath.split(/[\\/]/).pop() ?? audioPath : "projekt";
@@ -769,6 +827,8 @@
       view = "transcript";
       // Sync the backend transcript so export uses this project, not a stale one.
       await invoke("update_transcript", { transcript }).catch(() => {});
+      await saveCurrentJob("transcribe");
+      screen = "transcribe";
       showToast("Projektet öppnades");
     } catch (e) {
       error = String(e);
@@ -777,16 +837,19 @@
 
   async function runAnonymize() {
     if (!transcript || busy) return;
+    if (!(await checkpointWork())) return;
     busy = true;
     error = "";
     progressMsg = "Avidentifierar…";
     try {
       const texts = transcript.utterances.map((u) => u.text);
-      analysis = await invoke<AnalyzeResult>("anonymize", {
+      analysis = await invokeWork<AnalyzeResult>("anonymize", {
         args: { texts, enabled: ALL_KEYS, terms, useAi },
       });
       rejected = new Set();
       view = "review";
+      deidentDoc = false;
+      await saveCurrentJob(currentJobType);
     } catch (e) {
       error = String(e);
     } finally {
@@ -799,6 +862,7 @@
     selectedProfile = id;
     const next = profileMap(id);
     for (const k of ALL_KEYS) enabled[k] = next[k];
+    saveWorkspace();
   }
 
   function isActive(id: number): boolean {
@@ -819,6 +883,7 @@
     const next = new Set(rejected);
     next.has(id) ? next.delete(id) : next.add(id);
     rejected = next;
+    saveWorkspace();
   }
   function rejectedIds(): number[] {
     return analysis ? analysis.spans.filter((s) => !isActive(s.id)).map((s) => s.id) : [];
@@ -877,6 +942,7 @@
       });
       rejected = new Set(); // span ids were renumbered → reset (safe: defaults to fully masked)
       maskTarget = null;
+      saveWorkspace();
     } catch (e) {
       error = String(e);
     }
@@ -899,32 +965,8 @@
   const fileStem = $derived((audioName ?? "transkript").replace(/\.[^.]+$/, ""));
   const hasWords = $derived(!!transcript?.utterances.some((u) => u.words && u.words.length > 0));
 
-  async function exportAs(ext: "txt" | "srt" | "vtt" | "docx", anonymize: boolean, wordLevel = false) {
-    if (!transcript) return;
-    const suffix = anonymize ? "_avidentifierad" : wordLevel ? "_ord" : "";
-    const path = await save({
-      defaultPath: `${fileStem}${suffix}.${ext}`,
-      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
-    });
-    if (!path) return;
-    try {
-      await invoke("export_transcript", {
-        args: {
-          path,
-          anonymize,
-          rejected: anonymize ? rejectedIds() : [],
-          speakerLabels,
-          wordLevel,
-          timestamps: exportTimestamps,
-        },
-      });
-      showToast("Filen sparades");
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
   async function copyAnon() {
+    if (reviewStale) { error="Underlaget har ändrats. Kör om granskningen före export."; return; }
     if (!analysis || !transcript) return;
     try {
       const segs = await invoke<string[]>("anonymized_segments", { rejected: rejectedIds() });
@@ -960,8 +1002,15 @@
   }
 
   async function startRecording() {
-    if (recording) return;
+    if (recording || busy || qaBusy || actionsBusy || meetingActive || meetingBusy) return;
+    if (dictation && dictation.phase !== "idle") {
+      error = "Stoppa diktatet innan du startar en ljudinspelning.";
+      return;
+    }
     error = "";
+    await newProject();
+    if (currentJobId || saveState === "error") return;
+    screen = "transcribe";
     try {
       recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recCtx = new AudioContext();
@@ -1056,210 +1105,68 @@
   }
 
   async function startMeeting() {
-    if (meetingActive || meetingBusy) return;
-    error = "";
+    if (soundTestBusy || meetingActive || meetingBusy || busy || qaBusy || actionsBusy) return;
+    if (!(await flushCurrentSave())) return;
+    const id=crypto.randomUUID(), now=new Date().toISOString();
+    const title=meetingName.trim()||`Möte ${fmtJobDate(now)}`;
+    meetingBusy=true;error='';
     try {
-      meetingLagging = false;
-      await invoke("start_meeting", { args: { model: selectedModel, language, live: meetingLive } });
-      resetWorkspace(); // start the meeting's notes/actions clean (saved together when you stop)
-      meetingSysWav = null;
-      meetingMicWav = null;
-      meetingMixWav = null;
-      currentJobId = null; // a new meeting is a new project
-      currentJobTitle = "";
-      currentJobCreatedAt = null;
-      currentCategory = lastCategory;
-      meetingShowLive = true;
-      meetingShowNotes = false;
-      meetingActive = true;
-      meetingElapsed = 0;
-      liveUtterances = [];
-      meetingTimer = setInterval(() => (meetingElapsed += 1), 1000);
-    } catch (e) {
-      error = "Kunde inte starta inspelningen: " + String(e);
-    }
+      const job={version:2,id,jobType:'meeting',title,createdAt:now,updatedAt:now,category:currentCategory||lastCategory,
+        notes:'',agenda:meetingAgenda,participants:meetingPeople.split("\n").filter(line=>line.trim()).map(line=>{const [name,...roles]=line.split(";");return {name:name.trim(),role:roles.join(";").trim()};}),summaryTemplate:selectedTemplate,actions:followupActions.filter(a=>!excludedFollowup.includes(a.id!)),followupFrom,transcriptionPending:true};
+      const ack=await invoke<{micWavPath:string;systemWavPath:string}>('start_meeting',{args:{model:selectedModel,language,live:meetingLive,job,micDevice:micDevice||null,systemDevice:systemDevice||null}});
+      resetWorkspace();
+      transcript={utterances:[],language,model:selectedModel,diarized:true};originalTranscript=null;originalSourceText=null;summaryBasis=null;
+      undoStack=[];editingIdx=null;analysis=null;summaryDraft='';srcText='';srcPath=null;srcName=null;srcHasTables=false;
+      audioPath=ack.systemWavPath;audioName=title;meetingSysWav=ack.systemWavPath;meetingMicWav=ack.micWavPath;meetingMixWav=null;
+      currentJobId=id;currentJobTitle=title;currentJobCreatedAt=now;currentJobType='meeting';currentJobPending=true;
+      agenda=meetingAgenda;actions=job.actions;participants=job.participants;followupFrom=job.followupFrom;meetingWarning='';channelLevels=[];meetingLagging=false;
+      meetingShowLive=true;meetingShowNotes=true;meetingActive=true;meetingElapsed=0;liveUtterances=[];saveState='saved';savedAt=now;dirty=false;
+      meetingTimer=setInterval(()=>(meetingElapsed+=1),1000);
+      meetingName='';meetingAgenda='';meetingPeople='';followupActions=[];
+      void refreshJobs();
+    }catch(e){error='Kunde inte starta inspelningen: '+String(e);}
+    finally{meetingBusy=false;}
   }
 
   async function stopMeeting() {
-    if (!meetingActive) return;
-    meetingActive = false;
-    if (meetingTimer) clearInterval(meetingTimer);
-    meetingBusy = true; // brief: only while the capture streams are stopped, not the transcription
-    progressMsg = "Avslutar inspelning…";
-
-    // Snapshot this meeting's workspace NOW. Transcription runs in the background and the live
-    // workspace is reset for the next meeting, so notes/actions must be captured before that.
-    const token = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-    const snap: MeetingSnapshot = {
-      id: token,
-      title: `Möte ${fmtJobDate(new Date().toISOString())}`,
-      createdAt: new Date().toISOString(),
-      category: currentCategory || lastCategory,
-      notes,
-      participants: [...participants],
-      actions: [...actions],
-      followup,
-    };
-    pendingMeetings.set(token, snap);
-    bgMeetings = [...bgMeetings, { id: token, title: snap.title, msg: "Transkriberar…" }];
-
+    if(!meetingActive||meetingBusy||!currentJobId)return;
+    meetingBusy=true;
+    await flushCurrentSave();
+    const token=currentJobId;
+    bgMeetings=[...bgMeetings,{id:token,title:currentJobTitle,msg:'Transkriberar…'}];
     try {
-      // Returns once the streams are stopped, with the source-WAV paths. Transcript + mix come later
-      // via avskrift:meeting-done (onMeetingDone saves the result then). If THIS call throws, no
-      // background run was started, so we drop the tracking in the catch.
-      const ack = await invoke<{ micWavPath: string; systemWavPath: string; durationS: number }>("stop_meeting", {
-        args: { model: selectedModel, language, token },
-      });
-      showToast("Mötet transkriberas i bakgrunden – det dyker upp i Mina projekt när det är klart.");
-      // Crash-safe: persist a RECOVERABLE project right away (audio + notes, transcription pending), so a
-      // crash before the background run finishes still leaves the meeting in History to re-transcribe.
-      // A failure HERE must NOT discard the snapshot: the background run is already underway, and
-      // onMeetingDone will still save the finished transcript (falling back to this snapshot).
-      try {
-        await saveMeetingJob(snap, {
-          transcript: { utterances: [], language, model: selectedModel, diarized: true },
-          systemWavPath: ack.systemWavPath,
-          micWavPath: ack.micWavPath,
-          mixWavPath: null,
-          pending: true,
-        });
-        void refreshJobs();
-      } catch (e) {
-        error = "Kunde inte spara mötesutkastet: " + String(e) + " (transkriberingen fortsätter i bakgrunden).";
+      await invoke('stop_meeting',{args:{model:selectedModel,language,token}});
+      meetingActive=false;if(meetingTimer)clearInterval(meetingTimer);
+      view='overview';screen='transcribe';
+      showToast('Inspelningen är sparad. Du kan fortsätta anteckna medan transkriptet blir klart.');
+    }catch(e){error=String(e);bgMeetings=bgMeetings.filter(m=>m.id!==token);}
+    finally{meetingBusy=false;transcribePct=null;progressMsg='';void refreshJobs();}
+  }
+
+  async function onMeetingDone(payload:any) {
+    const token=payload?.token;if(!token)return;
+    bgMeetings=bgMeetings.filter(m=>m.id!==token);
+    try {
+      // Native finalisation atomically updates only audio/text. It cannot overwrite notes or names.
+      if(currentJobId===token){
+        const job=await invoke<any>('open_job',{id:token});
+        if(currentJobId!==token)return;
+        transcript=payload.transcript;currentJobPending=false;meetingMixWav=payload.mixWavPath??null;
+        originalTranscript=job.originalTranscript??payload.transcript;
+        meetingWarning=job.meetingWarning??job.meetingError??'';
+        speakerLabels=Object.fromEntries((transcript?.utterances??[]).filter(u=>u.speaker).map(u=>[u.speaker!,u.speaker!]));
+        await invoke('update_transcript',{transcript});
       }
-    } catch (e) {
-      error = String(e);
-      pendingMeetings.delete(token);
-      bgMeetings = bgMeetings.filter((m) => m.id !== token);
-    } finally {
-      meetingBusy = false;
-      transcribePct = null;
-      progressMsg = "";
-      // Reset for a fresh meeting — the finished one saves itself to Mina projekt when its event lands.
-      resetWorkspace();
-      liveUtterances = [];
-      meetingLagging = false;
-      meetingSysWav = meetingMicWav = meetingMixWav = null;
-      currentJobId = null;
-      currentJobTitle = "";
-      currentJobCreatedAt = null;
-      meetingElapsed = 0;
-    }
+      await refreshJobs();await loadAllActions();showToast('Mötets transkript är klart.');
+    }catch(e){error='Kunde inte uppdatera mötesvyn: '+String(e);}
   }
 
-  /** Build + save a meeting project (used both for the recoverable stub at stop and the final update
-   *  when transcription completes — same id, so the second call overwrites the first). */
-  async function saveMeetingJob(
-    snap: MeetingSnapshot,
-    opts: { transcript: any; systemWavPath: string | null; micWavPath: string | null; mixWavPath: string | null; pending: boolean },
-  ) {
-    // Speaker ids are already "Jag" / "Mötet"; map each to itself so the rename UI lists them.
-    const labels: Record<string, string> = {};
-    for (const u of opts.transcript?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
-    const job = {
-      version: 1,
-      id: snap.id,
-      jobType: "meeting",
-      title: snap.title,
-      createdAt: snap.createdAt,
-      updatedAt: new Date().toISOString(),
-      transcript: opts.transcript,
-      speakerLabels: labels,
-      audioPath: opts.systemWavPath,
-      micWavPath: opts.micWavPath,
-      mixWavPath: opts.mixWavPath,
-      transcriptionPending: opts.pending,
-      category: snap.category,
-      notes: snap.notes,
-      participants: snap.participants,
-      actions: snap.actions,
-      followup: snap.followup,
-    };
-    await invoke("save_job", { job });
-  }
-
-  /** A background meeting finished transcribing: save the real transcript + mix and clear the pending
-   *  flag. Merges onto the CURRENT on-disk job so notes/actions edited while it transcribed are kept;
-   *  falls back to the stop-time snapshot if the recoverable stub was never written. Never steals
-   *  focus, but refreshes the view if the user happens to have this meeting open. */
-  async function onMeetingDone(payload: any) {
-    const token = payload?.token;
-    if (!token) return;
-    const snap = pendingMeetings.get(token);
-    bgMeetings = bgMeetings.filter((m) => m.id !== token);
-    try {
-      // Use the on-disk job as the authoritative workspace source when it exists (it carries any edits
-      // made while the meeting was pending); fall back to the stop-time snapshot if the stub was never
-      // written. Whichever it is, it's the single source for notes/actions/etc. so a cleared field stays
-      // cleared. The transcript + audio paths always come from the just-finished run (payload).
-      let base: any = null;
-      try { base = await invoke<any>("open_job", { id: token }); } catch { base = null; }
-      const ws = base ?? snap;
-      if (!ws) return; // no on-disk job and no snapshot — bail without clobbering anything
-      const t = payload.transcript;
-      const labels: Record<string, string> = {};
-      for (const u of t?.utterances ?? []) if (u.speaker && !(u.speaker in labels)) labels[u.speaker] = u.speaker;
-      const job = {
-        version: 1,
-        id: token,
-        jobType: "meeting",
-        title: ws.title || `Möte ${fmtJobDate(new Date().toISOString())}`,
-        createdAt: ws.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        transcript: t,
-        speakerLabels: labels,
-        audioPath: payload.systemWavPath ?? ws.audioPath ?? null,
-        micWavPath: payload.micWavPath ?? ws.micWavPath ?? null,
-        mixWavPath: payload.mixWavPath ?? null,
-        transcriptionPending: false,
-        category: ws.category ?? "",
-        notes: ws.notes ?? "",
-        participants: ws.participants ?? [],
-        actions: ws.actions ?? [],
-        followup: ws.followup ?? "",
-      };
-      await invoke("save_job", { job });
-      pendingMeetings.delete(token); // only after a successful save, so a transient failure can retry
-      // If the user has this meeting open, refresh the live view so it doesn't keep showing the empty
-      // stub + "ej klar"-banner for a meeting that just completed.
-      if (currentJobId === token) {
-        transcript = t;
-        speakerLabels = labels;
-        audioPath = job.audioPath;
-        meetingSysWav = job.audioPath;
-        meetingMicWav = job.micWavPath;
-        meetingMixWav = job.mixWavPath;
-        currentJobPending = false;
-        await invoke("update_transcript", { transcript: t }).catch(() => {});
-      }
-      await refreshJobs();
-      await loadAllActions();
-      showToast(`Möte klart: ${job.title}`);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  /** Ask a free-text question about the current transcript (answer strictly from it). */
-  async function askMeeting() {
-    const q = qaQuestion.trim();
-    if (!q || qaBusy || !transcript) return;
-    qaBusy = true;
-    error = "";
-    progressMsg = "Tänker…";
-    try {
-      const text = await summaryInputText();
-      const a = await invoke<string>("ask_transcript", {
-        args: { question: q, transcriptText: text, model: selectedSummaryModel },
-      });
-      qaHistory = [...qaHistory, { q, a }];
-      qaQuestion = "";
-    } catch (e) {
-      error = String(e);
-    } finally {
-      qaBusy = false;
-      progressMsg = "";
-    }
+  async function askMeeting(){
+    if(!qaQuestion.trim()||!transcript||busy||qaBusy||actionsBusy)return;
+    const question=qaQuestion.trim(),id=currentJobId;
+    qaBusy=true;error='';
+    try{const text=await summaryInputText();const answer=await invokeWork<string>('ask_transcript',{args:{question,transcriptText:text,model:selectedSummaryModel}});if(currentJobId===id){qaHistory=[...qaHistory,{q:question,a:answer}];qaQuestion='';}}
+    catch(e){error=String(e);}finally{qaBusy=false;progressMsg='';}
   }
 
   /** Split the meeting's "Mötet" utterances into distinct speakers via diarisation of the system WAV. */
@@ -1301,6 +1208,7 @@
    *  better than the live result (pick a larger model for best quality). Resets to Jag/Mötet. */
   async function retranscribeMeeting() {
     if (!meetingMicWav || !meetingSysWav || busy || !selectedDownloaded) return;
+    if (!(await checkpointWork())) return;
     // Capture which meeting we're working on. This is a multi-minute async job; if the user opens a
     // different project meanwhile, the result must NOT be saved onto that other project (which would
     // swap transcripts between meetings). Abort instead.
@@ -1345,8 +1253,9 @@
       dirty = false;
       undoStack = [];
       editingIdx = null;
-      await saveCurrentJob("meeting");
       currentJobPending = false; // now it has a transcript — clear the "unfinished" banner/badge
+      meetingWarning=t.utterances.some(u=>u.speaker==='Jag')?'':'Ingen mikrofontext hittades. Lyssna på Min mikrofon och kontrollera inspelningen.';
+      await saveCurrentJob("meeting");
       showToast(retranscribeDiarize ? "Mötet omtranskriberat · röster separerade" : "Mötet transkriberat om");
     } catch (e) {
       error = String(e);
@@ -1403,19 +1312,6 @@
     return `${m}:${sec.toString().padStart(2, "0")}`;
   }
 
-  // Group consecutive utterances by the same speaker for a cleaner transcript view.
-  type GroupItem = { speaker: string | null; start: number; items: { idx: number; u: Utterance }[] };
-  const groups = $derived.by(() => {
-    if (!transcript) return [] as GroupItem[];
-    const out: GroupItem[] = [];
-    transcript.utterances.forEach((u, idx) => {
-      const last = out[out.length - 1];
-      if (last && last.speaker === u.speaker) last.items.push({ idx, u });
-      else out.push({ speaker: u.speaker, start: u.start, items: [{ idx, u }] });
-    });
-    return out;
-  });
-
   /** Distinct speaker ids in the transcript, for the per-utterance "byt talare" dropdown. */
   const speakerOptions = $derived.by(() => {
     const seen: string[] = [];
@@ -1426,9 +1322,29 @@
   // ============================================================================
   // Task-oriented screens, standalone de-identify/summarize, and jobs history
   // ============================================================================
-  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history" | "tasks";
+  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history" | "tasks" | "dictation";
+  let dictation = $state<DictationSnapshot | null>(null);
+  function updateDictation(next: DictationSnapshot) {
+    if (!dictation || next.revision >= dictation.revision) dictation = next;
+  }
+  onMount(() => {
+    let disposed = false;
+    const event = listen<DictationSnapshot>("avskrift:dictation", e => updateDictation(e.payload));
+    const close = listen("avskrift:dictation-close-blocked", () => {
+      screen = "dictation";
+      error = "Stoppa eller avbryt diktatet innan du stänger AVskrift.";
+    });
+    void event.then(() => invoke<DictationSnapshot>("dictation_snapshot")).then(s => {
+      if (!disposed) updateDictation(s);
+    }).catch(e => { if (!disposed) error = String(e); });
+    return () => { disposed = true; void event.then(f => f()); void close.then(f => f()); };
+  });
   let screen = $state<Screen>("home");
+  const transcriptReading = $derived(screen === "transcribe" && !!transcript && view === "transcript");
+  const controlsCollapsed = $derived(["overview","notes","actions"].includes(view)&&screen==="transcribe" ? true : transcriptReading ? !transcriptToolsOpen : sidebarCollapsed);
+
   function go(s: Screen) {
+    if(currentJobId&&!meetingActive&&screen==="transcribe")saveWorkspace();
     screen = s;
     error = "";
     if (s === "history") {
@@ -1438,24 +1354,33 @@
       void searchJobs();
     }
     // The Åtaganden overview and the Home card both read the cross-project action list — keep it fresh.
-    if (s === "tasks" || s === "home") void loadAllActions();
+    if (s === "tasks" || s === "home") {void loadAllActions();void refreshJobs();}
   }
 
   /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
-  function tab(v: "transcript" | "review" | "summary" | "qa" | "notes") {
+  function tab(v: "transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions") {
     view = v;
+    if(currentJobId)saveWorkspace();
     screen = "transcribe";
     error = "";
   }
 
   /** Clear the current working project and return Home for a fresh start. Everything is auto-saved
    *  in Historik, so nothing is lost — reopen a job there to resume it. */
-  function newProject() {
+  async function newProject() {
     // Don't wipe a capture/job that's still running; just navigate home.
-    if (recording || meetingActive || meetingBusy || busy) {
+    if (recording || meetingActive || meetingBusy || busy || qaBusy || actionsBusy) {
       go("home");
       return;
     }
+    if (!(await flushCurrentSave())) return;
+    saveState = "idle";
+    saveError = "";
+    savedAt = "";
+    originalTranscript = null;
+    originalSourceText = null;
+    undoStack = [];
+    summaryBasis = null;
     transcript = null;
     analysis = null;
     summaryDraft = "";
@@ -1513,6 +1438,7 @@
       srcText = info.text;
       srcHasTables = info.hasTables;
       srcMode = "file";
+      saveWorkspace();
     } catch (e) {
       error = String(e);
     }
@@ -1523,11 +1449,12 @@
     srcName = null;
     srcHasTables = false;
     if (srcMode === "file") srcMode = "paste";
+    saveWorkspace();
   }
 
   // ---- Standalone de-identify (pasted text or a loaded doc; sets engine.last) ----
   async function runDeidentify() {
-    if (busy) return;
+    if (busy || qaBusy || actionsBusy) return;
     if (srcMode === "transcript") {
       deidentDoc = false;
       await runAnonymize();
@@ -1539,14 +1466,16 @@
       error = "Klistra in text eller välj en fil först.";
       return;
     }
+    if (!(await checkpointWork())) return;
+    if (originalSourceText === null) originalSourceText = srcText;
     busy = true;
     error = "";
     progressMsg = "Avidentifierar…";
     try {
-      analysis = await invoke<AnalyzeResult>("analyze_document", {
+      analysis = await invokeWork<AnalyzeResult>("analyze_document", {
         args: {
-          text: srcMode === "file" ? null : srcText,
-          path: srcMode === "file" ? srcPath : null,
+          text: srcText,
+          path: null,
           enabled: ALL_KEYS,
           terms,
           useAi,
@@ -1564,6 +1493,7 @@
     }
   }
   async function copyAnonDoc() {
+    if (reviewStale) { error="Underlaget har ändrats. Kör om granskningen före export."; return; }
     try {
       const text = await invoke<string>("copy_anonymized", { rejected: rejectedIds() });
       await navigator.clipboard.writeText(text);
@@ -1572,23 +1502,9 @@
       error = String(e);
     }
   }
-  async function exportAnonDoc(ext: "txt" | "docx") {
-    const path = await save({
-      defaultPath: `${(srcName ?? "text").replace(/\.[^.]+$/, "")}_avidentifierad.${ext}`,
-      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
-    });
-    if (!path) return;
-    try {
-      await invoke("export_anonymized", { args: { path, rejected: rejectedIds() } });
-      showToast("Filen sparades");
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
   // ---- Standalone summarize ----
-  async function doSummarize(text: string) {
-    if (busy) return;
+  async function doSummarize(text: string, anonymized = false) {
+    if (busy || qaBusy || actionsBusy) return;
     if (!summaryDownloaded) {
       error = "Hämta den valda sammanfattningsmodellen först.";
       return;
@@ -1601,9 +1517,14 @@
     error = "";
     progressMsg = "Förbereder…";
     try {
-      summaryDraft = await invoke<string>("summarize", {
+      if (!(await checkpointWork())) return;
+      if (srcMode !== "transcript" && originalSourceText === null) originalSourceText = srcText;
+      const basis = JSON.stringify({source:srcMode === "transcript" ? "transcript" : "document",text:srcMode === "transcript" ? transcript?.utterances.map(u=>u.text).join("\n") : srcText});
+      summaryDraft = await invokeWork<string>("summarize", {
         args: { text, model: selectedSummaryModel, template: selectedTemplate, customHeadings },
       });
+      summaryBasis = basis;
+      summaryAnonymized = anonymized;
       view = "summary";
     } catch (e) {
       error = String(e);
@@ -1613,13 +1534,17 @@
     }
   }
   async function runSummarizeSource() {
-    const text = srcMode === "transcript" ? await summaryInputText() : srcText;
-    await doSummarize(text);
-    if (summaryDraft) await saveCurrentJob("summarize");
+    if (busy || qaBusy || actionsBusy) return;
+    try {
+      const anonymized = srcMode === 'transcript' && summaryFromAnon && !!analysis && !deidentDoc && !reviewStale;
+      const text = srcMode === "transcript" ? await summaryInputText() : srcText;
+      await doSummarize(text, anonymized);
+      if (summaryDraft) await saveCurrentJob("summarize");
+    } catch(e) { error = String(e); }
   }
 
   // ---- Jobs / history (auto-saved past work) ----
-  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number; actionsTotal: number; actionsDone: number; hasNotes: boolean; transcriptionPending: boolean };
+  type JobMeta = { id: string; title: string; jobType: string; category: string; createdAt: string; updatedAt: string; audioBytes: number; actionsTotal: number; actionsDone: number; hasNotes: boolean; transcriptionPending: boolean; pinned?:boolean; archived?:boolean; lastOpened?:string; followup?:string };
   let allJobs = $state<JobMeta[]>([]);
   let recentJobs = $state<JobMeta[]>([]);
   let historyJobs = $state<JobMeta[]>([]); // what the History screen shows (search-filtered)
@@ -1648,7 +1573,61 @@
   let currentJobType = $state<"transcribe" | "meeting" | "deidentify" | "summarize">("transcribe");
 
   // ---- Meeting workspace (B): notes, participants, actions, follow-up ----
-  type ActionItem = { text: string; done: boolean; assignee: string; due: string };
+  type ActionItem = { source?: {quote:string;start:number|null;jobId?:string}; id?:string; text: string; done: boolean; assignee: string; due: string };
+  let meetingName = $state("");
+  let meetingAgenda = $state("");
+  let agenda = $state("");
+  let bookmarks = $state<{id:string;time:number;text:string}[]>([]);
+  let decisions = $state<{id:string;text:string;quote?:string;start?:number|null}[]>([]);
+  let decisionText = $state("");
+  let meetingWarning = $state("");
+  let playbackRate = $state(1);
+  let devices = $state<{id:string;name:string;source:string}[]>([]);
+  let micDevice = $state(""); let systemDevice = $state("");
+  let channelLevels = $state<{name:string;peak:number;active:boolean;error?:string}[]>([]);
+  let titleInput=$state<HTMLInputElement>();
+  let titleEditing = $state(false); let titleDraft = $state("");
+  let renameTarget = $state<JobMeta|null>(null);
+  let renameBusy = $state(false);
+  let libraryFilter = $state("active"); let libraryType = $state("");
+  let meetingPreset = $state("");
+  let presetName = $state("");
+  let meetingPresets = $state<{name:string;agenda:string;people?:string;summaryTemplate?:string}[]>([]);
+  let meetingPeople=$state("");
+  let followupFrom = $state<string|null>(null);
+  let followupActions = $state<ActionItem[]>([]);
+  let excludedFollowup = $state<string[]>([]);
+  let meetingDevicesError = $state("");
+  let soundTestBusy = $state(false); let soundTestResult = $state('');
+  async function testMeetingSound(){if(soundTestBusy||meetingActive)return;soundTestBusy=true;soundTestResult='Tala nu och spela upp ljud från mötet. Mäter i tre sekunder…';try{const levels=await invoke<typeof channelLevels>('test_meeting_audio',{micDevice:micDevice||null,systemDevice:systemDevice||null});soundTestResult=levels.map((l,i)=>(i===0?'Mikrofon: ':'Mötesljud: ')+(l.peak>0.0003?'ljud registrerat':'ingen nivå registrerad')).join('. ')+'. Testet mäter ljudnivå, inte taligenkänning.';}catch(e){soundTestResult=String(e);}finally{soundTestBusy=false;}}
+  const listedJobs = $derived(historyJobs.filter(j=>(libraryFilter==='archived'?j.archived:!j.archived) && (libraryFilter!=='pinned'||j.pinned) && (!libraryType||j.jobType===libraryType)));
+  const continuedJobs = $derived([...allJobs.filter(j=>!j.archived)].sort((a,b)=>Number(!!b.pinned)-Number(!!a.pinned)||(b.lastOpened||b.updatedAt).localeCompare(a.lastOpened||a.updatedAt)).slice(0,6));
+  const followupJobs = $derived(allJobs.filter(j=>!j.archived&&j.followup).sort((a,b)=>(a.followup||'').localeCompare(b.followup||'')).slice(0,5));
+  async function loadMeetingDevices(){try{const result=await invoke<typeof devices>('meeting_devices');devices=Array.isArray(result)?result:[];meetingDevicesError='';}catch(e){meetingDevicesError=String(e);}}
+  $effect(()=>{if(screen==='meeting'&&!meetingActive)void loadMeetingDevices();});
+  $effect(()=>{
+    if(!meetingActive)return;
+    let stopped=false,reading=false;
+    const timer=setInterval(async()=>{if(reading)return;reading=true;try{const next=await invoke<typeof channelLevels>('meeting_levels');if(!stopped){channelLevels=next;const fault=next.find(l=>l.error)?.error;if(fault)meetingWarning=fault;}}catch{}finally{reading=false;}},300);
+    return ()=>{stopped=true;clearInterval(timer);};
+  });
+  onMount(()=>{try{meetingPresets=JSON.parse(localStorage.getItem('avskrift.meetingPresets')||'[]');}catch{}});
+  function saveMeetingPreset(){if(!presetName.trim())return;meetingPresets=[...meetingPresets.filter(p=>p.name!==presetName.trim()),{name:presetName.trim(),agenda:meetingAgenda,people:meetingPeople,summaryTemplate:selectedTemplate}];localStorage.setItem('avskrift.meetingPresets',JSON.stringify(meetingPresets));meetingPreset=presetName.trim();presetName='';}
+  async function listenActionSource(source:{quote:string;start:number|null;jobId?:string}){if(source.jobId&&source.jobId!==currentJobId){await openJobById(source.jobId);if(currentJobId!==source.jobId)return;}tab('transcript');await tick();if(source.start!==null)seekTo(source.start);}
+  function markMeetingTime(){bookmarks=[...bookmarks,{id:crypto.randomUUID(),time:meetingActive?meetingElapsed:currentTime,text:'Markering'}];saveWorkspace();}
+  function addDecision(){if(!decisionText.trim())return;decisions=[...decisions,{id:crypto.randomUUID(),text:decisionText.trim()}];decisionText='';saveWorkspace();}
+  function addGroundedDecision(text:string,source:{quote:string;start:number|null}){decisions=[...decisions,{id:crypto.randomUUID(),text,...source}];saveWorkspace();}
+  async function prepareFollowup(){if(!(await flushCurrentSave()))return;meetingName='Uppföljning: '+currentJobTitle;meetingAgenda=agenda;meetingPeople=participants.map(p=>p.name+(p.role?'; '+p.role:'')).join('\n');followupActions=actions.filter(a=>!a.done).map(a=>({...a,id:crypto.randomUUID(),source:a.source?{...a.source,jobId:a.source.jobId??currentJobId??undefined}:undefined}));excludedFollowup=[];followupFrom=currentJobId;go('meeting');}
+  async function organize(j:JobMeta,kind:'pinned'|'archived'){try{await invoke('organize_job',{id:j.id,[kind]:!j[kind]});await reloadJobs();}catch(e){error=String(e);}}
+  async function editTitle(j?:JobMeta){renameTarget=j??null;titleDraft=j?.title??currentJobTitle;titleEditing=true;await tick();titleInput?.focus();titleInput?.select();}
+  async function saveTitle(){
+    const title=titleDraft.trim();if(!title||renameBusy)return;renameBusy=true;
+    try{
+      if(!renameTarget||renameTarget.id===currentJobId){currentJobTitle=title;editRevision++;if(!(await saveCurrentJob(currentJobType)))return;}
+      else await invoke('update_job_meta',{id:renameTarget.id,title,category:renameTarget.category});
+      titleEditing=false;await reloadJobs();
+    }catch(e){error=String(e);}finally{renameBusy=false;}
+  }
   let notes = $state("");
   let participants = $state<{ name: string; role: string }[]>([]);
   let actions = $state<ActionItem[]>([]);
@@ -1908,22 +1887,52 @@
     newTaskTarget = taskFolder ? "folder:" + taskFolder : "standalone";
   });
 
+  let libraryRefreshing = $state(false), libraryLoading = $state(false), libraryError = $state(''), libraryNotice = $state('');
+  let jobSearchBusy = $state(false), jobSearchError = $state('');
+  let listRevision = 0, searchRevision = 0;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
   async function refreshJobs() {
+    const revision = ++listRevision;
+    libraryLoading = true; libraryError = '';
     try {
-      allJobs = await invoke<JobMeta[]>("list_jobs");
-      recentJobs = allJobs.slice(0, 6);
-    } catch {
-      /* history is best-effort */
-    }
+      const result = await invoke<JobMeta[]>('list_jobs');
+      if(revision === listRevision) { allJobs = result; recentJobs = result.slice(0,6); }
+    } catch(e) {
+      if(revision === listRevision) libraryError = `Biblioteket kunde inte läsas. ${String(e)}`;
+    } finally { if(revision === listRevision) libraryLoading = false; }
   }
 
-  /** Load the History list, honouring the current full-text search query (matches title + content). */
+  function scheduleJobSearch() {
+    clearTimeout(searchTimer);
+    ++searchRevision; // Invalidate already-running searches immediately, including their status.
+    jobSearchBusy = true; jobSearchError = ''; libraryNotice = '';
+    searchTimer = setTimeout(() => void searchJobs(), 250);
+  }
+
   async function searchJobs() {
+    clearTimeout(searchTimer);
+    if(libraryRefreshing) return; // The refresh below runs the latest query when ready.
+    const revision = ++searchRevision;
+    const query = jobSearch;
+    jobSearchBusy = true; jobSearchError = '';
     try {
-      historyJobs = await invoke<JobMeta[]>("search_jobs", { query: jobSearch });
-    } catch {
-      /* best-effort */
-    }
+      const result = await invoke<JobMeta[]>('search_jobs', {query});
+      if(revision === searchRevision && query === jobSearch) historyJobs = result;
+    } catch(e) {
+      if(revision === searchRevision && query === jobSearch) jobSearchError = `Sökningen kunde inte slutföras. ${String(e)}`;
+    } finally { if(revision === searchRevision) jobSearchBusy = false; }
+  }
+
+  async function refreshLibrary() {
+    if(libraryRefreshing) return;
+    libraryRefreshing = true; libraryNotice = ''; libraryError = ''; jobSearchError = '';
+    ++searchRevision; clearTimeout(searchTimer); selectedJobIds = [];
+    try {
+      await invoke<number>('refresh_library');
+      await refreshJobs();
+      if(!libraryError) libraryNotice = 'Biblioteket är uppdaterat. Dina projekt och versioner är kvar.';
+    } catch(e) { libraryError = `Biblioteket kunde inte uppdateras. ${String(e)}`; }
+    finally { libraryRefreshing = false; await searchJobs(); }
   }
 
   /** Refresh the home recent strip and (when open) the History list after a job mutation. */
@@ -2155,8 +2164,8 @@
   /** Jobs in the right pane: those in the selected folder (recursively); "" = all. */
   const jobsInSelected = $derived(
     selectedFolder
-      ? historyJobs.filter((j) => j.category === selectedFolder || j.category.startsWith(selectedFolder + "/"))
-      : historyJobs,
+      ? listedJobs.filter((j) => j.category === selectedFolder || j.category.startsWith(selectedFolder + "/"))
+      : listedJobs,
   );
 
   /** Recursive job count per folder path (a job in Elever/Kalle counts for Elever too). */
@@ -2278,7 +2287,10 @@
   }
 
   async function saveCurrentJob(type: "transcribe" | "deidentify" | "summarize" | "meeting") {
+    if (restoringJob) return true;
     const now = new Date().toISOString();
+    // Keep an existing work's identity while using its local review/summary tabs.
+    type = currentJobId ? currentJobType : type;
     currentJobType = type;
     if (!currentJobId) {
       currentJobId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
@@ -2287,14 +2299,26 @@
     // Derive the title once and keep it stable — so re-transcribing or reopening a meeting doesn't
     // rename the project (which made it look like a brand-new/second project).
     if (!currentJobTitle) currentJobTitle = deriveTitle(type);
+    if (!originalTranscript?.utterances.length && transcript?.utterances.length) originalTranscript = JSON.parse(JSON.stringify(transcript));
     const job = {
-      version: 1,
+      version: 2,
+      agenda, bookmarks, decisions, followupFrom, lastView:view, lastPosition:currentTime,
+      meetingWarning, meetingError:currentJobPending?undefined:'',
+      originalTranscript,
+      originalSourceText,
+      summaryBasis,
+      summaryAnonymized,
+      reviewSnapshot: analysis?.snapshot ?? null,
+      reviewIsDocument: deidentDoc,
+      groundedWork,
+      reviewApprovedBasis,
+      selectedProfile,
       id: currentJobId,
       jobType: type,
       title: currentJobTitle,
       createdAt: currentJobCreatedAt ?? now,
       updatedAt: now,
-      transcript: type === "transcribe" || type === "meeting" ? transcript : null,
+      transcript,
       speakerLabels,
       audioPath: type === "transcribe" || type === "meeting" ? audioPath : null,
       micWavPath: type === "meeting" ? meetingMicWav : null,
@@ -2303,12 +2327,14 @@
       // a still-pending meeting silently clear the "ej klar" badge/banner (serde defaults it to false).
       transcriptionPending: currentJobPending,
       category: currentCategory,
-      sourceText: type !== "transcribe" && srcMode !== "transcript" && srcMode !== "file" ? srcText : null,
+      sourceText: srcMode !== "transcript" ? srcText : null,
+      sourceMode: srcMode,
+      sourceHasTables: srcHasTables,
       sourcePath: type !== "transcribe" && srcMode === "file" ? srcPath : null,
       enabled: ALL_KEYS.filter((k) => enabled[k]),
       terms,
       useAi,
-      rejected: rejectedIds(),
+      rejected: [...rejected],
       summaryDraft: summaryDraft || null,
       summaryTemplate: selectedTemplate,
       summaryModel: selectedSummaryModel,
@@ -2318,11 +2344,25 @@
       actions,
       followup,
     };
+    const snapshot = JSON.parse(JSON.stringify(job));
+    const revision = editRevision;
+    saveState = "saving";
+    saveError = "";
     try {
-      await invoke("save_job", { job });
-      await refreshJobs();
-    } catch {
-      /* non-fatal: failing to persist history shouldn't break the task */
+      await saveQueue.enqueue(() => invoke("save_job", { job: snapshot }));
+      if (currentJobId === snapshot.id && editRevision === revision) {
+        saveState = "saved";
+        savedAt = now;
+        dirty = false;
+      }
+      void refreshJobs();
+      return true;
+    } catch (e) {
+      if (currentJobId === snapshot.id) {
+        saveState = "error";
+        saveError = String(e);
+      }
+      return false;
     }
   }
 
@@ -2342,6 +2382,9 @@
 
   /** Clear the workspace so a freshly started job doesn't inherit the previous one's notes/actions. */
   function resetWorkspace() {
+    agenda="";bookmarks=[];decisions=[];meetingWarning="";playbackTrack="mix";followupFrom=null;
+    summaryAnonymized = false;
+    groundedWork = null; reviewApprovedBasis = null;
     notes = "";
     participants = [];
     actions = [];
@@ -2355,9 +2398,120 @@
   /** Persist the workspace fields onto the active job, debounced. Keeps the job's own type so the
    *  badge/title stay correct. No-op until there's something to attach them to. */
   function saveWorkspace() {
-    if (!hasActiveJob && !currentJobId) return;
+    if (restoringJob || (!hasActiveJob && !currentJobId && !srcText.trim())) return;
+    if (!currentJobId && !transcript) currentJobType = screen === "summarize" ? "summarize" : "deidentify";
+    editRevision++;
+    saveState = "pending";
     if (wsSaveTimer) clearTimeout(wsSaveTimer);
-    wsSaveTimer = setTimeout(() => void saveCurrentJob(currentJobType === "meeting" ? "meeting" : "transcribe"), 500);
+    wsSaveTimer = setTimeout(() => {
+      wsSaveTimer = null;
+      void saveCurrentJob(currentJobType);
+    }, 500);
+  }
+
+  async function flushCurrentSave(): Promise<boolean> {
+    if (dictationPanel && !(await dictationPanel.flushChanges())) { screen = "dictation"; return false; }
+    if (editingIdx !== null) await commitEdit();
+    if (wsSaveTimer) { clearTimeout(wsSaveTimer); wsSaveTimer = null; }
+    await saveQueue.drain();
+    if (saveState === "error" || saveState === "pending" || dirty) {
+      return await saveCurrentJob(currentJobType);
+    }
+    return true;
+  }
+
+  async function checkpointWork(): Promise<boolean> {
+    if (restoringJob) return true;
+    if (!(await flushCurrentSave())) return false;
+    try {
+      if (currentJobId) await invoke("checkpoint_job", {id:currentJobId});
+      return true;
+    } catch (e) { saveState="error"; saveError=String(e); return false; }
+  }
+
+  async function openVersions() {
+    if (await flushCurrentSave()) versionsOpen = !!currentJobId;
+  }
+  async function restoreVersion(version: string) {
+    if (busy || qaBusy || actionsBusy || !currentJobId || !(await flushCurrentSave())) return false;
+    const id=currentJobId;
+    await invoke("restore_job_version", {id,version,now:new Date().toISOString()});
+    await openJobById(id);
+    return !error;
+  }
+  function originalText() {
+    return [originalSourceText, originalTranscript?.utterances.map(u=>u.text).join("\n")].filter(Boolean).join("\n\n");
+  }
+  function changeSource(text: string) {
+    srcText = text;
+    saveWorkspace();
+  }
+  async function newDocumentFromDictation(text: string) {
+    if (busy || qaBusy || actionsBusy || recording || meetingActive || meetingBusy) { error = "Avsluta det pågående arbetet först."; return false; }
+    await newProject();
+    if (saveState === "error" || currentJobId) return false;
+    srcMode="paste"; srcText=text; currentJobType="deidentify";
+    saveWorkspace();
+    return true;
+  }
+
+  onMount(() => {
+    const window = getCurrentWindow();
+    const registration = window.onCloseRequested(event => {
+      if(meetingActive){event.preventDefault();void stopMeeting().then(()=>{if(!meetingActive)void window.close();});return;}
+      if(soundTestBusy||meetingBusy){event.preventDefault();return;}
+      if (saveState === "pending" || saveState === "saving" || saveState === "error" || dirty || dictationDirty || editingIdx !== null) {
+        event.preventDefault();
+        void flushCurrentSave().then(ok => { if (ok) void window.close(); });
+      }
+    });
+    return () => { void registration.then(unlisten => unlisten()); if (wsSaveTimer) clearTimeout(wsSaveTimer); };
+  });
+
+  function openExport(initial: string) {
+    exportChoices = [];
+    if (transcript) exportChoices.push({ id: "transcript", label: "Transkript", formats: hasWords ? ["txt", "docx", "srt", "vtt", "vtt-words"] : ["txt", "docx", "srt", "vtt"], status: "Transkript med dina rättningar och talarnamn. Ingen maskering tillämpas.", timestamps: true });
+    if (srcText) exportChoices.push({ id: "source", label: "Källtext", formats: ["txt", "docx"], status: "Din aktuella källtext. Ingen maskering tillämpas." });
+    if (analysis) exportChoices.push({ id: "anon", label: "Avidentifierad text", formats: deidentDoc ? ["txt", "docx"] : ["txt", "docx", "srt", "vtt"], status: "Valda maskeringar tillämpas. Kontrollera hela texten och eventuella talarnamn före delning.", timestamps: !deidentDoc });
+    if (summaryDraft) exportChoices.push({ id: "summary", label: "Sammanfattning / utkast", formats: ["txt", "docx"], status: "AI-utkast med dina redigeringar. Kontrollera innehållet mot källan.", appendTranscript: !!transcript, timestamps: !!transcript });
+    if (wsHasContent) exportChoices.push({ id: "notes", label: "Anteckningar och åtgärder", formats: ["txt", "docx"], status: "Deltagare, egna anteckningar, åtgärder och uppföljning." });
+    if(currentJobType==='meeting')exportChoices.unshift({id:'meeting',label:'Mötesunderlag',formats:['txt','docx'],sections:[{id:'agenda',label:'Agenda'},{id:'summary',label:'Sammanfattning'},{id:'decisions',label:'Beslut'},{id:'notes',label:'Anteckningar och åtgärder'}],status:'Agenda, sammanfattningsutkast, beslut, egna anteckningar och åtgärder. Granska före delning.',appendTranscript:!!transcript,timestamps:!!transcript});
+    if (!exportChoices.length) return;
+    exportInitial = exportChoices.some(c => c.id === initial) ? initial : exportChoices[0].id;
+    exportOpen = true;
+  }
+
+  async function prepareExport(id: string, format: string, timestamps: boolean, append: boolean, sections?:string[]) {
+    if (id === "anon" && reviewStale) throw new Error("Underlaget har ändrats. Kör om granskningen före export.");
+    const renderTranscript = async (anonymize: boolean) => {
+      if (transcript) await invoke("update_transcript", { transcript });
+      return await invoke<string>("preview_transcript", { args: { path: "preview." + (format === "vtt-words" ? "vtt" : format), anonymize, rejected: anonymize ? rejectedIds() : [], speakerLabels, wordLevel: format === "vtt-words", timestamps } });
+    };
+    if(id==='meeting'){
+      const include=(key:string)=>!sections||sections.includes(key);
+      const parts=[`# ${currentJobTitle}`];
+      if(include('agenda')&&agenda)parts.push('## Agenda\n'+agenda);
+      if(include('summary')&&summaryDraft)parts.push('## Sammanfattning – utkast\n'+summaryDraft);
+      if(include('decisions'))parts.push('## Beslut\n'+decisions.map(d=>'- '+d.text+(d.quote?'\n  Källa: '+d.quote:'')).join('\n'));
+      if(include('notes'))parts.push(buildWorkspaceText(),bookmarks.map(b=>`[${fmtTime(b.time)}] ${b.text}`).join('\n'));
+      if(append)parts.push('## Transkript\n'+await renderTranscript(false));return parts.filter(Boolean).join('\n\n');
+    }
+    if (id === "notes") return buildWorkspaceText();
+    if (id === "source") return srcText;
+    if (id === "summary") return summaryDraft + (append ? "\n\n## Transkript\n\n" + await renderTranscript(false) : "");
+    if (id === "anon" && deidentDoc) return await invoke<string>("copy_anonymized", { rejected: rejectedIds() });
+    return await renderTranscript(id === "anon");
+  }
+
+  async function saveExportSnapshot(text: string, id: string, format: string) {
+    const ext = format === "vtt-words" ? "vtt" : format;
+    const stem = (currentJobTitle || srcName || audioName || "avskrift").replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*]/g, "_");
+    const suffix: Record<string,string> = { meeting:"motesunderlag", transcript: "transkript", anon: "avidentifierad", summary: "utkast", notes: "anteckningar" };
+    const path = await save({ defaultPath: `${stem}_${suffix[id]}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+    if (!path) return false;
+    // Save only the displayed snapshot. Never re-read mutable engine state after review.
+    await invoke("save_summary", { args: { path, text, includeTranscript: false } });
+    return true;
   }
 
   function addAction() {
@@ -2419,7 +2573,7 @@
   /** Generate an action list locally with Qwen, strictly from the transcript (respects the de-identify
    *  toggle via summaryInputText). Appends whatever it finds; non-locking like the Q&A. */
   async function generateActions() {
-    if (actionsBusy || !transcript) return;
+    if (actionsBusy || busy || qaBusy || !transcript) return;
     actionsBusy = true;
     error = "";
     progressMsg = "Tar fram åtgärder…";
@@ -2427,11 +2581,13 @@
       const text = await summaryInputText();
       const q =
         "Lista alla åtgärder, beslut och att-göra-punkter från mötet. Svara med EN punkt per rad och " +
-        'börja varje rad med "- ". Skriv ingenting annat än listan. Finns inga åtgärder, svara med en tom rad.';
-      const a = await invoke<string>("ask_transcript", {
+        'börja varje rad med "- ". Skriv ingenting annat än listan. Finns inga åtgärder, svara exakt [INGA_ÅTGÄRDER].';
+      const a = await invokeWork<string>("ask_transcript", {
         args: { question: q, transcriptText: text, model: selectedSummaryModel },
       });
-      const parsed = parseActionLines(a);
+      const normalized = a.trim().replace(/^[-*•]\s*/, '');
+      const noActions = /^(\[INGA_ÅTGÄRDER\]|\[INGEN_UPPGIFT\]|Det framgår inte av underlaget\.?|Inga åtgärder hittades\.?)$/i.test(normalized);
+      const parsed = noActions ? [] : parseActionLines(a);
       if (parsed.length) {
         actions = [...actions, ...parsed];
         saveWorkspace();
@@ -2509,6 +2665,12 @@
   }
 
   async function openJobById(id: string) {
+    if (busy || qaBusy || actionsBusy || recording || meetingActive || meetingBusy) {
+      error = "Avsluta det pågående arbetet innan du öppnar ett annat projekt.";
+      return;
+    }
+    if (!(await flushCurrentSave())) return;
+    restoringJob = true;
     try {
       const j = await invoke<any>("open_job", { id });
       // Reset working state, then hydrate from the job.
@@ -2523,13 +2685,27 @@
       analysis = null;
       summaryDraft = "";
       deidentDoc = false;
+      void invoke('organize_job',{id:j.id,lastOpened:new Date().toISOString()}).then(()=>refreshJobs()).catch(()=>{});
       currentJobId = j.id;
+      originalTranscript = JSON.parse(JSON.stringify(j.originalTranscript ?? j.transcript ?? null));
+      undoStack = []; editingIdx = null; rejected = new Set();
+      originalSourceText = j.originalSourceText ?? (j.version < 2 ? j.sourceText : null) ?? null;
+      groundedWork = j.groundedWork ?? null;
+      reviewApprovedBasis = j.reviewApprovedBasis ?? null;
+      selectedProfile = j.selectedProfile ?? 'skola';
+      summaryBasis = j.summaryBasis ?? null;
+      summaryAnonymized = j.summaryAnonymized === true;
+      saveState = "saved";
+      saveError = "";
+      savedAt = j.updatedAt ?? "";
+      dirty = false;
       currentJobType = j.jobType ?? "transcribe";
       currentJobTitle = j.title ?? "";
       currentJobCreatedAt = j.createdAt ?? null;
       currentJobPending = !!j.transcriptionPending;
       currentCategory = j.category ?? "";
       speakerLabels = j.speakerLabels ?? {};
+      agenda=j.agenda??"";bookmarks=j.bookmarks??[];decisions=j.decisions??[];followupFrom=j.followupFrom??null;meetingWarning=j.meetingWarning??j.meetingError??"";playbackTrack="mix";
       notes = typeof j.notes === "string" ? j.notes : "";
       participants = Array.isArray(j.participants) ? j.participants : [];
       actions = Array.isArray(j.actions) ? j.actions : [];
@@ -2544,8 +2720,13 @@
       if (j.summaryModel) selectedSummaryModel = j.summaryModel;
       if (j.customHeadings) customHeadings = j.customHeadings;
       srcText = j.sourceText ?? "";
+      transcript = j.transcript ?? null;
+      srcHasTables = !!j.sourceHasTables;
+      srcMode = j.sourceMode ?? (j.sourcePath ? "file" : j.sourceText ? "paste" : transcript ? "transcript" : "paste");
       srcPath = j.sourcePath ?? null;
       srcName = j.sourcePath ? j.sourcePath.split(/[\\/]/).pop() : null;
+      summaryDraft = j.summaryDraft ?? "";
+      if (Array.isArray(j.enabled)) enabled = Object.fromEntries(ALL_KEYS.map(key => [key, j.enabled.includes(key)]));
 
       if (j.jobType === "transcribe" || j.jobType === "meeting") {
         transcript = j.transcript ?? null;
@@ -2555,19 +2736,24 @@
         meetingMicWav = j.jobType === "meeting" ? j.micWavPath ?? null : null;
         meetingMixWav = j.jobType === "meeting" ? j.mixWavPath ?? null : null;
         summaryDraft = j.summaryDraft ?? "";
-        view = j.summaryDraft ? "summary" : "transcript";
+        view = ["overview","transcript","notes","actions","summary","review","qa"].includes(j.lastView)?j.lastView:(j.jobType==="meeting"?"overview":j.summaryDraft?"summary":"transcript");
+        currentTime=j.lastPosition??0;
         screen = "transcribe";
       } else if (j.jobType === "deidentify") {
-        srcMode = j.sourcePath ? "file" : "paste";
         screen = "deidentify";
-        await runDeidentify(); // re-run to repopulate engine.last + spans (offsets aren't serialized)
-        if (Array.isArray(j.rejected) && analysis) rejected = new Set(j.rejected);
+        // Legacy jobs open their saved source without silently running a model or replacing the file.
       } else {
         transcript = j.transcript ?? null;
-        srcMode = j.sourcePath ? "file" : j.sourceText ? "paste" : "transcript";
         summaryDraft = j.summaryDraft ?? "";
         view = "summary";
         screen = "summarize";
+      }
+      if (j.reviewSnapshot) {
+        deidentDoc = !!j.reviewIsDocument;
+        // A stale review stays attached to its own source and is marked stale in the workspace.
+        analysis = await invoke<AnalyzeResult>("restore_review", { snapshot:j.reviewSnapshot, expectedText:j.reviewSnapshot.text });
+        rejected = new Set(j.rejected ?? []);
+        if (j.jobType === "deidentify") view = "review";
       }
       // Keep the backend transcript in sync with what's shown, so export uses the right one
       // (export reads backend.transcript; de-identify already uses the frontend transcript).
@@ -2579,6 +2765,8 @@
       showToast("Jobb öppnat");
     } catch (e) {
       error = String(e);
+    } finally {
+      restoringJob = false;
     }
   }
 
@@ -2631,47 +2819,19 @@
       </div>
     </div>
   {/snippet}
-  <header>
-    <button class="brandbtn" onclick={newProject} title="Hem — börja nytt">
-      <svg class="logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-        <rect x="9" y="10" width="20" height="28" rx="2" fill="#fff" stroke="#111214" stroke-width="2" />
-        <rect x="13" y="17" width="12" height="2.6" fill="#111214" />
-        <rect x="13" y="22" width="12" height="2.6" fill="#3a36b0" />
-        <rect x="13" y="27" width="7" height="2.6" fill="#c9ccd2" />
-        <path d="M34 16v16M38 20v8M30 21v6" stroke="#3a36b0" stroke-width="2.4" stroke-linecap="round" />
-      </svg>
-      <span class="brand"><h1>Avskrift</h1></span>
-    </button>
-    {#if (screen === "transcribe" && transcript) || screen === "deidentify" || screen === "summarize"}
-      <button class="hdr-toggle" class:on={sidebarCollapsed} onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
-        title={sidebarCollapsed ? "Visa panel" : "Dölj panel – ge ytan full bredd"} aria-label="Visa/dölj panel">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/></svg>
-      </button>
-    {/if}
-    <nav class="topnav">
-      {#if transcript}
-        <button class:on={screen === "transcribe" && view === "transcript"} onclick={() => tab("transcript")}>Transkript</button>
-        <button class:on={screen === "transcribe" && view === "notes"} onclick={() => tab("notes")}>Anteckningar & åtgärder{#if wsHasContent}<span class="nav-dot" title="Det här projektet har anteckningar/åtgärder"></span>{/if}</button>
-        <button class:on={screen === "transcribe" && view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
-        <button class:on={screen === "transcribe" && view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
-        <button class:on={screen === "transcribe" && view === "qa"} onclick={() => tab("qa")}>Fråga</button>
-      {:else if screen === "deidentify" || screen === "summarize"}
-        <button class:on={screen === "deidentify"} onclick={() => go("deidentify")}>Avidentifiering</button>
-        <button class:on={screen === "summarize"} onclick={() => go("summarize")}>Sammanfattning</button>
-      {/if}
-      {#if meetingActive || meetingBusy}
-        <button class:on={screen === "meeting"} onclick={() => go("meeting")}>Möte<span class="nav-dot" title={meetingBusy ? "Transkriberar mötet…" : "Mötesinspelning pågår"}></span></button>
-      {/if}
-      <button class:on={screen === "history"} onclick={() => go("history")}>Mina projekt</button>
-      <button class:on={screen === "tasks"} onclick={() => go("tasks")}>Åtaganden{#if taskCounts.overdue}<span class="nav-badge" title="{taskCounts.overdue} förfallna åtaganden">{taskCounts.overdue}</span>{/if}</button>
-    </nav>
+  <AppNavigation active={screen === "transcribe" ? "meeting" : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion}
+    onmodels={openModels} onnavigate={(page) => go(page as Screen)} onnew={() => void newProject()} />
+  <div class="app-content">
+  <header class="workspace-header">
+    <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : "Möten och transkribering"}</span>
+      {#if currentJobTitle && !["home", "history", "tasks", "dictation"].includes(screen)}<strong>{currentJobTitle}</strong><button class="link" onclick={()=>editTitle()}>Byt namn</button>{/if}
+    </div>
     <div class="spacer"></div>
-    {#if bgMeetings.length}
-      <div class="working" aria-live="polite" title="Möten transkriberas i bakgrunden – de sparas i Mina projekt när de är klara. Du kan stänga appen; ljudet är sparat och går att transkribera om.">
-        <span class="working-dot"></span>{bgMeetings.length > 1 ? `Transkriberar ${bgMeetings.length} möten…` : (bgMeetings[0].msg || "Transkriberar möte…")}
-      </div>
-    {/if}
-    {#if hasActiveJob}
+    {#if bgMeetings.length}<div class="working" role="status"><span class="working-dot"></span>{bgMeetings.length} {bgMeetings.length === 1 ? "möte bearbetas" : "möten bearbetas"}</div>{/if}
+    {#if saveState !== "idle"}<div class="save-status" class:failed={saveState === "error"} role="status">{saveState === "saving" ? "Sparar på datorn…" : saveState === "pending" ? "Ändringar väntar på att sparas" : saveState === "error" ? "Kunde inte spara" : "Sparat på datorn"}{#if saveState === "saved" && savedAt}<span>{new Date(savedAt).toLocaleTimeString("sv-SE", {hour:"2-digit", minute:"2-digit"})}</span>{/if}</div>{/if}
+    {#if currentJobId && !["home","history","tasks","dictation"].includes(screen)}<button class="btn" onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>{/if}
+    {#if currentJobId && !["home","history","tasks","dictation"].includes(screen)}{@const meta=allJobs.find(j=>j.id===currentJobId)}{#if meta}{@render workMenu(meta)}{/if}{/if}
+    {#if hasActiveJob && !["home","history","tasks","dictation"].includes(screen)}
       <div class="hdr-folder">
         <button class="hdr-folder-btn" onclick={() => (folderPickerFor = folderPickerFor === "header" ? null : "header")} title="Mapp för det här projektet">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
@@ -2681,9 +2841,52 @@
         {#if folderPickerFor === "header"}{@render folderPicker(currentCategory, (p) => { folderPickerFor = null; newFolderName = ""; void setCurrentCategory(p); })}{/if}
       </div>
     {/if}
-    <div class="lockbadge"><span class="dot"></span> Allt körs lokalt{#if appVersion} · v{appVersion}{/if}</div>
   </header>
+  {#if titleEditing}<form class="title-editor" onsubmit={(e)=>{e.preventDefault();void saveTitle();}}>
+    <label>Namn<input bind:this={titleInput} aria-label="Namn på arbetet" bind:value={titleDraft} onkeydown={e=>{if(e.key==='Escape')titleEditing=false;}} /></label>
+    <button class="btn primary" disabled={renameBusy||!titleDraft.trim()}>Spara namn</button><button class="btn" type="button" onclick={()=>titleEditing=false}>Avbryt</button>
+  </form>{/if}
+  <WorkControl />
+  {#if saveState === "error"}
+    <div class="save-failure" role="alert"><div><strong>Ändringarna kunde inte sparas på datorn.</strong><p>{saveError}</p></div><button class="btn" onclick={() => flushCurrentSave()}>Försök spara igen</button><button class="btn" onclick={() => openExport("notes")}>Exportera en kopia…</button></div>
+  {/if}
+  {#if reviewStale && (screen === "deidentify" || (screen === "transcribe" && view === "review"))}
+    <div class="banner warn" role="status">Underlaget har ändrats. Granskningen nedan gäller den tidigare textversionen. Kör om avidentifieringen innan du exporterar.</div>
+  {/if}
+  {#if summaryStale && (screen === "summarize" || (screen === "transcribe" && view === "summary"))}
+    <div class="banner warn" role="status">Underlaget har ändrats sedan utkastet skapades. Utkastet finns kvar; granska det eller skapa ett nytt.</div>
+  {/if}
+  {#if error && ["home", "history", "dictation", "tasks", "meeting"].includes(screen)}<div class="banner" class:error={!isWorkCancelled(error)} class:cancelled={isWorkCancelled(error)} role={isWorkCancelled(error)?"status":"alert"}>{error}</div>{/if}
+  {#if screen === "transcribe" && (transcript || currentJobPending)}
+    <nav class="workspace-tabs" aria-label="Vyer i aktuellt arbete">
+      {#if currentJobType==="meeting"}<button aria-pressed={view==='overview'} onclick={()=>tab('overview')}>Översikt</button>{/if}
+      <button aria-pressed={view === "transcript"} onclick={() => tab("transcript")}>Transkript</button>
+      <button aria-pressed={(view === "notes" || view === "actions")} onclick={() => tab("notes")}>Anteckningar</button>
+      <button aria-pressed={view==='actions'} onclick={()=>tab('actions')}>Beslut och åtgärder</button>
+      <button aria-pressed={view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
+      <button aria-pressed={view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
+      <button aria-pressed={view === "qa"} onclick={() => tab("qa")}>Fråga källan</button>
+    </nav>
+  {/if}
+  {#if (screen === "transcribe" && transcript && !["overview","notes","actions"].includes(view)) || screen === "deidentify" || screen === "summarize"}
+    <div class="panel-control"><button class="link" aria-expanded={!controlsCollapsed} onclick={() => {if(transcriptReading)transcriptToolsOpen=!transcriptToolsOpen;else sidebarCollapsed=!sidebarCollapsed;}}>{transcriptReading ? (transcriptToolsOpen ? "Dölj verktyg för transkriptet" : "Visa verktyg för transkriptet") : (sidebarCollapsed ? "Visa källa och inställningar" : "Dölj källa och inställningar")}</button></div>
+  {/if}
 
+  {#snippet workMenu(j:JobMeta)}
+    <details class="work-menu"><summary aria-label={'Hantera '+j.title}>Hantera</summary><div>
+      <button onclick={()=>editTitle(j)}>Byt namn</button><button onclick={async()=>{await openJobById(j.id);folderPickerFor='header';}}>Flytta</button>
+      <button onclick={()=>organize(j,'pinned')}>{j.pinned?'Lossa':'Fäst'}</button><button onclick={()=>organize(j,'archived')}>{j.archived?'Återställ från arkivet':'Arkivera'}</button>
+    </div></details>
+  {/snippet}
+  {#snippet savedDictations()}
+    {#if dictation?.entries.some(entry=>entry.saved)}
+      <section class="saved-dictations"><h2>Sparade diktat</h2><ul class="job-strip">
+        {#each dictation.entries.filter(entry=>entry.saved && (screen !== "history" || !jobSearch || entry.text.toLocaleLowerCase("sv").includes(jobSearch.toLocaleLowerCase("sv")))) as entry (entry.id)}
+          <li><button class="job-row" onclick={()=>{go("dictation"); void dictationPanel.openEntry(entry.id);}}><span class="job-badge">Diktat</span><span class="job-title">{entry.text.slice(0,100)}</span><span class="job-date">{new Date(entry.createdAt).toLocaleDateString("sv-SE")}</span></button></li>
+        {/each}
+      </ul></section>
+    {/if}
+  {/snippet}
   {#snippet sourcePicker()}
     <section>
       <h2>Källa</h2>
@@ -2693,13 +2896,13 @@
         {#if transcript}<label class="radio"><input type="radio" name="src" value="transcript" bind:group={srcMode} /> Från transkriptet</label>{/if}
       </div>
       {#if srcMode === "paste"}
-        <textarea class="src-text" bind:value={srcText} rows="8" placeholder="Klistra in texten här…"></textarea>
+        <textarea class="src-text" value={srcText} oninput={(e)=>changeSource(e.currentTarget.value)} aria-label="Källtext" rows="8" placeholder="Klistra in texten här…"></textarea>
       {:else if srcMode === "file"}
         {#if srcName}
           <div class="file-chip"><span title={srcPath}>{srcName}</span><button class="link" onclick={clearSource}>rensa</button></div>
         {:else}
           <button class="btn block" onclick={pickSourceDoc}>Välj dokument…</button>
-          <p class="hint">.txt, .md eller .docx</p>
+          <p class="hint">.txt, .md eller .docx. Brödtext och tabellceller läses in; sidhuvuden, sidfötter, bilder och textfält behöver kontrolleras i originalet.</p>
         {/if}
       {:else}
         <p class="hint">Använder transkriptet som redan finns i appen.</p>
@@ -2707,95 +2910,58 @@
     </section>
   {/snippet}
 
+  {#snippet modelReference(kind:'speech'|'text')}
+    {@const model = kind==='speech' ? models.find(m=>m.id===selectedModel) : summaryModels.find(m=>m.id===selectedSummaryModel)}
+    <div class="model-reference"><span>{kind==='speech'?'Talmodell':'Textmodell'}: <strong>{model?.label ?? (kind==='speech'?selectedModel:selectedSummaryModel)}</strong></span>
+      <button class="link" onclick={openModels}>{model?.downloaded?'Byt modell':'Välj eller hämta modell'}</button>
+      {#if !model?.downloaded}<small>Behöver hämtas före bearbetning.</small>{/if}
+    </div>
+  {/snippet}
+  {#if modelsOpen}
+    <ModelSettings {models} textModels={summaryModels} bind:speech={selectedModel} bind:text={selectedSummaryModel} dictationModel={dictation?.settings.model}
+      locked={busy || recording || recSaving || meetingActive || meetingBusy || bgMeetings.length>0 || qaBusy || actionsBusy || !!dictation && dictation.phase!=='idle'} {downloading} percent={downloadPct} {error}
+      ondownload={(kind,id)=>kind==='speech'?downloadModel(id):downloadSummaryModel(id)} ondictation={setDictationModel} onchange={()=>{if(currentJobId)saveWorkspace();}} onclose={()=>modelsOpen=false} />
+  {/if}
+
+  <div class="dictation-container" hidden={screen !== "dictation"}>
+    <Dictation bind:this={dictationPanel} bind:dirty={dictationDirty} snapshot={dictation} {models} textModel={selectedSummaryModel} textReady={summaryDownloaded} onmodels={openModels}
+      ontext={async(text) => { if(await newDocumentFromDictation(text)) go("deidentify"); }} />
+  </div>
   {#if screen === "home"}
     <div class="home">
-      <h2 class="big-title">Vad vill du göra?</h2>
-      <div class="cards">
-        <button class="card" onclick={() => go("transcribe")}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M14 8.5h6M14 12h6M14 15.5h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <h3>Transkribera ljud</h3>
-          <p>Ljudfil eller inspelning blir text — med talare och tidsstämplar.</p>
-        </button>
-        <button class="card" onclick={() => go("meeting")}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <rect x="9" y="2.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M12 17.5V21" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <circle cx="19" cy="5" r="2.4" fill="#3a36b0"/>
-            </svg>
-          </span>
-          <h3>Spela in möte</h3>
-          <p>Transkribera ett digitalt möte — din röst och mötesljudet hålls isär som ”Jag” och ”Mötet”.</p>
-        </button>
-        <button class="card" onclick={() => { srcMode = transcript ? "transcript" : "paste"; go("deidentify"); }}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <path d="M12 2.5l7.5 3v4.6c0 5-3.2 7.4-7.5 8.6-4.3-1.2-7.5-3.6-7.5-8.6V5.5L12 2.5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#3a36b0" stroke-width="1.9" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <h3>Avidentifiera text</h3>
-          <p>Maska namn och känsliga uppgifter i en inklistrad text eller ett dokument.</p>
-        </button>
-        <button class="card" onclick={() => { srcMode = transcript ? "transcript" : "paste"; go("summarize"); }}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <rect x="4.5" y="3" width="15" height="18" rx="2.2" stroke="currentColor" stroke-width="1.7"/>
-              <circle cx="8.4" cy="8" r="1.1" fill="#3a36b0"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <circle cx="8.4" cy="12" r="1.1" fill="#3a36b0"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <circle cx="8.4" cy="16" r="1.1" fill="#3a36b0"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <h3>Sammanfatta text</h3>
-          <p>Skapa ett mötesprotokoll eller en kort sammanfattning ur en text.</p>
-        </button>
-        <button class="card" onclick={() => go("history")}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M12 7v5l3.5 2" stroke="#3a36b0" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <h3>Mina projekt</h3>
-          <p>{allJobs.length} sparade {allJobs.length === 1 ? "projekt" : "projekt"} — öppna och fortsätt där du slutade.</p>
-        </button>
-        <button class="card" onclick={() => go("tasks")}>
-          <span class="card-ic-wrap">
-            <svg class="card-ic" viewBox="0 0 24 24" fill="none">
-              <path d="M9 6h11M9 12h11M9 18h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-              <path d="M3.3 6l1.2 1.2L7 4.6" stroke="#3a36b0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M3.3 12l1.2 1.2L7 10.6" stroke="#3a36b0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <circle cx="4.5" cy="18" r="1.2" fill="currentColor"/>
-            </svg>
-          </span>
-          <h3>Åtaganden</h3>
-          <p>{#if taskCounts.open}{taskCounts.open} öppna{#if taskCounts.overdue} · <span class="card-warn">{taskCounts.overdue} förfallna</span>{/if}{:else}Inga öppna{/if} — alla att-göra från dina möten på ett ställe.</p>
-        </button>
+      <h2 class="big-title">Ditt arbete</h2>
+      <p class="home-intro">Fortsätt där du slutade, eller börja något nytt.</p>
+      {#if meetingActive||bgMeetings.length}<section class="home-current"><h2>Pågår nu</h2>{#if meetingActive}<button class="btn" onclick={()=>go('meeting')}>Till inspelningen: {currentJobTitle}</button>{/if}{#each bgMeetings as m}<button class="btn" onclick={()=>openJobById(m.id)}>{m.title} — {m.msg}</button>{/each}</section>{/if}
+      <div class="entrypoints">
+        <button onclick={() => go("meeting")}><h3>Möten</h3><p>Från samtal och ljudfiler till anteckningar och beslut.</p><span>Öppna möten</span></button>
+        <button onclick={() => go("dictation")}><h3>Diktering</h3><p>Tala där du skriver. Hitta texten igen när du behöver den.</p><span>Öppna diktering</span></button>
+        <button onclick={() => go("deidentify")}><h3>Avidentifiering</h3><p>Granska uppgifter i text och dokument och skapa en maskerad kopia.</p><span>Öppna avidentifiering</span></button>
       </div>
-
+      <div class="home-tools"><button class="link" onclick={() => go("transcribe")}>Transkribera en ljudfil</button><button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button><button class="link" onclick={() => go("history")}>Öppna biblioteket</button></div>
       {#if recentJobs.length}
         <div class="recent">
-          <h2>Senaste</h2>
+          <h2>Fortsätt arbeta</h2>
           <ul class="job-strip">
-            {#each recentJobs as j (j.id)}
+            {#each continuedJobs as j (j.id)}
               <li>
                 <button class="job-row" onclick={() => openJobById(j.id)}>
                   <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
-                  <span class="job-title">{j.title}</span>
+                  <span class="job-title">{j.pinned?"★ ":""}{j.title}<small class="job-path">{j.category}{j.actionsTotal?` · ${j.actionsTotal-j.actionsDone} öppna åtgärder`:""}</small></span>
                   <span class="job-date">{fmtJobDate(j.updatedAt)}</span>
                 </button>
+                {@render workMenu(j)}
               </li>
             {/each}
           </ul>
         </div>
       {/if}
 
+      <section class="home-followups"><h2>Att följa upp</h2>
+        {#each allActions.filter(a=>!a.done&&a.due).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,5) as a}<button class="followup-row" onclick={()=>{if(a.jobId)void openJobById(a.jobId);else go('tasks');}}><span>{a.text}</span><span>{a.assignee} · {a.due}</span></button>{/each}
+        {#each followupJobs as j}<button class="followup-row" onclick={()=>openJobById(j.id)}><span>{j.title}</span><span>Uppföljning {j.followup}</span></button>{/each}
+        <button class="link" onclick={()=>go('tasks')}>Visa alla åtaganden</button>
+      </section>
+      {@render savedDictations()}
       <button class="link home-open" onclick={openProject}>Öppna sparat projekt (.avskrift)…</button>
     </div>
 
@@ -2838,13 +3004,25 @@
           </button>
           {#if folderPickerFor === j.id}{@render folderPicker(j.category, (p) => { folderPickerFor = null; newFolderName = ""; void setJobCategory(j, p); })}{/if}
         </div>
+        {@render workMenu(j)}
         <button class="job-menu" onclick={(e) => openCtx(e, "job", j.id)} aria-label="Fler åtgärder" title="Fler åtgärder (eller högerklicka)">⋯</button>
       </li>
     {/snippet}
 
+    <div class="library-tools">
+      <label>Visa<select aria-label="Biblioteksfilter" bind:value={libraryFilter}><option value="active">Aktiva arbeten</option><option value="pinned">Fästa</option><option value="archived">Arkiverade</option></select></label>
+      <label>Typ<select aria-label="Typ av arbete" bind:value={libraryType}><option value="">Alla typer</option><option value="meeting">Möten</option><option value="transcribe">Ljudfiler</option><option value="deidentify">Avidentifiering</option><option value="summarize">Sammanfattning</option></select></label>
+      <label class="library-search">Sök bland projekten<input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={() => { scheduleJobSearch(); selectedJobIds = []; }} /></label>
+      <button class="btn" onclick={refreshLibrary} disabled={libraryRefreshing}>{libraryRefreshing?'Uppdaterar biblioteket…':'Uppdatera biblioteket'}</button>
+    </div>
+    {#if libraryRefreshing}<p class="library-status" role="status">Läser sparade projekt. Första uppdateringen kan ta en stund i ett stort bibliotek.</p>
+    {:else if jobSearchBusy || libraryLoading}<p class="library-status" role="status">{jobSearch.trim()?'Söker bland projekten…':'Läser projekt…'}</p>
+    {:else if libraryNotice}<p class="library-status" role="status">{libraryNotice}</p>{/if}
+    {#if libraryError}<p class="library-status" role="alert">{libraryError}</p>{/if}
+    {#if jobSearchError}<div class="library-status" role="alert">{jobSearchError} <button class="link" onclick={searchJobs}>Försök söka igen</button></div>{/if}
     <div class="hist">
-      {#if !allJobs.length}
-        <p class="hint big-hint" style="padding:32px">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>
+      {#if !allJobs.length && !dictation?.entries.some(entry=>entry.saved)}
+        {#if !libraryLoading && !libraryRefreshing && !libraryError}<p class="hint big-hint" style="padding:32px">Inga sparade jobb än. Allt du transkriberar, avidentifierar eller sammanfattar sparas automatiskt och dyker upp här.</p>{/if}
       {:else}
         <aside class="hist-tree">
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2853,11 +3031,11 @@
             class:on={!selectedFolder && !jobSearch.trim()}
             class:drop={dropTarget === ""}
             data-folder=""
-            onclick={() => { selectedFolder = ""; jobSearch = ""; selectedJobIds = []; }}
+            onclick={() => { selectedFolder = ""; jobSearch = ""; selectedJobIds = []; scheduleJobSearch(); }}
           >
             <span class="tree-twirl-spacer"></span>
             <svg class="tree-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
-            <span class="tree-name">Alla projekt</span><span class="tree-count">{allJobs.length}{totalBytes ? " · " + fmtBytes(totalBytes) : ""}</span>
+            <span class="tree-name">Bibliotek</span><span class="tree-count">{allJobs.length}{totalBytes ? " · " + fmtBytes(totalBytes) : ""}</span>
           </button>
           {#each visibleTree as n (n.path)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2888,7 +3066,6 @@
         </aside>
 
         <main class="hist-main">
-          <input class="job-search" type="search" placeholder="Sök i namn och innehåll…" bind:value={jobSearch} oninput={() => { void searchJobs(); selectedJobIds = []; }} />
           {#if selectedJobIds.length}
             <div class="bulkbar">
               <span class="bulk-n">{selectedJobIds.length} markerade</span>
@@ -2902,11 +3079,13 @@
             </div>
           {/if}
           {#if jobSearch.trim()}
+            {#if !jobSearchBusy && !libraryRefreshing && !jobSearchError}
             {#if !historyJobs.length}<p class="hint">Inga träffar för ”{jobSearch}”.</p>{/if}
-            <ul class="job-list">{#each historyJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
+            <ul class="job-list">{#each listedJobs as j (j.id)}{@render jobRow(j, true)}{/each}</ul>
+            {/if}
           {:else}
             <div class="hist-bar">
-              <span class="hist-where">{selectedFolder || "Alla projekt"}</span>
+              <span class="hist-where">{selectedFolder || "Bibliotek"}</span>
               <span class="hist-count">{jobsInSelected.length} projekt</span>
             </div>
             {#if jobsInSelected.length}
@@ -2915,6 +3094,7 @@
               <p class="hint">Inga projekt här ännu — dra hit ett projekt, eller välj mapp via ”Mapp…”.</p>
             {/if}
           {/if}
+          {#if !selectedFolder || jobSearch.trim()}{@render savedDictations()}{/if}
         </main>
       {/if}
     </div>
@@ -2937,7 +3117,7 @@
           <button class="ctx-item" onclick={() => { const j = historyJobs.find((x) => x.id === id); ctxMenu = null; if (j && j.audioBytes) void deleteJobAudio(j); }}>Ta bort ljud</button>
           <button class="ctx-item danger" onclick={() => { const i = ctxMenu?.target; ctxMenu = null; if (i) void deleteJobById(i); }}>Ta bort projekt</button>
         {/if}
-      </div>
+    </div>
     {/if}
 
   {:else if screen === "tasks"}
@@ -3064,14 +3244,19 @@
     </div>
 
   {:else if screen === "deidentify"}
-    <div class="layout" class:collapsed={sidebarCollapsed}>
-      <aside class="sidebar">
+    <div class="layout" class:collapsed={controlsCollapsed}>
+      <aside class="sidebar" inert={controlsCollapsed}>
         {@render sourcePicker()}
         <section class="anon-block">
           <h2>Avidentifiering</h2>
           <select class="profile" value={selectedProfile} onchange={(e) => applyProfile(e.currentTarget.value)}>
+            {#if selectedProfile==='custom'}<option value="custom">Egen profil</option>{/if}
             {#each PROFILES as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
           </select>
+          <ReviewProfiles current={{enabled:ALL_KEYS.filter(k=>enabled[k]),terms,useAi}} disabled={busy} onapply={async(settings)=>{
+            enabled=Object.fromEntries(ALL_KEYS.map(k=>[k,settings.enabled.includes(k)]));terms=settings.terms;useAi=!!settings.useAi;selectedProfile='custom';saveWorkspace();
+            if(screen==='deidentify')await runDeidentify();else await runAnonymize();
+          }} />
           <label class="ai-toggle">
             <input type="checkbox" bind:checked={useAi} />
             <span>Djupare granskning (AI)<em>långsammare, fångar fler ledtrådar</em></span>
@@ -3086,7 +3271,7 @@
             <ul class="filters">
               {#each CATEGORIES as cat (cat.key)}
                 <li>
-                  <label><input type="checkbox" bind:checked={enabled[cat.key]} />
+                  <label><input type="checkbox" bind:checked={enabled[cat.key]} onchange={saveWorkspace} />
                     <span class="dotc" style="background:{cat.color}"></span>{cat.label}</label>
                   <span class="count">{countFor(cat.key)}</span>
                 </li>
@@ -3107,8 +3292,8 @@
       </aside>
 
       <main class="review">
-        {#if error}<div class="banner error">{error}</div>{/if}
-        {#if srcHasTables}<div class="banner warn">Dokumentet innehåller tabeller — text i tabeller hanteras inte i denna version och tas inte med.</div>{/if}
+        {#if error}<div class="banner" class:error={!isWorkCancelled(error)} class:cancelled={isWorkCancelled(error)} role={isWorkCancelled(error)?"status":"alert"}>{error}</div>{/if}
+        {#if srcHasTables}<div class="banner warn">Tabelltext ingår i läsordning. Exporten återger texten, inte tabellernas layout.</div>{/if}
         {#if busy}
           <div class="state"><div class="spinner"></div><p class="state-title">{progressMsg || "Arbetar…"}</p><p class="state-sub">Allt körs lokalt.</p></div>
         {:else if analysis}
@@ -3117,13 +3302,7 @@
             <div class="actions">
               <button class="btn primary" onclick={() => (deidentDoc ? copyAnonDoc() : copyAnon())}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("anon")}>Kopiera för AI</button>
-              {#if deidentDoc}
-                <button class="btn" onclick={() => exportAnonDoc("txt")}>.txt</button>
-                <button class="btn" onclick={() => exportAnonDoc("docx")}>Word</button>
-              {:else}
-                <button class="btn" onclick={() => exportAs("txt", true)}>.txt</button>
-                <button class="btn" onclick={() => exportAs("docx", true)}>Word</button>
-              {/if}
+              <button class="btn" onclick={() => openExport("anon")} disabled={busy}>Exportera…</button>
             </div>
           </div>
           <div class="meta"><strong>{activeCount}</strong> av {analysis.spans.length} markeras för maskering</div>
@@ -3133,11 +3312,13 @@
             klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
           </div>
           <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
+          <ReviewComparison revision={reviewBasis} rejected={rejectedIds()} stale={reviewStale} approved={reviewApprovedBasis===reviewBasis} onapprove={()=>{reviewApprovedBasis=reviewBasis;saveWorkspace();}}>
           <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg, i}{#if (i === 0 || seg.para !== analysis.segments[i - 1].para) && speakerForPara(seg.para)}<span class="rev-speaker">{speakerForPara(seg.para)}: </span>{/if}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
+          </ReviewComparison>
           <div class="reassure">
             <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
@@ -3156,8 +3337,8 @@
     </div>
 
   {:else if screen === "summarize"}
-    <div class="layout" class:collapsed={sidebarCollapsed}>
-      <aside class="sidebar">
+    <div class="layout" class:collapsed={controlsCollapsed}>
+      <aside class="sidebar" inert={controlsCollapsed}>
         {@render sourcePicker()}
         <section class="anon-block">
           <h2>Sammanfattning</h2>
@@ -3168,28 +3349,17 @@
           {#if selectedTemplate === "custom"}
             <textarea class="mt" bind:value={customHeadings} rows="4" placeholder="En rubrik per rad, t.ex.&#10;## Närvarande&#10;## Beslut"></textarea>
           {/if}
-          <select class="profile mt" bind:value={selectedSummaryModel}>
-            {#each summaryModels as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
-          </select>
-          {#if !summaryDownloaded}
-            {#if downloading === selectedSummaryModel}
-              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-              <p class="hint">Hämtar… {downloadPct}%</p>
-            {:else}
-              <button class="btn block mt" onclick={() => downloadSummaryModel(selectedSummaryModel)} disabled={!!downloading}>
-                Hämta modell ({summaryModels.find((m) => m.id === selectedSummaryModel)?.sizeMb ?? "?"} MB)
-              </button>
-            {/if}
-          {/if}
-          <button class="btn primary block mt" onclick={runSummarizeSource} disabled={busy || !summaryDownloaded}>
+          {@render modelReference('text')}
+
+          <button class="btn primary block mt" onclick={runSummarizeSource} disabled={busy || qaBusy || actionsBusy || !summaryDownloaded}>
             {summaryDraft ? "Generera om" : "Skapa sammanfattning"}
           </button>
         </section>
       </aside>
 
       <main class="review">
-        {#if error}<div class="banner error">{error}</div>{/if}
-        {#if srcHasTables}<div class="banner warn">Dokumentet innehåller tabeller — text i tabeller tas inte med.</div>{/if}
+        {#if error}<div class="banner" class:error={!isWorkCancelled(error)} class:cancelled={isWorkCancelled(error)} role={isWorkCancelled(error)?"status":"alert"}>{error}</div>{/if}
+        {#if srcHasTables}<div class="banner warn">Tabelltext ingår i läsordning. Exporten återger texten, inte tabellernas layout.</div>{/if}
         {#if busy}
           <div class="state"><div class="spinner"></div><p class="state-title">{progressMsg || "Arbetar…"}</p><p class="state-sub">Lokal sammanfattning kan ta en stund.</p></div>
         {:else if summaryDraft}
@@ -3198,12 +3368,11 @@
             <div class="actions">
               <button class="btn primary" onclick={copySummary}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("summary")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => saveSummary("txt")}>.txt</button>
-              <button class="btn" onclick={() => saveSummary("docx")}>Word</button>
+              <button class="btn" onclick={() => openExport("summary")} disabled={busy}>Exportera…</button>
             </div>
           </div>
           <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
-          <textarea class="summary-edit" bind:value={summaryDraft} spellcheck="true"></textarea>
+          <textarea disabled={busy || qaBusy || actionsBusy} class="summary-edit" bind:value={summaryDraft} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} aria-label="Sammanfattning – redigerbart utkast" spellcheck="true"></textarea>
         {:else}
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
@@ -3221,9 +3390,19 @@
 
   {:else if screen === "meeting"}
     <div class="home">
-      <h2 class="big-title">Spela in möte</h2>
+      <div class="meeting-heading"><h2 class="big-title">Möten</h2><button class="btn" onclick={() => go("transcribe")}>Transkribera ljudfil</button>{#if transcript&&!meetingActive}<button class="btn" onclick={() => tab("overview")}>Tillbaka till {currentJobTitle || "aktuellt möte"}</button>{/if}</div>
       <div class="meeting-card" class:wide={meetingActive}>
         {#if !meetingActive && !meetingBusy}
+          <h3>Förbered ett möte</h3><label>Mötesnamn<input aria-label="Mötesnamn" bind:value={meetingName} placeholder="Till exempel Veckomöte med arbetslaget" /></label>
+          <label>Mötesmall<select bind:value={meetingPreset} onchange={()=>{const preset=meetingPresets.find(p=>p.name===meetingPreset);if(preset){meetingAgenda=preset.agenda;meetingPeople=preset.people??'';selectedTemplate=preset.summaryTemplate??selectedTemplate;}}}><option value="">Ingen mall</option>{#each meetingPresets as p}<option>{p.name}</option>{/each}</select></label>
+          <label>Syfte och agenda<textarea bind:value={meetingAgenda} rows="3" placeholder="Valfritt – kan ändras under mötet"></textarea></label>
+          <details><summary>Deltagare och sammanfattningsmall</summary><label>Deltagare, en per rad<textarea aria-label="Deltagare inför mötet" bind:value={meetingPeople} rows="3" placeholder="Alex; Samordnare"></textarea></label><label>Sammanfattningsmall<select bind:value={selectedTemplate}>{#each summaryTemplates as t}<option value={t.id}>{t.label}</option>{/each}</select></label></details>
+          <details><summary>Spara som mötesmall</summary><div class="row"><input aria-label="Namn på mötesmall" bind:value={presetName}/><button class="btn" onclick={saveMeetingPreset} disabled={!presetName.trim()}>Spara mall</button></div></details>
+          {#if followupActions.length}<div><p>{followupActions.length-excludedFollowup.length} öppna åtgärder följer med från föregående möte.</p>{#each followupActions as a}<label class="ai-toggle"><input type="checkbox" checked={!excludedFollowup.includes(a.id!)} onchange={e=>{excludedFollowup=e.currentTarget.checked?excludedFollowup.filter(id=>id!==a.id):[...excludedFollowup,a.id!];}}/><span>{a.text}</span></label>{/each}</div>{/if}
+          <label>Din mikrofon<select aria-label="Välj mikrofon" bind:value={micDevice}><option value="">Windows standardmikrofon</option>{#each devices.filter(d=>d.source==='mic') as d}<option value={d.id}>{d.name}</option>{/each}</select></label>
+          <label>Mötesljud<select aria-label="Välj mötesljud" bind:value={systemDevice}><option value="">Windows standardutgång</option>{#each devices.filter(d=>d.source==='system') as d}<option value={d.id}>{d.name}</option>{/each}</select></label>
+          {#if meetingDevicesError}<p role="alert">{meetingDevicesError}</p>{/if}
+          <button class="btn" onclick={testMeetingSound} disabled={soundTestBusy}>{soundTestBusy?'Testar ljud…':'Testa ljud i 3 sekunder'}</button>{#if soundTestResult}<p role="status">{soundTestResult}</p>{/if}
           <p class="hint big-hint">
             Fångar <strong>din mikrofon</strong> och <strong>mötesljudet</strong> (det som hörs i datorn)
             som två separata spår — så hålls <em>Jag</em> och <em>Mötet</em> isär utan diarisering. Allt körs lokalt.
@@ -3237,11 +3416,7 @@
             <span><strong>Använd hörlurar</strong> för att hålla <em>Jag</em> och <em>Mötet</em> åtskilda. Utan hörlurar fångar mikrofonen även mötesljudet från högtalarna, så den andra personen kan dyka upp under ”Jag”.</span>
           </div>
           <div class="m-fields">
-            <label class="m-field"><span>Modell</span>
-              <select class="profile" bind:value={selectedModel}>
-                {#each models as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
-              </select>
-            </label>
+            <div class="m-field">{@render modelReference('speech')}</div>
             <label class="m-field"><span>Språk</span>
               <select class="profile" bind:value={language}>
                 {#each LANGUAGES as l (l.code)}<option value={l.code}>{l.label}</option>{/each}
@@ -3252,18 +3427,10 @@
             <input type="checkbox" bind:checked={meetingLive} />
             <span>Live-text under mötet<em>visar texten medan mötet pågår (kräver hyfsad dator/GPU). Av = transkribera först vid stopp, snällare mot svaga datorer.</em></span>
           </label>
-          {#if !selectedDownloaded}
-            {#if downloading === selectedModel}
-              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-              <p class="hint">Hämtar modell… {downloadPct}%</p>
-            {:else}
-              <button class="btn block" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
-                Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
-              </button>
-            {/if}
-          {/if}
-          <button class="btn primary block big mt" onclick={startMeeting} disabled={!selectedDownloaded}>Starta inspelning</button>
+
+          <button class="btn primary block big mt" onclick={startMeeting} disabled={!selectedDownloaded||soundTestBusy}>Starta inspelning</button>
           <p class="hint">Starta mötet (Teams/Zoom/webbläsare) först, så att mötesljudet spelas upp.</p>
+          {#if allJobs.some(j=>j.jobType==='meeting'&&!j.archived)}<section class="recent-meetings"><h3>Senaste möten</h3>{#each allJobs.filter(j=>j.jobType==='meeting'&&!j.archived).slice(0,5) as j}<div class="row"><button class="link" onclick={()=>openJobById(j.id)}>{j.title}</button>{@render workMenu(j)}</div>{/each}</section>{/if}
         {:else if meetingActive || meetingBusy}
           <div class="m-live-head">
             {#if meetingActive}
@@ -3277,9 +3444,11 @@
               <button class="btn small" class:on={meetingShowNotes} onclick={toggleNotesPane} title="Visa/dölj anteckningar">Anteckningar</button>
             </div>
             {#if meetingActive}
-              <button class="btn primary" onclick={stopMeeting}>Stoppa &amp; transkribera</button>
+              <button class="btn primary" onclick={stopMeeting}>Stoppa inspelningen</button>
             {/if}
           </div>
+          <div class="channel-levels">{#each ['Min mikrofon','Övriga deltagare'] as name,i}<div><strong>{name}</strong><span>{channelLevels[i]?.name||'Väntar på ljudenhet…'}</span><meter aria-label={name+' – ljudnivå'} min="0" max="1" value={Math.min(1,(channelLevels[i]?.peak??0)*5)}></meter><small>{channelLevels[i]?.peak>0.0003?'Ljud registreras':'Ingen ljudnivå just nu'}</small></div>{/each}</div>
+          {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
           {#if meetingLagging && meetingActive}
             <div class="banner warn">Transkriberingen släpar efter på den här datorn. All text kommer ikapp när du stoppar — men välj gärna en mindre modell, eller stäng av ”Live-text” nästa gång.</div>
           {/if}
@@ -3304,7 +3473,8 @@
             {/if}
             {#if meetingShowNotes}
               <div class="m-pane m-pane-notes">
-                <div class="m-pane-head"><h3>Anteckningar</h3></div>
+                <div class="m-pane-head"><h3>Anteckningar</h3><button class="btn small" onclick={markMeetingTime}>Markera här</button></div>
+                {#each bookmarks as b,i (b.id)}<div class="row"><span>{fmtTime(b.time)}</span><input aria-label="Tidsmarkerad anteckning" bind:value={bookmarks[i].text} oninput={saveWorkspace}/></div>{/each}
                 <textarea class="m-notes" bind:value={notes} oninput={saveWorkspace} placeholder="Skriv anteckningar medan mötet pågår…"></textarea>
                 <form class="ws-add m-add" onsubmit={(e) => { e.preventDefault(); addAction(); }}>
                   <input bind:value={newActionText} placeholder="Ny åtgärd…" />
@@ -3328,9 +3498,9 @@
       </div>
     </div>
 
-  {:else}
-  <div class="layout" class:collapsed={sidebarCollapsed}>
-    <aside class="sidebar">
+  {:else if screen === "transcribe"}
+  <div class="layout" class:collapsed={controlsCollapsed}>
+    <aside class="sidebar" inert={controlsCollapsed}>
       {#if !transcript}
         <section>
           <h2>Ljudfil</h2>
@@ -3358,21 +3528,8 @@
 
         <section>
           <h2>Modell</h2>
-          <select class="profile" bind:value={selectedModel}>
-            {#each models as m (m.id)}
-              <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
-            {/each}
-          </select>
-          {#if !selectedDownloaded}
-            {#if downloading === selectedModel}
-              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-              <p class="hint">Hämtar… {downloadPct}%</p>
-            {:else}
-              <button class="btn block" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
-                Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
-              </button>
-            {/if}
-          {/if}
+          {@render modelReference('speech')}
+
         </section>
 
         <section>
@@ -3419,8 +3576,13 @@
         <section class="anon-block">
           <h2>Avidentifiering</h2>
           <select class="profile" value={selectedProfile} onchange={(e) => applyProfile(e.currentTarget.value)}>
+            {#if selectedProfile==='custom'}<option value="custom">Egen profil</option>{/if}
             {#each PROFILES as p (p.id)}<option value={p.id}>{p.label}</option>{/each}
           </select>
+          <ReviewProfiles current={{enabled:ALL_KEYS.filter(k=>enabled[k]),terms,useAi}} disabled={busy} onapply={async(settings)=>{
+            enabled=Object.fromEntries(ALL_KEYS.map(k=>[k,settings.enabled.includes(k)]));terms=settings.terms;useAi=!!settings.useAi;selectedProfile='custom';saveWorkspace();
+            if(screen==='deidentify')await runDeidentify();else await runAnonymize();
+          }} />
           <label class="ai-toggle">
             <input type="checkbox" bind:checked={useAi} />
             <span>Djupare granskning (AI)<em>långsammare, fångar fler ledtrådar</em></span>
@@ -3436,7 +3598,7 @@
             <ul class="filters">
               {#each CATEGORIES as cat (cat.key)}
                 <li>
-                  <label><input type="checkbox" bind:checked={enabled[cat.key]} />
+                  <label><input type="checkbox" bind:checked={enabled[cat.key]} onchange={saveWorkspace} />
                     <span class="dotc" style="background:{cat.color}"></span>{cat.label}</label>
                   <span class="count">{countFor(cat.key)}</span>
                 </li>
@@ -3457,7 +3619,10 @@
 
       {:else if view === "summary"}
         <section class="anon-block">
-          <h2>Sammanfattning</h2>
+          <h2>Textbearbetning</h2>
+          {@render modelReference('text')}
+          <details class="secondary-controls"><summary>Fritt utkast utan källhänvisningar</summary>
+          <p class="hint">Källutkast skapas i arbetsytan till höger. Här kan du också skapa ett fritt utkast utan citathänvisningar.</p>
           <select class="profile" bind:value={selectedTemplate}>
             {#each summaryTemplates as t (t.id)}<option value={t.id}>{t.label}</option>{/each}
             <option value="custom">Egen mall / dagordning…</option>
@@ -3465,34 +3630,18 @@
           {#if selectedTemplate === "custom"}
             <textarea class="mt" bind:value={customHeadings} rows="4" placeholder="En rubrik per rad, t.ex.&#10;## Närvarande&#10;## Dagordning&#10;## Beslut"></textarea>
           {/if}
-          <select class="profile mt" bind:value={selectedSummaryModel}>
-            {#each summaryModels as m (m.id)}
-              <option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>
-            {/each}
-          </select>
-          {#if !summaryDownloaded}
-            {#if downloading === selectedSummaryModel}
-              <div class="dl"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-              <p class="hint">Hämtar… {downloadPct}%</p>
-            {:else}
-              <button class="btn block mt" onclick={() => downloadSummaryModel(selectedSummaryModel)} disabled={!!downloading}>
-                Hämta modell ({summaryModels.find((m) => m.id === selectedSummaryModel)?.sizeMb ?? "?"} MB)
-              </button>
-            {/if}
-          {/if}
+
+
           {#if analysis}
             <label class="ai-toggle">
               <input type="checkbox" bind:checked={summaryFromAnon} />
-              <span>Sammanfatta avidentifierad text<em>använder maskerade namn/uppgifter</em></span>
+              <span>Använd maskerad text i det fria utkastet<em>gäller inte källutkastets underlag</em></span>
             </label>
           {/if}
-          <label class="ai-toggle">
-            <input type="checkbox" bind:checked={includeTranscript} />
-            <span>Bifoga transkript<em>protokoll + transkript i ett dokument</em></span>
-          </label>
-          <button class="btn primary block mt" onclick={runSummarize} disabled={busy || !summaryDownloaded}>
-            {summaryDraft ? "Generera om" : "Skapa sammanfattning"}
+          <button class="btn primary block mt" onclick={runSummarize} disabled={busy || qaBusy || actionsBusy || !summaryDownloaded}>
+            Skapa fritt utkast
           </button>
+          </details>
         </section>
 
       {:else if view === "qa"}
@@ -3501,7 +3650,7 @@
           <p class="hint">Ställ frågor om transkriptet i panelen till höger. Svaren bygger bara på texten — inget hittas på.</p>
         </section>
 
-      {:else if view === "notes"}
+      {:else if (view === "notes" || view === "actions")}
         <section>
           <h2>Anteckningar & åtgärder</h2>
           <p class="hint">Deltagare, fria anteckningar, att-göra-punkter och uppföljning — sparas med projektet. Du kan rätta talarnas namn i transkriptet och hämta in dem som deltagare.</p>
@@ -3509,42 +3658,26 @@
         <section>
           <h2>Föreslå åtgärder (AI)</h2>
           <p class="hint">Den lokala AI:n läser transkriptet och föreslår att-göra-punkter.</p>
-          <select class="profile" bind:value={selectedSummaryModel}>
-            {#each summaryModels as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
-          </select>
+          {@render modelReference('text')}
           {#if analysis}
             <label class="ai-toggle">
               <input type="checkbox" bind:checked={summaryFromAnon} />
               <span>Använd avidentifierad text<em>maskerade namn/uppgifter</em></span>
             </label>
           {/if}
-          <button class="btn primary block mt" onclick={generateActions} disabled={actionsBusy || !summaryDownloaded}>
+          <button class="btn primary block mt" onclick={generateActions} disabled={busy || qaBusy || actionsBusy || !summaryDownloaded}>
             {actionsBusy ? "Tar fram…" : "Föreslå åtgärder"}
           </button>
-          {#if !summaryDownloaded}<p class="hint">Hämta sammanfattningsmodellen i Sammanfattning-panelen först.</p>{/if}
         </section>
 
       {:else}
         {#if meetingMicWav && meetingSysWav}
           <section class="anon-block">
             <h2>Transkribera om</h2>
-            <select class="profile" bind:value={selectedModel}>
-              {#each models as m (m.id)}<option value={m.id}>{m.label}{m.downloaded ? "" : " — hämtas"}</option>{/each}
-            </select>
+            {@render modelReference('speech')}
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeDiarize} /><span>Separera mötesröster automatiskt efteråt</span></label>
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeEchoCancel} /><span>Ta bort eko ur min mik<em>tar bort mötesljudet som läckt in i mikrofonen (om du kört på högtalare)</em></span></label>
-            {#if !selectedDownloaded}
-              {#if downloading === selectedModel}
-                <div class="dl mt"><div class="dl-bar" style="width:{downloadPct}%"></div></div>
-                <p class="hint">Hämtar modell… {downloadPct}%</p>
-              {:else}
-                <button class="btn block mt" onclick={() => downloadModel(selectedModel)} disabled={!!downloading}>
-                  Hämta modell ({models.find((m) => m.id === selectedModel)?.sizeMb ?? "?"} MB)
-                </button>
-              {/if}
-            {:else}
-              <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy}>Kör om med vald modell</button>
-            {/if}
+            <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy || !selectedDownloaded}>Kör om med vald modell</button>
             <p class="hint">Kör Whisper igen på hela inspelningen — oftast bättre än live, särskilt med en större modell. Talaruppdelningen återställs (kör ”Separera mötesröster” igen efteråt).</p>
           </section>
         {/if}
@@ -3562,24 +3695,17 @@
             Tillämpa på hela transkriptet
           </button>
         </section>
-        <section class="anon-block">
-          <h2>Tidsstämplar</h2>
-          <label class="ai-toggle">
-            <input type="checkbox" bind:checked={exportTimestamps} />
-            <span>Tidsstämplar i text/Word-export</span>
-          </label>
-        </section>
         <div class="row">
           <button class="btn grow" onclick={openProject} disabled={busy}>Öppna projekt…</button>
           <button class="btn grow" onclick={saveProject} disabled={busy || !transcript}>
-            Spara projekt{dirty ? " •" : ""}
+            Spara projektkopia…
           </button>
         </div>
       {/if}
     </aside>
 
     <main class="review">
-      {#if error}<div class="banner error">{error}</div>{/if}
+      {#if error}<div class="banner" class:error={!isWorkCancelled(error)} class:cancelled={isWorkCancelled(error)} role={isWorkCancelled(error)?"status":"alert"}>{error}</div>{/if}
       {#if analysis?.warnings.length}{#each analysis.warnings as w}<div class="banner warn">{w}</div>{/each}{/if}
 
       {#if busy && !transcript}
@@ -3593,22 +3719,22 @@
             <p class="state-sub">Allt körs lokalt på din dator. Första körningen laddar modellen.</p>
           {/if}
         </div>
-      {:else if currentJobPending && !(transcript?.utterances?.length)}
+      {:else if currentJobPending && !(transcript?.utterances?.length) && !["notes","actions","overview"].includes(view)}
         <div class="state">
           {#if bgMeetings.some((m) => m.id === currentJobId)}
             <div class="spinner"></div>
             <p class="state-title">Transkriberas i bakgrunden…</p>
-            <p class="state-sub">Transkriptet dyker upp här automatiskt när det är klart. Du kan stänga appen – ljudet är sparat.</p>
+            <p class="state-sub">Transkriptet dyker upp här automatiskt när det är klart. Ljudet är sparat. Om du stänger appen avbryts bearbetningen; öppna mötet och välj Transkribera om för att fortsätta.</p>
           {:else}
             <svg class="state-icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#b45309" stroke-width="1.7"/><path d="M12 7.4v5l3 2" stroke="#b45309" stroke-width="1.7" stroke-linecap="round"/></svg>
             <p class="state-title">Transkriberingen är inte klar</p>
             <p class="state-sub">Det här mötet avbröts innan transkriberingen blev klar. Ljudet är sparat.</p>
             {#if meetingMicWav && meetingSysWav}
-              {#if selectedDownloaded}<button class="btn primary mt" onclick={retranscribeMeeting} disabled={busy}>Transkribera om</button>{:else}<p class="hint">Hämta modellen i panelen till vänster för att transkribera om mötet.</p>{/if}
+              {#if selectedDownloaded}<button class="btn primary mt" onclick={retranscribeMeeting} disabled={busy}>Transkribera om</button>{:else}<p class="hint">Hämta talmodellen under Modeller på datorn för att transkribera om mötet.</p>{/if}
             {/if}
           {/if}
         </div>
-      {:else if !transcript}
+      {:else if !transcript && !["notes","actions","overview"].includes(view)}
         <div class="state">
           <svg class="state-icon" viewBox="0 0 24 24" fill="none">
             <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#3a36b0" stroke-width="1.5" stroke-linecap="round"/>
@@ -3618,41 +3744,36 @@
           <p class="state-sub">Välj modell och språk, slå på <strong>diarisering</strong> för att skilja talare åt, och klicka <strong>Transkribera</strong>. Sedan kan du avidentifiera och exportera.</p>
         </div>
       {:else}
-        {#if busy}
-          <div class="working" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Arbetar…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
+        {#if busy || qaBusy || actionsBusy}
+          <div class="working" role="status" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Arbetar…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
         {/if}
         <div class="review-head actions-only">
           <div class="actions">
-            {#if view === "summary" && summaryDraft}
+            {#if currentJobType==='meeting'}<button class="btn" onclick={()=>openExport('meeting')}>Exportera mötesunderlag</button>{/if}
+            {#if view === "overview"}<span class="hint">Välj innehåll och granska före export.</span>
+            {:else if view === "summary" && summaryDraft}
               <button class="btn primary" onclick={copySummary}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("summary")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => saveSummary("txt")}>.txt</button>
-              <button class="btn" onclick={() => saveSummary("docx")}>Word</button>
+              <button class="btn" onclick={() => openExport("summary")} disabled={busy}>Exportera…</button>
             {:else if view === "review" && analysis}
               <button class="btn primary" onclick={copyAnon}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("anon")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => exportAs("txt", true)}>.txt</button>
-              <button class="btn" onclick={() => exportAs("docx", true)}>Word</button>
-              <button class="btn" onclick={() => exportAs("srt", true)}>.srt</button>
-              <button class="btn" onclick={() => exportAs("vtt", true)}>.vtt</button>
-            {:else if view === "notes"}
+              <button class="btn" onclick={() => openExport("anon")} disabled={busy}>Exportera…</button>
+            {:else if (view === "notes" || view === "actions")}
               <button class="btn primary" onclick={copyWorkspace} disabled={!wsHasContent}>Kopiera</button>
+              <button class="btn" onclick={() => openExport("notes")} disabled={!wsHasContent || busy}>Exportera…</button>
             {:else}
               <button class="btn primary" onclick={copyTranscript}>Kopiera</button>
               <button class="btn" onclick={() => openAiCopy("transcript")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => exportAs("txt", false)}>.txt</button>
-              <button class="btn" onclick={() => exportAs("docx", false)}>Word</button>
-              <button class="btn" onclick={() => exportAs("srt", false)}>.srt</button>
-              <button class="btn" onclick={() => exportAs("vtt", false)}>.vtt</button>
-              {#if hasWords}
-                <button class="btn" onclick={() => exportAs("vtt", false, true)} title="En undertext per ord">.vtt (ord)</button>
-              {/if}
+              <button class="btn" onclick={() => openExport("transcript")} disabled={busy}>Exportera…</button>
             {/if}
           </div>
         </div>
 
         {#if audioSrc}
           <div class="player">
+            {#if meetingMicWav}<label class="track-choice">Lyssna på<select aria-label="Ljudspår" bind:value={playbackTrack} onchange={()=>{audioEl?.pause();playing=false;}}><option value="mix">Båda spåren</option><option value="mic">Min mikrofon</option><option value="system">Övriga deltagare</option></select></label>{/if}
+            <select aria-label="Uppspelningshastighet" bind:value={playbackRate} onchange={()=>{if(audioEl)audioEl.playbackRate=Number(playbackRate);}}><option value={0.75}>0,75×</option><option value={1}>1×</option><option value={1.25}>1,25×</option><option value={1.5}>1,5×</option><option value={2}>2×</option></select>
             <button class="play" onclick={togglePlay} aria-label={playing ? "Pausa" : "Spela"}>
               {#if playing}
                 <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
@@ -3666,6 +3787,7 @@
               type="range"
               min="0"
               max={audioEl?.duration || 0}
+              aria-label="Position i inspelningen"
               step="0.01"
               value={currentTime}
               oninput={(e) => seekTo(+e.currentTarget.value)}
@@ -3673,63 +3795,44 @@
             <audio
               bind:this={audioEl}
               src={audioSrc}
-              preload="auto"
+              preload="metadata"
+              onloadedmetadata={()=>{if(audioEl){audioEl.currentTime=Math.min(currentTime,audioEl.duration||0);audioEl.playbackRate=Number(playbackRate);}}}
               ontimeupdate={() => (currentTime = audioEl?.currentTime ?? 0)}
               onplay={() => (playing = true)}
-              onpause={() => (playing = false)}
+              onpause={() => {playing = false;if(!restoringJob)saveWorkspace();}}
               onended={() => (playing = false)}
             ></audio>
           </div>
         {/if}
 
-        {#if view === "transcript"}
+        {#if view === "overview"}
+          <section class="meeting-overview">
+            <div class="overview-heading"><div><h2>{currentJobTitle}</h2><p>{currentJobPending?'Transkriptet bearbetas. Dina anteckningar och åtgärder är tillgängliga.':'Mötets innehåll och nästa steg.'}</p></div><button class="btn" onclick={prepareFollowup} disabled={meetingActive}>Förbered uppföljningsmöte</button></div>
+            {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
+            {#if currentJobPending}<p role="status">{bgMeetings.find(m=>m.id===currentJobId)?.msg??'Bearbetningen avbröts. Öppna Transkript och välj Transkribera om.'}</p>{/if}
+            <div class="overview-next"><button onclick={()=>tab('transcript')}><strong>Transkript</strong><span>{transcript?.utterances.length??0} avsnitt</span></button><button onclick={()=>tab('notes')}><strong>Anteckningar</strong><span>{bookmarks.length} tidsmarkeringar</span></button><button onclick={()=>tab('actions')}><strong>Beslut och åtgärder</strong><span>{decisions.length} beslut · {actions.filter(a=>!a.done).length} öppna åtgärder</span></button></div>
+            <div class="overview-grid"><section><h3>Syfte och agenda</h3><textarea aria-label="Mötets agenda" bind:value={agenda} oninput={saveWorkspace} rows="6" placeholder="Vad ska mötet handla om?"></textarea></section>
+            <section><h3>Deltagare</h3>{#each participants as p,i}<div class="row"><input aria-label="Deltagarnamn" bind:value={participants[i].name} oninput={saveWorkspace}/><input aria-label="Deltagarens roll" bind:value={participants[i].role} oninput={saveWorkspace}/><button class="link" onclick={()=>removeParticipant(i)} aria-label="Ta bort deltagare">×</button></div>{/each}<button class="btn small" onclick={addParticipant}>Lägg till deltagare</button><button class="btn small" onclick={seedParticipantsFromSpeakers}>Från talare</button>
+              <label class="followup-date">Följ upp den<input type="date" bind:value={followup} onchange={saveWorkspace}/></label></section></div>
+            {#if followupFrom}<button class="link" onclick={()=>followupFrom&&openJobById(followupFrom)}>Öppna föregående möte</button>{/if}
+            {#if summaryDraft}<section><h3>Sammanfattning – utkast</h3><p class="summary-preview">{summaryDraft}</p><button class="btn" onclick={()=>tab('summary')}>Granska och redigera</button></section>{:else}<button class="btn" onclick={()=>tab('summary')} disabled={currentJobPending}>Skapa sammanfattning</button>{/if}
+          </section>
+        {:else if view === "transcript"}
+          {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
           <div class="t-toolbar">
             <button class="btn small" class:on={editMode} onclick={() => (editMode = !editMode)} title="Växla mellan att spela upp och att rätta text">
               {editMode ? "✓ Redigerar" : "Redigera"}
             </button>
             <button class="btn small" onclick={undoEdit} disabled={!undoStack.length}>Ångra</button>
             <span class="meta">
-              {transcript.utterances.length} segment · modell {transcript.model}{transcript.diarized ? " · diariserad" : ""} ·
+              {transcript?.utterances.length??0} segment · modell {transcript?.model}{transcript?.diarized ? " · diariserad" : ""} ·
               {editMode ? "klicka en rad för att rätta · byt talare · ta bort" : "klicka tid för att spela · klicka/dubbelklicka text för att rätta"}
             </span>
           </div>
-          <div class="transcript">
-            {#each groups as g}
-              <div class="turn">
-                {#if g.speaker}
-                  <input class="speaker" value={speakerLabels[g.speaker]} oninput={(e) => renameSpeaker(g.speaker!, e.currentTarget.value)} />
-                {/if}
-                {#each g.items as it}
-                  <p class="utext">
-                    <span class="ts" role="button" tabindex="0"
-                      onclick={() => seekTo(it.u.start)}
-                      onkeydown={(e) => e.key === "Enter" && seekTo(it.u.start)}
-                    >{fmtTime(it.u.start)}</span>{#if editingIdx === it.idx}<textarea
-                        class="edit"
-                        bind:value={editText}
-                        onblur={commitEdit}
-                        onkeydown={(e) => { if (e.key === "Escape") cancelEdit(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commitEdit(); }}
-                      ></textarea>{:else}<span
-                        class="body"
-                        class:editing={editMode}
-                        role="button"
-                        tabindex="0"
-                        onclick={() => editMode && startEdit(it.idx)}
-                        ondblclick={() => startEdit(it.idx)}
-                        onkeydown={(e) => e.key === "Enter" && startEdit(it.idx)}
-                      >{#if it.u.words && it.u.words.length}{#each it.u.words as w}<button
-                              class="word"
-                              class:playing={playing && currentTime >= w.start && currentTime < w.end}
-                              onclick={() => (editMode ? startEdit(it.idx) : seekTo(w.start))}
-                            >{w.text}</button>{" "}{/each}{:else}<span
-                            class="useg"
-                            class:playing={activeUtterance === it.idx}
-                          >{it.u.text}</span>{/if}</span>{/if}{#if editMode}<span class="ed-ctrls">{#if speakerOptions.length}<select class="ed-spk" value={it.u.speaker ?? ""} onchange={(e) => setSpeaker(it.idx, e.currentTarget.value)} title="Byt talare för repliken">{#each speakerOptions as s}<option value={s}>{speakerLabels[s] ?? s}</option>{/each}</select>{/if}<button class="ed-del" title="Ta bort repliken" aria-label="Ta bort repliken" onclick={() => deleteUtterance(it.idx)}>×</button></span>{/if}
-                  </p>
-                {/each}
-              </div>
-            {/each}
-          </div>
+          {#key currentJobId}
+            <TranscriptView bind:this={transcriptView} utterances={transcript?.utterances??[]} {speakerLabels} {speakerOptions} {playing} {currentTime} {editMode} {editingIdx} bind:editText
+              onseek={seekTo} onedit={startEdit} oncommit={commitEdit} oncancel={cancelEdit} onrename={renameSpeaker} onspeaker={setSpeaker} ondelete={deleteUtterance} />
+          {/key}
         {:else if view === "qa"}
           <div class="qa">
             {#if qaHistory.length}
@@ -3746,9 +3849,9 @@
             {/if}
             <form class="qa-form" onsubmit={(e) => { e.preventDefault(); askMeeting(); }}>
               <input class="qa-input" bind:value={qaQuestion} placeholder="Fråga mötet…" disabled={qaBusy} />
-              <button class="btn primary" type="submit" disabled={qaBusy || !qaQuestion.trim() || !summaryDownloaded}>{qaBusy ? "…" : "Fråga"}</button>
+              <button class="btn primary" type="submit" disabled={busy || qaBusy || actionsBusy || !qaQuestion.trim() || !summaryDownloaded}>{qaBusy ? "…" : "Fråga"}</button>
             </form>
-            {#if !summaryDownloaded}<p class="hint">Q&amp;A använder sammanfattningsmodellen — hämta den i Sammanfattning-panelen först.</p>{/if}
+            {@render modelReference('text')}
           </div>
         {:else if view === "review"}
           {#if analysis}
@@ -3759,11 +3862,13 @@
             klicka för att slå av/på · klicka ett vanligt ord för att maskera manuellt (blir <span class="lg-manual">understruket</span>)
           </div>
           <!-- svelte-ignore a11y_mouse_events_have_key_events a11y_no_static_element_interactions -->
+          <ReviewComparison revision={reviewBasis} rejected={rejectedIds()} stale={reviewStale} approved={reviewApprovedBasis===reviewBasis} onapprove={()=>{reviewApprovedBasis=reviewBasis;saveWorkspace();}}>
           <div class="document" role="presentation" onmouseup={onDocMouseUp}>{#each analysis.segments as seg, i}{#if (i === 0 || seg.para !== analysis.segments[i - 1].para) && speakerForPara(seg.para)}<span class="rev-speaker">{speakerForPara(seg.para)}: </span>{/if}{#if seg.span === null}{#if seg.word}<button class="maskword" onclick={() => openMask(seg)} title="Maskera manuellt">{seg.text}</button>{:else}{seg.text}{/if}{:else}{@const info = analysis.spans[seg.span]}{@const active = isActive(seg.span)}{@const off = !enabled[info.category]}<button
                   class="hit" class:active class:rejected={!active && !off} class:disabled={off} class:manual={info.source === "manual"}
                   style="--c:{colorOf(info.category)}"
                   title={active ? `${info.text} → ${info.replacement} · klicka för att slå av` : `${info.text} · klicka för att slå på`}
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
+          </ReviewComparison>
           <div class="reassure">
             <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
@@ -3775,16 +3880,22 @@
           </div>
           {/if}
         {:else if view === "summary"}
+          <GroundedDraft disabled={qaBusy || actionsBusy} value={groundedWork} sources={groundedSources} context={groundedContext} model={selectedSummaryModel} canListen={!!audioPath} bind:busy before={checkpointWork} onchange={saveGrounded} onseek={seekGrounded} onaction={addGroundedAction} ondecision={addGroundedDecision} onuse={useGrounded} />
           {#if summaryDraft}
           <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
-          <textarea class="summary-edit" bind:value={summaryDraft} spellcheck="true"></textarea>
+          <textarea disabled={busy || qaBusy || actionsBusy} class="summary-edit" bind:value={summaryDraft} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} aria-label="Sammanfattning – redigerbart utkast" spellcheck="true"></textarea>
           {:else}
           <div class="empty-view">
             <h3>Skapa en sammanfattning</h3>
             <p class="hint">Välj mall och modell och klicka <strong>Skapa sammanfattning</strong> i panelen till vänster — utkastet dyker upp här för redigering.</p>
           </div>
           {/if}
-        {:else if view === "notes"}
+        {:else if (view === "notes" || view === "actions")}
+          {#if view==='notes'}<section class="meeting-marks"><h3>Tidsmarkerade anteckningar</h3><button class="btn small" onclick={markMeetingTime} disabled={!audioSrc}>Markera här</button>
+            {#each bookmarks as b,i (b.id)}<div class="row"><button class="btn small" onclick={()=>seekTo(b.time)}>{fmtTime(b.time)}</button><input aria-label="Tidsmarkerad anteckning" bind:value={bookmarks[i].text} oninput={saveWorkspace}/><button class="link" onclick={()=>{bookmarks=bookmarks.filter(x=>x.id!==b.id);saveWorkspace();}} aria-label="Ta bort tidsmarkering">×</button></div>{/each}</section>{/if}
+          {#if view==='actions'}<section class="meeting-decisions"><details><summary>Fritt åtgärdsförslag</summary><p class="hint">AI-förslagen läggs i listan för manuell kontroll.</p><button class="btn" onclick={generateActions} disabled={busy||qaBusy||actionsBusy||currentJobPending||!summaryDownloaded}>Föreslå åtgärder</button></details><div class="row"><h3>Beslut</h3><button class="btn" onclick={()=>tab("summary")} disabled={currentJobPending}>Föreslå beslut och åtgärder från källan</button></div>
+            {#each decisions as d,i (d.id)}<div class="decision"><input aria-label="Beslut" bind:value={decisions[i].text} oninput={saveWorkspace}/>{#if d.quote}<blockquote>{d.quote}</blockquote>{#if d.start!=null}<button class="link" onclick={()=>seekTo(d.start!)}>Lyssna vid {fmtTime(d.start)}</button>{/if}{/if}<button class="link" onclick={()=>{decisions=decisions.filter(x=>x.id!==d.id);saveWorkspace();}}>Ta bort beslut</button></div>{/each}
+            <form class="row" onsubmit={e=>{e.preventDefault();addDecision();}}><input aria-label="Nytt beslut" bind:value={decisionText} placeholder="Vad beslutade ni?"/><button class="btn" disabled={!decisionText.trim()}>Lägg till beslut</button></form></section>{/if}
           {#snippet actionsBody()}
             {#if actionPasteOpen}
               <div class="ws-paste">
@@ -3802,6 +3913,7 @@
                     <input class="ws-check" type="checkbox" checked={a.done} onchange={() => toggleAction(i)} aria-label="Klar" />
                     <div class="ws-action-main">
                       <input class="ws-atext" bind:value={actions[i].text} oninput={saveWorkspace} placeholder="Åtgärd" />
+                      {#if a.source}<details><summary>Visa källa</summary><blockquote>{a.source.quote}</blockquote>{#if a.source.start!==null}<button class="link" onclick={()=>listenActionSource(a.source!)}>Lyssna på källan</button>{/if}</details>{/if}
                       <div class="ws-ameta">
                         <input class="ws-assignee" bind:value={actions[i].assignee} oninput={saveWorkspace} placeholder="Ansvarig" />
                         <input class="ws-due" type="date" bind:value={actions[i].due} onchange={saveWorkspace} title="Klart till" />
@@ -3824,7 +3936,7 @@
             </form>
           {/snippet}
 
-          <div class="ws">
+          <div class="ws" class:notes-only={view==='notes'} class:actions-only={view==='actions'}>
             {#if maximized === "notes"}
               <section class="ws-card ws-max">
                 <header class="ws-head">
@@ -3847,7 +3959,7 @@
             {:else}
               <div class="ws-grid">
                 <div class="ws-col-main">
-                  <section class="ws-card">
+                  <section class="ws-card notes-card">
                     <header class="ws-head">
                       <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h10l4 4v12H5z"/><path d="M9 11h6M9 15h6"/></svg> Anteckningar</h3>
                       <button class="btn small" onclick={() => (maximized = "notes")} title="Maximera">Maximera</button>
@@ -3855,7 +3967,7 @@
                     <textarea class="ws-notes" bind:value={notes} oninput={saveWorkspace} placeholder="Fria anteckningar från mötet…"></textarea>
                   </section>
 
-                  <section class="ws-card">
+                  <section class="ws-card actions-card">
                     <header class="ws-head">
                       <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 7.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8"/><path d="M9 11l3 3 8-8"/></svg> Att göra {#if actions.length}<span class="ws-badge">{actions.filter((a) => a.done).length}/{actions.length}</span>{/if}</h3>
                       <div class="ws-head-actions">
@@ -3867,7 +3979,7 @@
                   </section>
                 </div>
 
-                <div class="ws-col-side">
+                <div class="ws-col-side facts-card">
                   <section class="ws-card">
                     <header class="ws-head">
                       <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 5.5a3 3 0 0 1 0 5M17.5 14c2.2.5 3.5 2.2 3.5 5"/></svg> Deltagare</h3>
@@ -3911,7 +4023,15 @@
     </main>
   </div>
   {/if}
+  </div>
 </div>
+
+{#if versionsOpen && currentJobId}
+  <VersionsDialog jobId={currentJobId} original={originalText()} onrestore={restoreVersion} onclose={() => versionsOpen=false} />
+{/if}
+{#if exportOpen}
+  <ExportDialog choices={exportChoices} initial={exportInitial} prepare={prepareExport} onsave={saveExportSnapshot} onclose={() => exportOpen = false} />
+{/if}
 
 {#if toast}
   <div class="toast"><span class="accentbar"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M5 13l4 4L19 7"/></svg>{toast}</div>
@@ -3924,7 +4044,7 @@
       <h3 class="modal-title">Kopiera för AI</h3>
 
       {#if aiDeid}
-        <p class="ai-status ok">✓ Avidentifierad text – trygg att klistra in i en extern AI-tjänst.</p>
+        <p class="ai-status ok">Valda maskeringar tillämpas. Kontrollera texten innan du skickar den till en extern tjänst.</p>
       {:else}
         <div class="banner warn">
           Den här texten är <strong>inte avidentifierad</strong>. Klistrar du in den i en extern AI-tjänst
@@ -4011,33 +4131,27 @@
 
 <style>
   :global(:root) {
-    --ink: #1a1a1d; --muted: #696a6f; --faint: #a6a7ad; --bg: #ffffff;
+    --ink: #242431; --muted: #626275; --faint: #626275; --bg: #ffffff;
+    --nav-bg: #f3f3f8; --accent-soft: #ededff;
     --canvas: #ffffff; /* pure white */
     --line: #e8e8eb; --line-2: #dadadf; --accent: #3a36b0; --accent-press: #2e2b8f; /* deep ink-indigo */
     --shadow-sm: none; --shadow-md: none; --shadow-lg: none; /* editorial: depth from hairlines + space, not shadows */
   }
   :global(body) { margin: 0; font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--canvas); -webkit-font-smoothing: antialiased; }
-  .app { height: 100vh; display: flex; flex-direction: column; }
+  .app { height:100dvh; display:grid; grid-template-columns:204px minmax(0,1fr); }
+  .app-content { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
 
-  header { display: flex; align-items: flex-end; gap: 15px; padding: 20px 30px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
-  .logo { width: 36px; height: 36px; flex: none; margin-bottom: 3px; }
-  .brand h1 { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 34px; line-height: .9; margin: 0; }
+  .workspace-header { display: flex; align-items: flex-end; gap: 15px; padding: 20px 30px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
   .spacer { flex: 1; }
-  .lockbadge { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-bottom: 5px; }
-  .dot { width: 6px; height: 6px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
 
-  .layout { flex: 1; display: grid; grid-template-columns: 310px 1fr; overflow: hidden; transition: grid-template-columns .16s ease; }
+  .layout { min-height:0; flex: 1; display: grid; grid-template-columns: 280px minmax(0,1fr); overflow: hidden; transition: grid-template-columns .16s ease; }
   .layout.collapsed { grid-template-columns: 0 1fr; }
   .layout.collapsed .sidebar { padding: 0; border-right: none; overflow: hidden; }
   .layout.collapsed .ws { max-width: none; } /* sidebar hidden → let the workspace use the full width */
   .sidebar { padding: 22px 24px; overflow: auto; border-right: 1px solid var(--line); }
-  .hdr-toggle { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin-bottom: 3px; border: 1px solid var(--line-2); border-radius: 3px; background: var(--bg); color: var(--muted); cursor: pointer; transition: .14s; }
-  .hdr-toggle:hover { border-color: var(--accent); color: var(--accent); }
-  .hdr-toggle.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .hdr-toggle svg { width: 18px; height: 18px; }
   section { margin-bottom: 22px; }
-  h2 { font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--faint); margin: 0 0 11px; font-weight: 600; }
-  .hint { font-size: 12px; color: var(--faint); margin: 6px 0 0; }
+  h2 { font-size: 14px; letter-spacing: 0; text-transform: none; color: var(--ink); margin: 0 0 11px; font-weight: 600; }
+  .hint { font-size: 13px; color: var(--faint); margin: 6px 0 0; }
 
   textarea, select.profile {
     width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; color: var(--ink);
@@ -4056,7 +4170,6 @@
   .btn:disabled, .btn.primary:disabled { background: var(--canvas); color: var(--faint); border-color: var(--line); box-shadow: none; filter: none; cursor: default; }
   .btn.block { width: 100%; }
   .btn.mt { margin-top: 8px; }
-  select.profile.mt { margin-top: 8px; }
   .btn.big { padding: 12px; font-size: 15px; margin-bottom: 22px; }
   .link { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0 2px; }
   .x { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
@@ -4099,20 +4212,6 @@
   .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   .meta strong { color: var(--ink); font-weight: 700; }
 
-  .transcript { flex: 1; overflow: auto; max-width: 84ch; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 16px 24px; }
-  .turn { margin-bottom: 16px; }
-  .speaker { font: inherit; font-weight: 700; font-size: 13px; color: var(--accent); border: none; background: none; padding: 0 0 2px; border-bottom: 1px dashed transparent; }
-  .speaker:hover, .speaker:focus { border-bottom-color: var(--line-2); outline: none; }
-  .utext { margin: 3px 0 0; line-height: 1.8; font-size: 15.5px; }
-  .ts { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 10px; cursor: pointer; }
-  .ts:hover { color: var(--accent); }
-  .word, .useg { border: none; background: none; font: inherit; line-height: inherit; color: inherit; cursor: pointer; padding: 0 1px; border-radius: 3px; }
-  .word:hover, .useg:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-  .word.playing, .useg.playing { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
-  .body { cursor: text; border-radius: 3px; }
-  .body:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
-  .edit { width: 100%; box-sizing: border-box; font: inherit; font-size: 15.5px; line-height: 1.7; border: 1px solid var(--accent); border-radius: 4px; padding: 6px 9px; resize: vertical; margin-top: 2px; }
-
   .progress { width: 220px; height: 7px; background: var(--line); border-radius: 4px; margin: 4px auto 10px; overflow: hidden; }
   .progress-bar { height: 100%; background: var(--accent); transition: width .25s; }
 
@@ -4149,6 +4248,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .banner { border-radius: 3px; padding: 10px 13px; margin-bottom: 12px; font-size: 13.5px; }
+  .banner.cancelled { background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
   .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
   .banner.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 
@@ -4157,14 +4257,6 @@
   .toast .accentbar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
 
   /* ---- task shell: brand-as-home button + discreet top nav ---- */
-  .brandbtn { display: flex; align-items: flex-end; gap: 12px; background: none; border: none; padding: 0; cursor: pointer; }
-  .brandbtn .brand h1 { transition: color .14s; }
-  .brandbtn:hover .brand h1 { color: var(--accent); }
-  .topnav { display: flex; gap: 2px; margin-bottom: 6px; }
-  .topnav button { font: inherit; font-size: 13.5px; font-weight: 500; border: none; background: none; color: var(--faint); padding: 5px 11px; border-radius: 3px; cursor: pointer; transition: .14s; }
-  .topnav button:hover { color: var(--ink); }
-  .topnav button.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600; }
-  .topnav button:disabled { color: var(--faint); opacity: .5; cursor: default; background: none; }
 
   /* ---- polish: interactions, focus, selection, scrollbars (within the existing look) ---- */
   .btn:active:not(:disabled) { transform: translateY(1px); }
@@ -4184,17 +4276,9 @@
   /* ---- home / history ---- */
   .home { flex: 1; overflow: auto; padding: 46px 40px 60px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
   .big-title { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 42px; line-height: 1.06; color: var(--ink); margin: 0 0 30px; letter-spacing: -.01em; text-transform: none; }
-  .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-  .card { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 22px 22px 20px; cursor: pointer; box-shadow: var(--shadow-sm); transition: border-color .16s, box-shadow .16s, transform .16s; font: inherit; color: var(--ink); }
-  .card:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 3%, var(--bg)); }
-  .card-ic-wrap { width: 48px; height: 48px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); display: flex; align-items: center; justify-content: center; margin-bottom: 15px; transition: background .16s, transform .16s; }
-  .card:hover .card-ic-wrap { background: color-mix(in srgb, var(--accent) 15%, transparent); transform: scale(1.06); }
-  .card-ic { width: 25px; height: 25px; color: var(--accent); }
-  .card h3 { font-size: 16px; font-weight: 600; margin: 0 0 5px; }
-  .card p { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.5; }
 
   .recent { margin-top: 34px; }
-  .recent h2 { font-size: 11px; letter-spacing: .15em; text-transform: uppercase; color: var(--faint); margin: 0 0 11px; font-weight: 600; }
+  .recent h2 { font-size: 14px; letter-spacing: 0; text-transform: none; color: var(--ink); margin: 0 0 11px; font-weight: 600; }
   .job-strip, .job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .job-item { display: flex; align-items: center; gap: 6px; }
   .job-row { flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 12px 15px; cursor: pointer; font: inherit; color: var(--ink); box-shadow: var(--shadow-sm); transition: border-color .14s, box-shadow .14s, transform .14s; min-width: 0; }
@@ -4326,12 +4410,6 @@
   .t-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .t-toolbar .meta { margin: 0; }
   .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .body.editing { cursor: text; border-radius: 4px; }
-  .body.editing:hover { background: #fff7e0; box-shadow: 0 0 0 2px #fff7e0; }
-  .ed-ctrls { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
-  .ed-spk { font: inherit; font-size: 12px; padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--ink); }
-  .ed-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 3px; }
-  .ed-del:hover { background: #fde8e8; color: #c0392b; }
   .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; margin-bottom: 18px; display: block; }
   .job-search:focus { outline: none; border-color: var(--accent); }
   .job-path { color: var(--faint); font-weight: 400; }
@@ -4355,7 +4433,7 @@
   .bulk-n { font-weight: 600; font-size: 13px; color: var(--accent); margin-right: 4px; }
   .bulk-move { position: relative; }
   .job-cat-wrap .fp-menu { left: auto; right: 0; }
-  .hist { display: flex; gap: 18px; align-items: flex-start; }
+  .hist { display: flex; gap: 18px; align-items: flex-start; padding:24px; box-sizing:border-box; min-width:0; }
   .hist-tree { flex: 0 0 240px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100vh - 130px); overflow: auto; padding-right: 4px; }
   .tree-rowwrap { display: flex; align-items: center; border-radius: 3px; }
   .tree-rowwrap.drop, .tree-node.drop { outline: 2px solid var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
@@ -4373,6 +4451,10 @@
   .tree-new { text-align: left; border: 1px dashed var(--line-2); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 3px; margin-top: 6px; }
   .tree-new:hover { border-color: var(--accent); color: var(--accent); }
   .hist-main { flex: 1; min-width: 0; }
+  .library-tools { display:flex;align-items:end;gap:18px;padding:20px 28px 8px;flex-wrap:wrap; }
+  .library-search { flex:1;min-width:min(240px,100%);font-size:13px;color:var(--muted); }
+  .library-search .job-search { box-sizing:border-box;display:block;width:100%;margin:6px 0 0; }
+  .library-status { margin:4px 28px 12px;font-size:14px;color:var(--muted); }
   .hist-bar { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px; }
   .hist-where { font-size: 16px; font-weight: 600; }
   .hist-count { color: var(--faint); font-size: 13px; }
@@ -4417,7 +4499,6 @@
   .job-chip svg { width: 13px; height: 13px; }
   .job-chip.done { color: #0d9488; background: #e7f6f3; }
   .job-chip.pending { color: #b45309; background: #fef3c7; }
-  .nav-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
   .home-open { display: inline-block; margin-top: 30px; }
   .big-hint { font-size: 14px; line-height: 1.6; max-width: 520px; }
 
@@ -4428,8 +4509,6 @@
   .src-text:focus { outline: none; border-color: var(--accent); }
 
   /* ---- Åtaganden (cross-project action overview) ---- */
-  .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; margin-left: 6px; font-size: 11px; font-weight: 600; line-height: 1; color: #fff; background: #c0392b; border-radius: 9px; vertical-align: middle; }
-  .card-warn { color: #c0392b; font-weight: 500; }
 
   .tasks { max-width: 980px; margin: 0 auto; padding: 4px 2px 60px; }
   .tasks-head { margin-bottom: 18px; }
@@ -4484,4 +4563,44 @@
   .t-flag { font-size: 11px; font-weight: 600; color: #fff; background: #c0392b; border-radius: 3px; padding: 2px 7px; }
   .t-del { flex: none; font-size: 20px; line-height: 1; color: var(--faint); background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 3px; }
   .t-del:hover { color: #c0392b; background: #fde8e8; }
+
+  .workspace-header { align-items:center; min-height:78px; padding:16px 28px; flex-wrap:wrap; }
+  .workspace-heading { display:grid; gap:4px; min-width:0; max-width:55ch; overflow-wrap:anywhere; }
+  .workspace-location { color:var(--muted); font-size:13px; } .workspace-heading strong { font-size:16px; font-weight:500; }
+  .save-status { display:flex; flex-wrap:wrap; gap:7px; font-size:13px; color:var(--muted); } .save-status span { font-variant-numeric:tabular-nums; } .save-status.failed { color:#923115; }
+  .save-failure { background:#fff3ea; border-bottom:1px solid #e8cdbd; padding:16px 28px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; color:#923115; } .save-failure div { flex:1; min-width:180px; } .save-failure p { margin:5px 0 0; overflow-wrap:anywhere; font-size:13px; }
+  .workspace-tabs { display:flex; flex-wrap:wrap; gap:6px; padding:14px 28px; border-bottom:1px solid var(--line); }
+  .workspace-tabs button { font:inherit; font-size:14px; color:var(--muted); background:transparent; border:0; border-radius:7px; padding:8px 11px; cursor:pointer; } .workspace-tabs button[aria-pressed=true] { background:var(--accent-soft); color:var(--accent); }
+  .panel-control { padding:10px 28px; border-bottom:1px solid var(--line); }
+  .home-intro { margin:12px 0 0; color:var(--muted); font-size:16px; }
+  .entrypoints { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-block:1px solid var(--line-2); margin:30px 0 20px; }
+  .entrypoints button { font:inherit; color:var(--ink); background:none; border:0; text-align:left; padding:24px 22px; cursor:pointer; display:flex; flex-direction:column; }
+  .entrypoints button:first-child { padding-left:0; } .entrypoints button + button { border-left:1px solid var(--line-2); } .entrypoints button:hover { background:var(--nav-bg); }
+  .entrypoints h3 { font:28px/1.2 'Instrument Serif',serif; margin:0 0 12px; } .entrypoints p { font-size:14px; line-height:1.7; color:var(--muted); margin:0 0 18px; } .entrypoints span { font-size:13px; color:var(--accent); margin-top:auto; }
+  .home-tools { display:flex; flex-wrap:wrap; gap:22px; margin-bottom:32px; } .meeting-heading { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:24px; } .meeting-heading .big-title { margin:0 auto 0 0; }
+  .job-strip .job-row { width:100%; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:18px 0; }
+  .job-strip .job-badge { color:var(--accent); background:var(--accent-soft); text-transform:none; font-size:12px; letter-spacing:0; }
+  @media(max-width:550px) { .job-strip .job-row { flex-wrap:wrap; gap:8px; } .job-strip .job-title { white-space:normal; overflow-wrap:anywhere; } .job-strip .job-date { flex-basis:100%; } }
+  .btn,textarea,select.profile,.document,.summary-edit { border-radius:7px; }
+  .review { min-width:0; min-height:0; } .review-head { flex-wrap:wrap; } .document,.summary-edit { min-height:200px; }
+  .layout { min-height:440px; } .summary-edit { font-size:16px; } .ts { font-size:12px; }
+  :global(button:focus-visible),:global(input:focus-visible),:global(textarea:focus-visible),:global(select:focus-visible),:global(summary:focus-visible) { outline:3px solid var(--accent); outline-offset:3px; }
+  @media(max-width:1050px) { .app { height:auto; min-height:100dvh; grid-template-columns:1fr; } .app-content { overflow:visible; } .layout { overflow:visible; } .review { overflow:visible; } }
+  @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .entrypoints { grid-template-columns:1fr; } .entrypoints button,.entrypoints button:first-child { padding:20px 0; } .entrypoints button + button { border-left:0; border-top:1px solid var(--line); } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }
+  @media(prefers-reduced-motion:reduce) { :global(*),:global(*::before),:global(*::after) { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+
+  .dictation-container { min-width:0; overflow:auto; }
+  .dictation-container[hidden] { display:none; }
+  .saved-dictations { margin-top:28px; }
+  @media(max-width:800px) {
+    .hist { flex-direction:column; padding:16px; }
+    .hist-tree { flex:0 0 auto; width:100%; max-height:180px; box-sizing:border-box; }
+    .hist-main { width:100%; }
+    .hist .job-row { flex-wrap:wrap; }
+    .hist .job-title { flex-basis:55%; }
+    .hist .job-date { white-space:normal; }
+  }
+  .model-reference { display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:13px;line-height:1.6;margin:8px 0;color:var(--muted); }
+  .model-reference strong { color:var(--ink);font-weight:500; }.model-reference small { flex-basis:100%; }.secondary-controls { margin-top:20px; }.secondary-controls summary { cursor:pointer;font-size:13px;color:var(--muted);margin-bottom:14px; }
+  :global(button:focus-visible), :global(select:focus-visible), :global(input:focus-visible), :global(summary:focus-visible) { outline:2px solid var(--accent);outline-offset:3px; }
 </style>

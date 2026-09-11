@@ -38,3 +38,8 @@ __pycache__/
 
 Thumbs.db
 *.log
+/.build-tools/
+/dist/
+
+# Diagnostic screenshots from failed local UI test runs
+/docs/**/failure.png

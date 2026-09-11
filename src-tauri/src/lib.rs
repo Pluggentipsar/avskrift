@@ -2,19 +2,28 @@
 //! transcript, and export. Heavy work runs on a blocking thread pool via `tauri::async_runtime`.
 
 mod aec;
+mod meeting;
 mod ai;
 mod align;
 mod audio;
 mod capture;
 mod diarize;
+mod dictation;
+#[cfg(windows)]
+mod dictation_native;
 mod docio;
 mod download;
 mod engine;
 mod jobs;
 mod llm;
+mod memory;
 mod models;
 mod pii;
 mod summarize;
+mod grounded;
+mod text_budget;
+mod storage;
+mod work;
 mod transcribe;
 mod transcript;
 
@@ -35,12 +44,11 @@ use transcript::Transcript;
 /// A running meeting's live worker: the join handle (returns the utterances it transcribed) paired
 /// with an abort flag. Setting the flag makes the worker stop draining its backlog promptly at stop,
 /// so finalisation can fall back to a single batch pass instead of a slow per-chunk catch-up.
-type MeetingWorker = (std::thread::JoinHandle<Vec<transcript::Utterance>>, Arc<AtomicBool>);
+type MeetingWorker = (std::thread::JoinHandle<meeting::LiveResult>, Arc<AtomicBool>);
 
 /// All long-lived backend state, managed by Tauri.
 struct Backend {
     engine: Engine,
-    transcriber: Mutex<Transcriber>,
     /// The most recent transcript (timings + speakers), held for export.
     transcript: Mutex<Option<Transcript>>,
     /// Lazily-loaded summariser, keyed by the loaded model id (reloaded on change).
@@ -58,7 +66,92 @@ fn emit(app: &AppHandle, msg: impl Into<String>) {
     let _ = app.emit("avskrift:progress", msg.into());
 }
 
+#[tauri::command]
+fn begin_work() -> Result<String, String> { work::begin().map_err(|e| e.to_string()) }
+#[tauri::command]
+fn cancel_work(id: String) -> bool { work::cancel(&id) }
+#[tauri::command]
+fn forget_work(id: String) { work::forget(&id); }
+
+#[tauri::command]
+fn meeting_levels() -> Vec<capture::ChannelLevel> { capture::levels() }
+#[tauri::command]
+async fn test_meeting_audio(app:AppHandle, mic_device:Option<String>, system_device:Option<String>) -> Result<Vec<capture::ChannelLevel>,String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<dictation::Dictation>().while_idle(|| {
+            let backend=app.state::<Backend>();
+            let slot=backend.meeting.lock().unwrap();
+            if slot.is_some() { return Err("Avsluta inspelningen innan du testar ljudet.".into()); }
+            let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+            let mic=std::env::temp_dir().join(format!("avskrift-test-{stamp}-mic.wav"));
+            let sys=std::env::temp_dir().join(format!("avskrift-test-{stamp}-system.wav"));
+            let result=(|| {
+                let (cap,rx)=capture::MeetingCapture::start(mic.clone(),sys.clone(),mic_device,system_device)?;
+                drop(rx);
+                let mut maximum=capture::levels();
+                for _ in 0..30 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    for (max,now) in maximum.iter_mut().zip(capture::levels()) {
+                        max.name=now.name;max.peak=max.peak.max(now.peak);max.active=now.active;
+                    }
+                }
+                let files=cap.stop()?;if let Some(e)=files.capture_error{return Err(e);}Ok(maximum)
+            })();
+            let _=std::fs::remove_file(mic);let _=std::fs::remove_file(sys);
+            result
+        })
+    }).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+async fn organize_job(app: AppHandle, id:String, pinned:Option<bool>, archived:Option<bool>, last_opened:Option<String>) -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend=app.state::<Backend>();
+        jobs::edit(&backend.paths.jobs_dir,&id,|job| {
+            if let Some(v)=last_opened {job.extra.insert("lastOpened".into(),v.into());}
+            if let Some(v)=pinned {job.extra.insert("pinned".into(),v.into());}
+            if let Some(v)=archived {job.extra.insert("archived".into(),v.into());}
+            Ok(())
+        }).map(|_|()).map_err(|e|e.to_string())
+    }).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+async fn meeting_devices() -> Result<Vec<capture::InputDevice>,String> {
+    tauri::async_runtime::spawn_blocking(capture::devices).await.map_err(|e|e.to_string())?
+}
+
 // ---- Models ----
+#[derive(serde::Serialize)]
+#[serde(rename_all="camelCase")]
+struct RuntimeMemoryStatus {
+    busy: bool,
+    memory: Option<memory::MemoryInfo>,
+    text: Option<String>,
+    speech: Option<String>,
+}
+#[tauri::command]
+async fn runtime_memory_status() -> Result<RuntimeMemoryStatus,String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let Ok(_work)=memory::WORK.try_lock() else {
+            return RuntimeMemoryStatus{busy:true,memory:None,text:None,speech:None};
+        };
+        RuntimeMemoryStatus{busy:false,memory:Some(memory::sample()),text:llm::cache_status(),speech:transcribe::cache_status()}
+    }).await.map_err(|e|e.to_string())
+}
+
+fn start_model_maintenance(app:AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(15));
+        // Never wait for, interrupt or release an active native model.
+        if let Ok(_work)=memory::WORK.try_lock() {
+            let pressure=memory::sample().pressure();
+            let now=std::time::Instant::now();
+            llm::sweep(now,pressure);
+            transcribe::sweep(now,pressure);
+            app.state::<Backend>().engine.sweep(now,pressure);
+        }
+    });
+}
+
 
 #[tauri::command]
 fn list_whisper_models(backend: State<Backend>) -> Vec<WhisperModelInfo> {
@@ -151,8 +244,8 @@ struct SummarizeArgs {
 /// Generate structured Swedish minutes from a transcript. Returns the draft markdown — always shown
 /// to the user as an editable draft with an "AI-generated, review" warning.
 #[tauri::command]
-async fn summarize(app: AppHandle, args: SummarizeArgs) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || run_summarize(&app, args))
+async fn summarize(app: AppHandle, args: SummarizeArgs, work_id: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || run_summarize(&app, args)))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -172,6 +265,7 @@ fn run_summarize(app: &AppHandle, args: SummarizeArgs) -> anyhow::Result<String>
     let needs_load = !matches!(&*guard, Some((cur, _)) if *cur == args.model);
     if needs_load {
         progress(&format!("Laddar modell ({})…", args.model));
+        *guard = None; // Free the previous model before allocating the replacement (RAM/VRAM).
         *guard = Some((args.model.clone(), Summarizer::load(&gguf, &tok)?));
     }
     // Resolve the structure instruction: built-in template, or the user's own agenda.
@@ -192,6 +286,41 @@ fn run_summarize(app: &AppHandle, args: SummarizeArgs) -> anyhow::Result<String>
 }
 
 // ---- Transcription ----
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftArgs {
+    model: String,
+    instructions: String,
+    #[serde(default)]
+    sources: Vec<grounded::Source>,
+    #[serde(default)]
+    text: String,
+}
+
+fn with_draft_model<T>(app: &AppHandle, model: &str, run: impl FnOnce(&Summarizer) -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let backend = app.state::<Backend>();
+    let (gguf,tok)=backend.paths.summary_files(model);
+    if !gguf.exists() || !tok.exists() { anyhow::bail!("Hämta den valda textmodellen först, under Modeller på datorn."); }
+    let mut guard=backend.summarizer.lock().unwrap();
+    if !matches!(&*guard,Some((id,_)) if id==model) {
+        emit(app,"Laddar textmodellen…"); *guard=None;
+        *guard=Some((model.to_string(),Summarizer::load(&gguf,&tok)?));
+    }
+    run(&guard.as_ref().unwrap().1)
+}
+
+#[tauri::command]
+async fn create_grounded_draft(app: AppHandle, args: DraftArgs, work_id: Option<String>) -> Result<grounded::Draft,String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || {
+        with_draft_model(&app,&args.model,|model| model.grounded(&args.sources,&args.instructions,&|m|emit(&app,m)))
+    })).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+async fn rewrite_dictation(app: AppHandle, args: DraftArgs, work_id: Option<String>) -> Result<String,String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || with_draft_model(&app,&args.model,|model|model.rewrite(&args.text,&args.instructions))))
+        .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,8 +341,8 @@ struct TranscribeArgs {
 }
 
 #[tauri::command]
-async fn transcribe(app: AppHandle, args: TranscribeArgs) -> Result<Transcript, String> {
-    tauri::async_runtime::spawn_blocking(move || run_transcription(&app, args))
+async fn transcribe(app: AppHandle, args: TranscribeArgs, work_id: Option<String>) -> Result<Transcript, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || run_transcription(&app, args)))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -229,7 +358,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     let model_path = backend.paths.whisper_file(&args.model);
     let app_pct = app.clone();
     let raw = {
-        let mut tr = backend.transcriber.lock().unwrap();
+        let mut tr = Transcriber::new();
         tr.transcribe(
             &args.model,
             &model_path,
@@ -259,7 +388,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
 
     let transcript =
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: args.diarize };
-    *backend.transcript.lock().unwrap() = Some(transcript.clone());
+    work::commit(|| *backend.transcript.lock().unwrap() = Some(transcript.clone()))?;
     progress("Klar");
     Ok(transcript)
 }
@@ -269,6 +398,9 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StartMeetingArgs {
+    job: jobs::Job,
+    #[serde(default)] mic_device: Option<String>,
+    #[serde(default)] system_device: Option<String>,
     /// Whisper model id to transcribe live chunks with.
     model: String,
     /// ISO code or "auto".
@@ -287,11 +419,15 @@ struct StartMeetingArgs {
 /// synchronous command would run that on the WebView2 main thread and freeze the UI while a slow or
 /// contended audio device initialises. Off-thread keeps the window responsive during start.
 #[tauri::command]
-async fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<(), String> {
+async fn start_meeting(app: AppHandle, args: StartMeetingArgs) -> Result<StopMeetingAck, String> {
     tauri::async_runtime::spawn_blocking(move || run_start_meeting(&app, args)).await.map_err(|e| e.to_string())?
 }
 
-fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<(), String> {
+fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<StopMeetingAck, String> {
+    app.state::<dictation::Dictation>().while_idle(|| run_start_meeting_idle(app, args))
+}
+
+fn run_start_meeting_idle(app: &AppHandle, args: StartMeetingArgs) -> Result<StopMeetingAck, String> {
     let backend = app.state::<Backend>();
     let mut slot = backend.meeting.lock().unwrap();
     if slot.is_some() {
@@ -306,7 +442,12 @@ fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<(), Stri
     let mic_wav = backend.paths.meetings_dir.join(format!("mote-{ts}-mic.wav"));
     let sys_wav = backend.paths.meetings_dir.join(format!("mote-{ts}-system.wav"));
 
-    let (cap, chunks) = capture::MeetingCapture::start(mic_wav, sys_wav)?;
+    let mut job = args.job;
+    job.transcription_pending = true;
+    job.mic_wav_path = Some(mic_wav.to_string_lossy().into_owned());
+    job.audio_path = Some(sys_wav.to_string_lossy().into_owned());
+    jobs::save_keeping_category(&backend.paths.jobs_dir, job.clone()).map_err(|e|e.to_string())?;
+    let (cap, chunks) = capture::MeetingCapture::start(mic_wav, sys_wav, args.mic_device, args.system_device)?;
 
     if args.live {
         // One worker drains chunks from BOTH streams and transcribes them serially on the shared
@@ -315,8 +456,9 @@ fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<(), Stri
         let started = std::time::Instant::now();
         let abort = Arc::new(AtomicBool::new(false));
         let worker_abort = abort.clone();
-        let worker =
-            std::thread::spawn(move || meeting_worker(worker_app, chunks, args.model, args.language, started, worker_abort));
+        let worker = std::thread::spawn(move || {
+            meeting_worker(worker_app, chunks, args.model, args.language, started, worker_abort)
+        });
         *backend.meeting_worker.lock().unwrap() = Some((worker, abort));
     } else {
         // "Efter mötet"-läge: capture only; both WAVs are transcribed on stop. Dropping the chunk
@@ -326,7 +468,7 @@ fn run_start_meeting(app: &AppHandle, args: StartMeetingArgs) -> Result<(), Stri
     }
 
     *slot = Some(cap);
-    Ok(())
+    Ok(StopMeetingAck { mic_wav_path: job.mic_wav_path.unwrap(), system_wav_path: job.audio_path.unwrap(), duration_s: 0.0 })
 }
 
 /// Transcribe live meeting chunks until the capture channel closes (recording stopped). Each
@@ -340,12 +482,12 @@ fn meeting_worker(
     language: String,
     started: std::time::Instant,
     abort: Arc<AtomicBool>,
-) -> Vec<transcript::Utterance> {
+) -> meeting::LiveResult {
     let backend = app.state::<Backend>();
     let model_path = backend.paths.whisper_file(&model);
     let noop = |_: &str| {};
     let mut warned_lag = false;
-    let mut utterances: Vec<transcript::Utterance> = Vec::new();
+    let mut result = meeting::LiveResult::default();
 
     loop {
         // Stop promptly if finalisation aborted us (lagging badly → it'll batch-transcribe instead).
@@ -364,38 +506,36 @@ fn meeting_worker(
             warned_lag = true;
             let _ = app.emit("avskrift:meeting-lag", true);
         }
-        let samples = audio::resample_to_16k(&chunk.samples, chunk.src_rate);
+        let mic = chunk.source == capture::Source::Mic;
+        if mic { result.mic_blocks += 1; } else { result.system_blocks += 1; }
+        let mut samples = audio::resample_to_16k(&chunk.samples, chunk.src_rate);
+        if mic { meeting::prepare_mic(&mut samples); }
         if samples.is_empty() {
-            continue;
+            result.failed = true; continue;
         }
         let raw = {
-            let mut tr = backend.transcriber.lock().unwrap();
+            let mut tr = Transcriber::new();
             match tr.transcribe(&model, &model_path, &samples, &language, false, false, &noop, |_p| {}) {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    result.failed = true;
+                    let _ = app.emit("avskrift:meeting-warning", format!("{} kunde inte transkriberas live: {e}. Ett nytt försök görs efter stopp.", if mic {"Mikrofonljudet"} else {"Mötesljudet"}));
+                    continue;
+                },
             }
         };
         let label = match chunk.source {
             capture::Source::Mic => "Jag",
             capture::Source::Meeting => "Mötet",
         };
-        for seg in raw {
-            let start = seg.start + chunk.start_s;
-            let end = seg.end + chunk.start_s;
-            let _ = app.emit(
-                "avskrift:meeting-utterance",
-                serde_json::json!({ "source": label, "start": start, "end": end, "text": seg.text }),
-            );
-            utterances.push(transcript::Utterance {
-                start,
-                end,
-                speaker: Some(label.to_string()),
-                text: seg.text,
-                words: Vec::new(),
-            });
+        if raw.is_empty() { result.failed = true; }
+        if mic { result.mic_text += raw.len(); } else { result.system_text += raw.len(); }
+        for utterance in meeting::utterances(raw,samples.len(),label,chunk.start_s) {
+            let _=app.emit("avskrift:meeting-utterance",serde_json::json!({"source":label,"start":utterance.start,"end":utterance.end,"text":utterance.text}));
+            result.utterances.push(utterance);
         }
     }
-    utterances
+    result
 }
 
 #[derive(serde::Deserialize)]
@@ -472,9 +612,25 @@ fn stop_capture(app: &AppHandle) -> anyhow::Result<(Option<MeetingWorker>, captu
 
 /// Background finalisation: build the speaker-attributed transcript and the playback mix, then emit
 /// the result tagged with the meeting's token. Runs detached from any shared backend state.
-fn finalize_meeting(app: &AppHandle, worker: Option<MeetingWorker>, files: capture::MeetingFiles, args: StopMeetingArgs) {
+fn finalize_meeting(
+    app: &AppHandle,
+    worker: Option<MeetingWorker>,
+    files: capture::MeetingFiles,
+    args: StopMeetingArgs,
+) {
     match build_meeting(app, worker, &files, &args) {
         Ok((transcript, mix_wav_path)) => {
+            let backend=app.state::<Backend>();
+            let saved=jobs::edit(&backend.paths.jobs_dir,&args.token,|job| {
+                job.transcript=Some(transcript.clone()); job.transcription_pending=false;job.extra.remove("meetingError");
+                job.mix_wav_path=mix_wav_path.clone();
+                job.extra.insert("meetingWarning".into(),serde_json::json!(if !transcript.utterances.iter().any(|u|u.speaker.as_deref()==Some("Jag")) {"Ingen mikrofontext hittades. Lyssna på Min mikrofon och prova att transkribera om."} else {""}));
+                Ok(())
+            });
+            if let Err(e)=saved {
+                let _=app.emit("avskrift:meeting-failed",serde_json::json!({"token":args.token,"error":format!("Kunde inte spara transkriptet: {e}")}));
+                return;
+            }
             let _ = app.emit(
                 "avskrift:meeting-done",
                 serde_json::json!({
@@ -488,7 +644,10 @@ fn finalize_meeting(app: &AppHandle, worker: Option<MeetingWorker>, files: captu
             );
         }
         Err(e) => {
-            let _ = app.emit("avskrift:meeting-failed", serde_json::json!({ "token": args.token, "error": e.to_string() }));
+            let backend=app.state::<Backend>();
+            let _=jobs::edit(&backend.paths.jobs_dir,&args.token,|job|{job.extra.insert("meetingError".into(),e.to_string().into());Ok(())});
+            let _ =
+                app.emit("avskrift:meeting-failed", serde_json::json!({ "token": args.token, "error": e.to_string() }));
         }
     }
 }
@@ -503,38 +662,44 @@ fn build_meeting(
     files: &capture::MeetingFiles,
     args: &StopMeetingArgs,
 ) -> anyhow::Result<(Transcript, Option<String>)> {
-    let progress =
-        |msg: &str| { let _ = app.emit("avskrift:meeting-progress", serde_json::json!({ "token": args.token, "msg": msg })); };
+    if let Some(error)=&files.capture_error {
+        if let Some((handle,abort))=worker {abort.store(true,Ordering::Relaxed);let _=handle.join();}
+        anyhow::bail!("{error} Inspelningen kan vara ofullständig; sparade delar finns kvar.");
+    }
+    let progress = |msg: &str| {
+        let _ = app.emit("avskrift:meeting-progress", serde_json::json!({ "token": args.token, "msg": msg }));
+    };
 
-    let utterances = if let Some((handle, abort)) = worker {
+    let (utterances, mix_wav_path) = if let Some((handle, abort)) = worker {
         progress("Slutför transkribering…");
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !handle.is_finished() && std::time::Instant::now() < deadline {
+        while !handle.is_finished() && !files.live_overflowed && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(200));
         }
-        let caught_up = handle.is_finished();
+        let caught_up = handle.is_finished() && !files.live_overflowed;
         if !caught_up {
             abort.store(true, Ordering::Relaxed); // stop the slow per-chunk drain; we'll batch instead
         }
         let live = handle.join().map_err(|_| anyhow::anyhow!("transkriberingstråden kraschade"))?;
-        if caught_up {
-            align::drop_meeting_echo(align::from_labeled(live))
+        if caught_up && live.complete() {
+            progress("Skapar uppspelningsmix…");
+            (
+                align::from_labeled(live.utterances),
+                write_meeting_mix(&files.mic_wav, &files.sys_wav, false),
+            )
         } else {
             progress("Transkriberar mötet (samlad körning)…");
-            transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, true)?
+            transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, false)?
         }
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
         progress("Transkriberar mötet…");
-        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, true)?
+        transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, false)?
     };
 
     let transcript =
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
 
-    // Build the mixed playback track (your echo-cleaned mic + the meeting), so you hear yourself.
-    progress("Skapar uppspelningsmix…");
-    let mix_wav_path = write_meeting_mix(&files.mic_wav, &files.sys_wav, true);
     Ok((transcript, mix_wav_path))
 }
 
@@ -607,7 +772,10 @@ fn write_meeting_mix(mic_wav: &str, sys_wav: &str, echo_cancel: bool) -> Option<
     let mic = audio::load(Path::new(mic_wav)).ok().filter(|a| !a.samples.is_empty())?.samples;
     let sys = audio::load(Path::new(sys_wav)).ok().filter(|a| !a.samples.is_empty())?.samples;
     let cleaned = if echo_cancel { aec::cancel_echo(&mic, &sys) } else { mic };
-    let mixed = aec::mix(&cleaned, &sys);
+    write_meeting_mix_samples(&cleaned, &sys, sys_wav)
+}
+
+fn write_meeting_mix_samples(mic: &[f32], sys: &[f32], sys_wav: &str) -> Option<String> {
     let out = mix_path_for(sys_wav)?;
     let spec = hound::WavSpec {
         channels: 1,
@@ -616,11 +784,30 @@ fn write_meeting_mix(mic_wav: &str, sys_wav: &str, echo_cancel: bool) -> Option<
         sample_format: hound::SampleFormat::Int,
     };
     let mut w = hound::WavWriter::create(&out, spec).ok()?;
-    for &s in &mixed {
+    // Stream the sum directly to the WAV writer; no third full-length audio buffer.
+    for i in 0..mic.len().max(sys.len()) {
+        let s = mic.get(i).copied().unwrap_or(0.0) + sys.get(i).copied().unwrap_or(0.0);
         w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16).ok()?;
     }
     w.finalize().ok()?;
     Some(out)
+}
+
+#[cfg(test)]
+mod meeting_mix_tests {
+    #[test]
+    fn streaming_mix_preserves_clipping_padding_and_sample_count() {
+        let mic = [0.8, -0.8, 0.3];
+        let sys = [0.8, -0.8, -0.1, 0.2];
+        let source = std::env::temp_dir().join(format!("avskrift-mix-test-{}.wav", std::process::id()));
+        let result = super::write_meeting_mix_samples(&mic, &sys, source.to_str().unwrap()).unwrap();
+        let mut reader = hound::WavReader::open(&result).unwrap();
+        let actual: Vec<i16> = reader.samples().map(Result::unwrap).collect();
+        let expected: Vec<i16> = crate::aec::mix(&mic, &sys).iter().map(|s| (s * 32767.0) as i16).collect();
+        assert_eq!(actual, expected);
+        drop(reader);
+        std::fs::remove_file(result).unwrap();
+    }
 }
 
 fn transcribe_meeting_wavs(
@@ -631,21 +818,13 @@ fn transcribe_meeting_wavs(
     language: &str,
     word_timestamps: bool,
     echo_cancel: bool,
-) -> anyhow::Result<Vec<transcript::Utterance>> {
+) -> anyhow::Result<(Vec<transcript::Utterance>, Option<String>)> {
     let backend = app.state::<Backend>();
     let model_path = backend.paths.whisper_file(model);
     let progress = |m: &str| emit(app, m);
 
-    // Load both source streams (mono 16 kHz); a missing/empty file → None.
-    let load = |wav: &str| -> Option<Vec<f32>> {
-        let p = Path::new(wav);
-        if !p.exists() {
-            return None;
-        }
-        audio::load(p).ok().filter(|a| !a.samples.is_empty()).map(|a| a.samples)
-    };
-    let mut mic_samples = load(mic_wav);
-    let sys_samples = load(sys_wav);
+    let mut mic_samples = meeting::load_channel(mic_wav, "mikrofonspåret")?;
+    let sys_samples = meeting::load_channel(sys_wav, "mötesljudet")?;
 
     // Echo cancellation: strip the meeting audio that leaked into the mic (speakers → mic) before
     // transcribing "Jag", so the other person stops appearing in your track. Falls back internally
@@ -661,30 +840,33 @@ fn transcribe_meeting_wavs(
         |samples: &[f32], label: &str, base: i32, span: i32| -> anyhow::Result<Vec<transcript::Utterance>> {
             let app_pct = app.clone();
             let raw = {
-                let mut tr = backend.transcriber.lock().unwrap();
+                let mut tr = Transcriber::new();
                 tr.transcribe(model, &model_path, samples, language, word_timestamps, false, &progress, move |p| {
                     let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
                 })?
             };
-            Ok(align::without_speakers(raw)
-                .into_iter()
-                .map(|mut u| {
-                    u.speaker = Some(label.to_string());
-                    u
-                })
-                .collect())
+            Ok(meeting::utterances(raw,samples.len(),label,0.0))
         };
 
     let mut utts = Vec::new();
     if let Some(mic) = mic_samples.as_ref() {
         progress("Transkriberar din röst…");
-        utts.extend(transcribe_samples(mic, "Jag", 0, 50)?);
+        if meeting::has_audio(mic,16000) {
+            let mut prepared=mic.clone(); meeting::prepare_mic(&mut prepared);
+            utts.extend(transcribe_samples(&prepared, "Jag", 0, 50)?);
+        }
     }
     if let Some(sys) = sys_samples.as_ref() {
         progress("Transkriberar mötet…");
-        utts.extend(transcribe_samples(sys, "Mötet", 50, 50)?);
+        if meeting::has_audio(sys,16000) { utts.extend(transcribe_samples(sys, "Mötet", 50, 50)?); }
     }
-    Ok(align::drop_meeting_echo(align::from_labeled(utts)))
+    // Reuse the decoded, echo-cleaned audio instead of decoding and cancelling echo a second time.
+    progress("Skapar uppspelningsmix…");
+    let mix = match (mic_samples.as_deref(), sys_samples.as_deref()) {
+        (Some(mic), Some(sys)) => write_meeting_mix_samples(mic, sys, sys_wav),
+        _ => None,
+    };
+    Ok((align::from_labeled(utts), mix))
 }
 
 #[derive(serde::Deserialize)]
@@ -726,7 +908,8 @@ fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> a
     if mic.is_empty() && sys.is_empty() {
         anyhow::bail!("Det här mötet har inga sparade ljudfiler att transkribera om.");
     }
-    let utterances = transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language, true, args.echo_cancel)?;
+    let (utterances, mix_wav_path) =
+        transcribe_meeting_wavs(app, &mic, &sys, &args.model, &args.language, true, args.echo_cancel)?;
     if utterances.is_empty() {
         anyhow::bail!("Inget ljud kunde transkriberas – ljudfilerna saknas eller är tomma.");
     }
@@ -734,9 +917,6 @@ fn run_retranscribe_meeting(app: &AppHandle, args: RetranscribeMeetingArgs) -> a
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
     let backend = app.state::<Backend>();
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
-    // Rebuild the mixed playback track to match the re-transcription's echo-cancel choice.
-    let mix_wav_path =
-        if mic.is_empty() || sys.is_empty() { None } else { write_meeting_mix(&mic, &sys, args.echo_cancel) };
     emit(app, "Klar");
     Ok(RetranscribeResult { transcript, mix_wav_path })
 }
@@ -751,8 +931,8 @@ struct AskArgs {
 
 /// Answer a free-text question strictly from a transcript (reuses the summariser's Qwen model).
 #[tauri::command]
-async fn ask_transcript(app: AppHandle, args: AskArgs) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || run_ask(&app, args))
+async fn ask_transcript(app: AppHandle, args: AskArgs, work_id: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || run_ask(&app, args)))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -770,6 +950,7 @@ fn run_ask(app: &AppHandle, args: AskArgs) -> anyhow::Result<String> {
     let needs_load = !matches!(&*guard, Some((cur, _)) if *cur == args.model);
     if needs_load {
         progress(&format!("Laddar modell ({})…", args.model));
+        *guard = None;
         *guard = Some((args.model.clone(), Summarizer::load(&gguf, &tok)?));
     }
     let (_, summarizer) = guard.as_ref().unwrap();
@@ -843,7 +1024,7 @@ fn save_project(backend: State<Backend>, args: SaveProjectArgs) -> Result<(), St
     let transcript = guard.as_ref().ok_or_else(|| "det finns inget transkript att spara".to_string())?.clone();
     let project = Project { version: 1, transcript, speaker_labels: args.speaker_labels, audio_path: args.audio_path };
     let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
-    std::fs::write(&args.path, json).map_err(|e| format!("kunde inte spara projektet: {e}"))
+    storage::atomic_write(Path::new(&args.path), json.as_bytes()).map_err(|e| format!("kunde inte spara projektet: {e}"))
 }
 
 /// Open a `.avskrift` project file; loads its transcript into backend state and returns it (with
@@ -869,12 +1050,12 @@ struct AnonArgs {
 }
 
 #[tauri::command]
-async fn anonymize(app: AppHandle, args: AnonArgs) -> Result<AnalyzeResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+async fn anonymize(app: AppHandle, args: AnonArgs, work_id: Option<String>) -> Result<AnalyzeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || {
         let backend = app.state::<Backend>();
         let progress = |m: &str| emit(&app, m);
         backend.engine.analyze_segments(args.texts, args.enabled, args.terms, args.use_ai, &progress)
-    })
+    }))
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
@@ -924,8 +1105,8 @@ struct AnalyzeDocArgs {
 /// Analyse standalone text or a document (not the transcript). Sets `engine.last`, so
 /// `copy_anonymized`/`export_anonymized` then work exactly like the transcript path does.
 #[tauri::command]
-async fn analyze_document(app: AppHandle, args: AnalyzeDocArgs) -> Result<AnalyzeResult, String> {
-    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<AnalyzeResult> {
+async fn analyze_document(app: AppHandle, args: AnalyzeDocArgs, work_id: Option<String>) -> Result<AnalyzeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || -> anyhow::Result<AnalyzeResult> {
         let backend = app.state::<Backend>();
         let progress = |m: &str| emit(&app, m);
         let AnalyzeDocArgs { text, path, enabled, terms, use_ai } = args;
@@ -934,7 +1115,7 @@ async fn analyze_document(app: AppHandle, args: AnalyzeDocArgs) -> Result<Analyz
             (None, Some(t)) => backend.engine.analyze_text(t, enabled, terms, use_ai, &progress),
             (None, None) => Err(anyhow::anyhow!("ingen text eller fil angiven")),
         }
-    })
+    }))
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
@@ -996,6 +1177,27 @@ struct ExportArgs {
 #[tauri::command]
 fn export_transcript(backend: State<Backend>, args: ExportArgs) -> Result<(), String> {
     export_inner(&backend, args).map_err(|e| e.to_string())
+}
+
+/// Render without writing. The UI keeps this snapshot until the user copies or saves it.
+#[tauri::command]
+fn preview_transcript(backend: State<Backend>, args: ExportArgs) -> Result<String, String> {
+    let guard = backend.transcript.lock().unwrap();
+    let transcript = guard.as_ref().ok_or("Det finns inget transkript att exportera.")?;
+    let masked = if args.anonymize {
+        Some(backend.engine.anonymized_segments(args.rejected).map_err(|e| e.to_string())?)
+    } else { None };
+    let texts = masked.as_deref();
+    let labels = &args.speaker_labels;
+    Ok(match ext(Path::new(&args.path)).as_deref() {
+        Some("srt") => transcript.to_srt(texts, labels),
+        Some("vtt") if args.word_level && !args.anonymize => transcript.to_vtt_words(labels),
+        Some("vtt") => transcript.to_vtt(texts, labels),
+        Some("docx") if args.timestamps => transcript.to_docx_paragraphs_timed(texts, labels).join("\n"),
+        Some("docx") => transcript.to_docx_paragraphs(texts, labels).join("\n"),
+        _ if args.timestamps => transcript.to_text_timed(texts, labels),
+        _ => transcript.to_text(texts, labels),
+    })
 }
 
 fn export_inner(backend: &Backend, args: ExportArgs) -> anyhow::Result<()> {
@@ -1073,26 +1275,59 @@ fn save_summary(backend: State<Backend>, args: SaveSummaryArgs) -> Result<(), St
 // ---- Jobs / history (auto-saved past work) ----
 
 #[tauri::command]
-fn list_jobs(backend: State<Backend>) -> Vec<jobs::JobMeta> {
-    jobs::list(&backend.paths.jobs_dir)
+fn restore_review(backend: State<Backend>, snapshot: engine::ReviewSnapshot, expected_text: String) -> Result<AnalyzeResult, String> {
+    backend.engine.restore_review(snapshot,expected_text).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn list_job_versions(backend: State<Backend>, id: String) -> Result<Vec<jobs::VersionMeta>,String> {
+    jobs::versions(&backend.paths.jobs_dir,&id).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn open_job_version(backend: State<Backend>, id: String, version: String) -> Result<jobs::Job,String> {
+    jobs::open_version(&backend.paths.jobs_dir,&id,&version).map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn checkpoint_job(app: AppHandle, id: String) -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::checkpoint(&backend.paths.jobs_dir,&id).map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+async fn restore_job_version(app: AppHandle, id: String, version: String, now: String) -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::restore(&backend.paths.jobs_dir,&id,&version,now).map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+async fn list_jobs(app: AppHandle) -> Result<Vec<jobs::JobMeta>, String> {
+    let dir = app.state::<Backend>().paths.jobs_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || jobs::list(&dir)).await.map_err(|e| e.to_string())
+}
+
+/// Explicit refresh can rebuild derived data without touching project files or versions.
+#[tauri::command]
+async fn refresh_library(app: AppHandle) -> Result<usize, String> {
+    let dir = app.state::<Backend>().paths.jobs_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || jobs::rebuild_index(&dir))
+        .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 /// Full-text search over jobs (title, category, transcript, summary, source). Empty query = all.
 #[tauri::command]
-fn search_jobs(backend: State<Backend>, query: String) -> Vec<jobs::JobMeta> {
-    jobs::search(&backend.paths.jobs_dir, &query)
+async fn search_jobs(app: AppHandle, query: String) -> Result<Vec<jobs::JobMeta>, String> {
+    let dir = app.state::<Backend>().paths.jobs_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || jobs::search(&dir, &query)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn save_job(backend: State<Backend>, job: jobs::Job) -> Result<(), String> {
-    let mut job = job;
-    // Ordinary saves (transcript edits etc.) don't carry the category; keep the one set in History.
-    if job.category.is_empty() {
-        if let Ok(existing) = jobs::open(&backend.paths.jobs_dir, &job.id) {
-            job.category = existing.category;
-        }
-    }
-    jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())
+async fn save_job(app: AppHandle, job: jobs::Job) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::save_keeping_category(&backend.paths.jobs_dir,job).map_err(|e|e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
@@ -1103,39 +1338,46 @@ fn open_job(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
 /// Rename a folder or collapse it into its parent (delete-folder) by rewriting the category prefix
 /// on every job under it. `to` = "" moves jobs to the root.
 #[tauri::command]
-fn move_folder(backend: State<Backend>, from: String, to: String) -> Result<(), String> {
-    jobs::move_folder(&backend.paths.jobs_dir, &from, &to).map_err(|e| e.to_string())?;
-    jobs::move_task_folder(&backend.paths.tasks_file, &from, &to).map_err(|e| e.to_string())
+async fn move_folder(app: AppHandle, from: String, to: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::move_folder(&backend.paths.jobs_dir, &from, &to).map_err(|e| e.to_string())?;
+        jobs::move_task_folder(&backend.paths.tasks_file, &from, &to).map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 /// Rename / recategorise a job. Does not bump `updated_at`, so the History order is preserved.
 #[tauri::command]
-fn update_job_meta(backend: State<Backend>, id: String, title: String, category: String) -> Result<(), String> {
-    let mut job = jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())?;
-    job.title = title;
-    job.category = category;
-    jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())
+async fn update_job_meta(app: AppHandle, id: String, title: String, category: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::edit(&backend.paths.jobs_dir,&id,|job| {job.title=title;job.category=category;Ok(())})
+            .map(|_|()).map_err(|e|e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 /// Delete a job's audio to reclaim space, keeping the transcript and everything else. Only files
 /// Avskrift created are removed from disk; the user's own uploads are just dereferenced.
 #[tauri::command]
-fn delete_job_audio(backend: State<Backend>, id: String) -> Result<jobs::Job, String> {
-    let mut job = jobs::open(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())?;
-    remove_avskrift_audio(&job, &backend.paths.meetings_dir);
-    job.audio_path = None;
-    job.mic_wav_path = None;
-    job.mix_wav_path = None;
-    jobs::save(&backend.paths.jobs_dir, &job).map_err(|e| e.to_string())?;
-    Ok(job)
+async fn delete_job_audio(app: AppHandle, id: String) -> Result<jobs::Job, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend=app.state::<Backend>();
+        jobs::edit(&backend.paths.jobs_dir,&id,|job| {
+            remove_avskrift_audio(job,&backend.paths.meetings_dir);
+            job.audio_path=None;job.mic_wav_path=None;job.mix_wav_path=None;Ok(())
+        }).map_err(|e|e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
-fn delete_job(backend: State<Backend>, id: String) -> Result<(), String> {
-    if let Ok(job) = jobs::open(&backend.paths.jobs_dir, &id) {
-        remove_avskrift_audio(&job, &backend.paths.meetings_dir);
-    }
-    jobs::delete(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
+async fn delete_job(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        if let Ok(job) = jobs::open(&backend.paths.jobs_dir, &id) {
+            remove_avskrift_audio(&job, &backend.paths.meetings_dir);
+        }
+        jobs::delete(&backend.paths.jobs_dir, &id).map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 // ============================================================================
@@ -1144,8 +1386,10 @@ fn delete_job(backend: State<Backend>, id: String) -> Result<(), String> {
 
 /// Every action across all jobs, plus the free-standing task store, flattened for the overview.
 #[tauri::command]
-fn list_all_actions(backend: State<Backend>) -> Vec<jobs::ActionRow> {
-    jobs::all_actions(&backend.paths.jobs_dir, &backend.paths.tasks_file)
+async fn list_all_actions(app: AppHandle) -> Result<Vec<jobs::ActionRow>, String> {
+    let backend = app.state::<Backend>();
+    let (dir, file) = (backend.paths.jobs_dir.clone(), backend.paths.tasks_file.clone());
+    tauri::async_runtime::spawn_blocking(move || jobs::all_actions(&dir, &file)).await.map_err(|e| e.to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -1159,9 +1403,12 @@ struct UpdateJobActionArgs {
 
 /// Toggle/edit one job's action straight from the overview (writes back to that job's file).
 #[tauri::command]
-fn update_job_action(backend: State<Backend>, args: UpdateJobActionArgs) -> Result<(), String> {
-    jobs::set_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, args.action, &args.updated_at)
-        .map_err(|e| e.to_string())
+async fn update_job_action(app: AppHandle, args: UpdateJobActionArgs) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::set_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, args.action, &args.updated_at)
+            .map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[derive(serde::Deserialize)]
@@ -1174,9 +1421,12 @@ struct AddJobActionArgs {
 
 /// Add a new action to an existing job from the overview.
 #[tauri::command]
-fn add_job_action(backend: State<Backend>, args: AddJobActionArgs) -> Result<(), String> {
-    jobs::add_job_action(&backend.paths.jobs_dir, &args.job_id, args.action, &args.updated_at)
-        .map_err(|e| e.to_string())
+async fn add_job_action(app: AppHandle, args: AddJobActionArgs) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::add_job_action(&backend.paths.jobs_dir, &args.job_id, args.action, &args.updated_at)
+            .map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[derive(serde::Deserialize)]
@@ -1189,9 +1439,12 @@ struct DeleteJobActionArgs {
 
 /// Remove one job's action from the overview.
 #[tauri::command]
-fn delete_job_action(backend: State<Backend>, args: DeleteJobActionArgs) -> Result<(), String> {
-    jobs::delete_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, &args.updated_at)
-        .map_err(|e| e.to_string())
+async fn delete_job_action(app: AppHandle, args: DeleteJobActionArgs) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        jobs::delete_job_action(&backend.paths.jobs_dir, &args.job_id, args.index, &args.updated_at)
+            .map_err(|e| e.to_string())
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[derive(serde::Deserialize)]
@@ -1253,24 +1506,70 @@ pub fn run() {
             });
             app.manage(Backend {
                 engine,
-                transcriber: Mutex::new(Transcriber::new()),
                 transcript: Mutex::new(None),
                 summarizer: Mutex::new(None),
                 meeting: Mutex::new(None),
                 meeting_worker: Mutex::new(None),
                 paths,
             });
+            start_model_maintenance(app.handle().clone());
+            dictation::setup(app.handle())?;
+            let show = tauri::menu::MenuItem::with_id(app, "show", "Öppna AVskrift", true, None::<&str>)?;
+            let quit = tauri::menu::MenuItem::with_id(app, "quit", "Avsluta AVskrift", true, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&show, &quit])?;
+            let mut tray = tauri::tray::TrayIconBuilder::new()
+                .tooltip("AVskrift – lokal diktering")
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" && !app.state::<dictation::Dictation>().is_active() {
+                        app.exit(0);
+                    } else if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if window.app_handle().state::<dictation::Dictation>().is_active() {
+                        api.prevent_close();
+                        let _ = window.app_handle().emit("avskrift:dictation-close-blocked", ());
+                    } else {
+                        // The hidden indicator is a second window; closing main must still exit.
+                        window.app_handle().exit(0);
+                    }
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![refresh_library, begin_work, cancel_work, forget_work,
+            dictation::dictation_snapshot,
+            dictation::configure_dictation,
+            dictation::toggle_dictation,
+            dictation::cancel_dictation,
+            dictation::edit_dictation,
+            dictation::delete_dictation,
+            runtime_memory_status,
             list_whisper_models,
             download_whisper_model,
             list_summary_models,
             list_summary_templates,
             download_summary_model,
             summarize,
+            create_grounded_draft,
+            rewrite_dictation,
             transcribe,
             save_recording,
+            organize_job,
+            test_meeting_audio,
+            meeting_levels,
+            meeting_devices,
             start_meeting,
             stop_meeting,
             diarize_meeting,
@@ -1286,9 +1585,15 @@ pub fn run() {
             load_document,
             copy_anonymized,
             export_anonymized,
-            export_transcript,
+              export_transcript,
+              preview_transcript,
             save_summary,
-            list_jobs,
+              list_jobs,
+              restore_review,
+              list_job_versions,
+              open_job_version,
+              checkpoint_job,
+              restore_job_version,
             search_jobs,
             save_job,
             open_job,

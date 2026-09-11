@@ -28,7 +28,25 @@ pub struct NerModel {
 
 impl NerModel {
     pub fn load(model_path: &Path, tokenizer_path: &Path, labels_path: &Path) -> Result<Self> {
-        let session = Session::builder()?
+        Self::load_options(model_path, tokenizer_path, labels_path, Some(num_cpus::get_physical().clamp(1, 4)), false)
+    }
+
+    fn load_options(
+        model_path: &Path,
+        tokenizer_path: &Path,
+        labels_path: &Path,
+        threads: Option<usize>,
+        spin: bool,
+    ) -> Result<Self> {
+        let mut builder = Session::builder()?
+            .with_intra_op_spinning(spin)
+            .map_err(|e| anyhow!("{e}"))?
+            .with_inter_op_spinning(spin)
+            .map_err(|e| anyhow!("{e}"))?;
+        if let Some(threads) = threads {
+            builder = builder.with_intra_threads(threads).map_err(|e| anyhow!("{e}"))?;
+        }
+        let session = builder
             .commit_from_file(model_path)
             .with_context(|| format!("kunde inte ladda modellen: {}", model_path.display()))?;
 
@@ -189,6 +207,41 @@ fn merge_token_spans(text: &str, tokens: Vec<(Category, usize, usize)>) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn benchmark_ner_threads() {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/model");
+        let text = "Anna Svensson bor i Stockholm och arbetar på Volvo sedan 2019. ".repeat(20);
+        let mut expected = None;
+        for (label, threads, spin) in
+            [("default", None, true), ("bounded", Some(num_cpus::get_physical().clamp(1, 4)), false)]
+        {
+            let model = NerModel::load_options(
+                &base.join("model.onnx"),
+                &base.join("tokenizer.json"),
+                &base.join("labels.json"),
+                threads,
+                spin,
+            )
+            .unwrap();
+            for run in 0..3 {
+                let start = std::time::Instant::now();
+                let spans = model.detect(&text).unwrap();
+                println!(
+                    "BENCH ner profile={label} run={run} elapsed_ms={:.2} spans={}",
+                    start.elapsed().as_secs_f64() * 1000.0,
+                    spans.len()
+                );
+                let result: Vec<_> = spans.iter().map(|s| (s.start, s.end, s.category)).collect();
+                if let Some(expected) = &expected {
+                    assert_eq!(&result, expected);
+                } else {
+                    expected = Some(result);
+                }
+            }
+        }
+    }
 
     #[test]
     fn maps_ambiguous_tags_to_person() {

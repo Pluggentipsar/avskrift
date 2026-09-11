@@ -36,6 +36,7 @@ pub fn diarize(
         }
     }
 
+    crate::work::check()?;
     progress("Förbereder diarisering…");
     let config = DiarizeConfig {
         num_clusters: num_speakers.map(|n| n as i32),
@@ -53,6 +54,7 @@ pub fn diarize(
     // sherpa-rs takes an optional progress callback; we don't surface clustering progress.
     let segments = sd.compute(samples.to_vec(), None).map_err(|e| anyhow!("diariseringen misslyckades: {e}"))?;
 
+    crate::work::check()?;
     let mut turns: Vec<SpeakerTurn> = segments
         .into_iter()
         .map(|s| SpeakerTurn { start: s.start as f64, end: s.end as f64, speaker: s.speaker.max(0) as usize })

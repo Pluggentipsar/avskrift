@@ -23,7 +23,7 @@ const FRAME: usize = 320; // 20 ms, for the activity/energy guard
 /// nominally aligned at t = 0. Returns a cleaned mic of the same length, or the original mic if
 /// cancellation did not clearly help.
 pub fn cancel_echo(mic: &[f32], reference: &[f32]) -> Vec<f32> {
-    if mic.len() < FRAME || reference.len() < FRAME {
+    if mic.len() < FRAME || reference.len() < FRAME || reference.iter().all(|&x| x == 0.0) {
         return mic.to_vec();
     }
     let delay = estimate_delay(mic, reference);
@@ -43,6 +43,7 @@ pub fn cancel_echo(mic: &[f32], reference: &[f32]) -> Vec<f32> {
 /// Sum two mono signals into one playback track, padding the shorter with silence and clamping to
 /// [-1, 1]. Used to mix the (echo-cleaned) mic with the system audio so a meeting plays back as one
 /// track with both voices.
+#[cfg(test)]
 pub fn mix(a: &[f32], b: &[f32]) -> Vec<f32> {
     let n = a.len().max(b.len());
     (0..n).map(|i| (a.get(i).copied().unwrap_or(0.0) + b.get(i).copied().unwrap_or(0.0)).clamp(-1.0, 1.0)).collect()
@@ -67,25 +68,43 @@ fn estimate_delay(mic: &[f32], reference: &[f32]) -> isize {
         }
     }
 
-    let refs = reference.len() as isize;
-    let (mut best_corr, mut best_lag) = (f32::MIN, 0isize);
-    let max_lag = MAX_LAG as isize;
-    let mut lag = -max_lag;
-    while lag <= max_lag {
-        let mut c = 0f32;
-        for i in 0..win {
-            let ri = start as isize + i as isize - lag;
-            if ri >= 0 && ri < refs {
-                c += mic[start + i] * reference[ri as usize];
-            }
-        }
-        if c > best_corr {
-            best_corr = c;
-            best_lag = lag;
-        }
-        lag += 1;
+    correlation_delay(&mic[start..start + win], reference, start, MAX_LAG)
+}
+
+/// Linear cross-correlation via convolution. Zero padding preserves the old boundary handling;
+/// f64 reduces numerical error for weak/near-tied correlation peaks.
+fn correlation_delay(window: &[f32], reference: &[f32], start: usize, max_lag: usize) -> isize {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    let win = window.len();
+    let ref_len = win + 2 * max_lag;
+    let size = (win + ref_len - 1).next_power_of_two();
+    let mut a = vec![Complex::new(0.0f64, 0.0); size];
+    let mut b = a.clone();
+    for (i, &sample) in window.iter().rev().enumerate() {
+        a[i].re = sample as f64;
     }
-    best_lag
+    for (i, slot) in b[..ref_len].iter_mut().enumerate() {
+        let index = start as isize + i as isize - max_lag as isize;
+        if index >= 0 {
+            slot.re = reference.get(index as usize).copied().unwrap_or(0.0) as f64;
+        }
+    }
+    let mut planner = FftPlanner::<f64>::new();
+    let forward = planner.plan_fft_forward(size);
+    forward.process(&mut a);
+    forward.process(&mut b);
+    for (x, y) in a.iter_mut().zip(b) {
+        *x *= y;
+    }
+    planner.plan_fft_inverse(size).process(&mut a);
+    let mut best = (f64::NEG_INFINITY, -(max_lag as isize));
+    for lag in -(max_lag as isize)..=max_lag as isize {
+        let score = a[((win - 1 + max_lag) as isize - lag) as usize].re;
+        if score > best.0 {
+            best = (score, lag);
+        }
+    }
+    best.1
 }
 
 /// NLMS adaptive FIR: estimate the echo in `mic` from a `TAPS`-long window of `reference` ending at
@@ -145,6 +164,70 @@ fn active_frame_energy(mic: &[f32], cleaned: &[f32], reference: &[f32], delay: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn noise(n: usize) -> Vec<f32> {
+        let mut seed = 42u32;
+        (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed as f64 / u32::MAX as f64 - 0.5) as f32
+            })
+            .collect()
+    }
+
+    fn direct(window: &[f32], reference: &[f32], start: usize, max_lag: usize) -> isize {
+        let mut best = (f32::NEG_INFINITY, -(max_lag as isize));
+        for lag in -(max_lag as isize)..=max_lag as isize {
+            let mut sum = 0.0;
+            for (i, &x) in window.iter().enumerate() {
+                let index = start as isize + i as isize - lag;
+                if index >= 0 {
+                    sum += x * reference.get(index as usize).copied().unwrap_or(0.0);
+                }
+            }
+            if sum > best.0 {
+                best = (sum, lag);
+            }
+        }
+        best.1
+    }
+
+    #[test]
+    fn fft_delay_matches_direct_correlation_at_both_edges_and_for_both_signs() {
+        let reference = noise(2000);
+        for delay in [-80isize, -23, 0, 37, 80] {
+            let mic: Vec<_> = (0..2000)
+                .map(|i| {
+                    let p = i as isize - delay;
+                    if p < 0 {
+                        0.0
+                    } else {
+                        reference.get(p as usize).copied().unwrap_or(0.0) * 0.6
+                    }
+                })
+                .collect();
+            for start in [0, 500, 1744] {
+                let window = &mic[start..start + 256];
+                assert_eq!(correlation_delay(window, &reference, start, 80), direct(window, &reference, start, 80));
+                assert_eq!(correlation_delay(window, &reference, start, 80), delay);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_echo_delay() {
+        let reference = noise(48_000);
+        let window = &reference[1000..33000];
+        let before = std::time::Instant::now();
+        let expected = direct(window, &reference, 1200, MAX_LAG);
+        let direct_ms = before.elapsed().as_secs_f64() * 1000.0;
+        let now = std::time::Instant::now();
+        let actual = correlation_delay(window, &reference, 1200, MAX_LAG);
+        let fft_ms = now.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(actual, expected);
+        println!("BENCH echo_delay direct_ms={direct_ms:.2} fft_ms={fft_ms:.2} delay={actual}");
+    }
 
     /// A synthetic delayed+attenuated echo of a reference should be largely cancelled.
     #[test]

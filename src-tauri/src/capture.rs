@@ -18,6 +18,30 @@
 
 use std::sync::mpsc::Receiver;
 
+#[derive(Clone, serde::Serialize, Default)]
+#[serde(rename_all="camelCase")]
+pub struct ChannelLevel { pub name: String, pub peak: f32, pub active: bool, pub error: String }
+static LEVELS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ChannelLevel>>> = once_cell::sync::Lazy::new(||std::sync::Mutex::new(vec![ChannelLevel::default();2]));
+pub fn levels() -> Vec<ChannelLevel> { LEVELS.lock().unwrap().clone() }
+#[derive(serde::Serialize)]
+pub struct InputDevice { pub id:String, pub name:String, pub source:String }
+#[cfg(windows)]
+pub fn devices() -> Result<Vec<InputDevice>,String> {
+    use wasapi::*;
+    initialize_mta().ok().map_err(|e|e.to_string())?;
+    let enumerator=DeviceEnumerator::new().map_err(|e|e.to_string())?;
+    let mut out=Vec::new();
+    for (direction,source) in [(Direction::Capture,"mic"),(Direction::Render,"system")] {
+        let collection=enumerator.get_device_collection(&direction).map_err(|e|e.to_string())?;
+        for item in &collection { let device=item.map_err(|e|e.to_string())?;
+            out.push(InputDevice{id:device.get_id().map_err(|e|e.to_string())?,name:device.get_friendlyname().map_err(|e|e.to_string())?,source:source.into()});
+        }
+    }
+    Ok(out)
+}
+#[cfg(not(windows))]
+pub fn devices() -> Result<Vec<InputDevice>,String> { Ok(vec![]) }
+
 /// Which stream a chunk came from. Maps to the speaker label "Jag" / "Mötet".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -43,11 +67,35 @@ pub struct MeetingFiles {
     pub sys_wav: String,
     /// Longer of the two streams, in seconds.
     pub duration_s: f64,
+    /// Live chunks were skipped to keep memory bounded; the full WAVs must be transcribed on stop.
+    pub live_overflowed: bool,
+    pub capture_error: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone)]
+struct LiveSender {
+    tx: std::sync::mpsc::SyncSender<CapturedChunk>,
+    overflowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(any(windows, test))]
+impl LiveSender {
+    fn send(&self, chunk: CapturedChunk) {
+        use std::sync::{atomic::Ordering, mpsc::TrySendError};
+        if self.overflowed.load(Ordering::Relaxed) {
+            return;
+        }
+        // Never block WASAPI capture. Every sample is already in the source WAV.
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(chunk) {
+            self.overflowed.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(windows)]
 mod imp {
-    use super::{CapturedChunk, MeetingFiles, Source};
+    use super::{CapturedChunk, LiveSender, MeetingFiles, Source};
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,7 +113,7 @@ mod imp {
     const FRAME_S: f64 = 0.03;
     /// A chunk whose loudest sample is below this is treated as silence and not transcribed
     /// (Whisper hallucinates on silence). Tunable.
-    const SILENCE_FLOOR: f32 = 0.015;
+
 
     fn es<E: std::fmt::Display>(e: E) -> String {
         e.to_string()
@@ -95,7 +143,7 @@ mod imp {
             Chunker { rate, source, buf: Vec::new(), start_samples: 0 }
         }
 
-        fn push(&mut self, mono: &[f32], tx: &Sender<CapturedChunk>) {
+        fn push(&mut self, mono: &[f32], tx: &LiveSender) {
             self.buf.extend_from_slice(mono);
             let target = (self.rate as f64 * TARGET_S) as usize;
             while self.buf.len() >= target {
@@ -128,7 +176,7 @@ mod imp {
             best.clamp(min.min(len), len)
         }
 
-        fn emit(&mut self, cut: usize, tx: &Sender<CapturedChunk>) {
+        fn emit(&mut self, cut: usize, tx: &LiveSender) {
             let cut = cut.min(self.buf.len());
             if cut == 0 {
                 return;
@@ -136,14 +184,14 @@ mod imp {
             let chunk: Vec<f32> = self.buf.drain(..cut).collect();
             let start_s = self.start_samples as f64 / self.rate as f64;
             self.start_samples += cut as u64;
-            if max_abs(&chunk) > SILENCE_FLOOR {
-                let _ = tx.send(CapturedChunk { source: self.source, start_s, samples: chunk, src_rate: self.rate });
+            if crate::meeting::has_audio(&chunk, self.rate) {
+                tx.send(CapturedChunk { source: self.source, start_s, samples: chunk, src_rate: self.rate });
             }
         }
 
         /// Ship the trailing partial chunk (if ≥1 s) when recording stops.
-        fn flush(&mut self, tx: &Sender<CapturedChunk>) {
-            if self.buf.len() >= self.rate as usize {
+        fn flush(&mut self, tx: &LiveSender) {
+            if !self.buf.is_empty() {
                 let cut = self.buf.len();
                 self.emit(cut, tx);
             }
@@ -154,6 +202,7 @@ mod imp {
     /// its WASAPI client + WAV writer (COM objects stay on their own thread) and a chunk sender.
     pub struct MeetingCapture {
         stop: Arc<AtomicBool>,
+        live_overflowed: Arc<AtomicBool>,
         mic: Option<JoinHandle<(u64, u32)>>,
         sys: Option<JoinHandle<(u64, u32)>>,
         mic_wav: PathBuf,
@@ -164,18 +213,22 @@ mod imp {
         /// Open both endpoints and start recording. Returns the capture handle and a receiver of
         /// live chunks (drained by the worker in `lib.rs`). Errors synchronously if either stream
         /// fails to open, so the UI learns immediately rather than after a wasted meeting.
-        pub fn start(mic_wav: PathBuf, sys_wav: PathBuf) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
+        pub fn start(mic_wav: PathBuf, sys_wav: PathBuf, mic_device: Option<String>, system_device: Option<String>) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
+            *super::LEVELS.lock().unwrap()=vec![super::ChannelLevel::default();2];
             let stop = Arc::new(AtomicBool::new(false));
             let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-            let (chunk_tx, chunk_rx) = mpsc::channel::<CapturedChunk>();
+            // About 17 MB maximum at 48 kHz and 11 s/chunk, independent of meeting length.
+            let (tx, chunk_rx) = mpsc::sync_channel::<CapturedChunk>(8);
+            let live_overflowed = Arc::new(AtomicBool::new(false));
+            let chunk_tx = LiveSender { tx, overflowed: live_overflowed.clone() };
 
             let mic = {
                 let (wav, stop, rt, ct) = (mic_wav.clone(), stop.clone(), ready_tx.clone(), chunk_tx.clone());
-                thread::spawn(move || run_stream(Source::Mic, Direction::Capture, wav, stop, rt, ct))
+                thread::spawn(move || run_stream(Source::Mic, Direction::Capture, wav, stop, rt, ct, mic_device))
             };
             let sys = {
                 let (wav, stop, rt, ct) = (sys_wav.clone(), stop.clone(), ready_tx.clone(), chunk_tx.clone());
-                thread::spawn(move || run_stream(Source::Meeting, Direction::Render, wav, stop, rt, ct))
+                thread::spawn(move || run_stream(Source::Meeting, Direction::Render, wav, stop, rt, ct, system_device))
             };
             drop(ready_tx);
             drop(chunk_tx); // only the threads hold senders now → channel closes when both end
@@ -194,7 +247,7 @@ mod imp {
                 let _ = sys.join();
                 return Err(errs.join("; "));
             }
-            Ok((MeetingCapture { stop, mic: Some(mic), sys: Some(sys), mic_wav, sys_wav }, chunk_rx))
+            Ok((MeetingCapture { stop, live_overflowed, mic: Some(mic), sys: Some(sys), mic_wav, sys_wav }, chunk_rx))
         }
 
         /// Signal both threads to stop, wait for the WAVs to finalise (and the last chunks to be
@@ -202,14 +255,16 @@ mod imp {
         /// the worker's channel.
         pub fn stop(mut self) -> Result<MeetingFiles, String> {
             self.stop.store(true, Ordering::Relaxed);
-            let (mf, mr) = self.mic.take().and_then(|h| h.join().ok()).unwrap_or((0, 0));
-            let (sf, sr) = self.sys.take().and_then(|h| h.join().ok()).unwrap_or((0, 0));
+            let (mf, mr) = self.mic.take().and_then(|h| h.join().ok()).unwrap_or_else(||{super::LEVELS.lock().unwrap()[0].error="Mikrofoninspelningen avbröts oväntat.".into();(0,0)});
+            let (sf, sr) = self.sys.take().and_then(|h| h.join().ok()).unwrap_or_else(||{super::LEVELS.lock().unwrap()[1].error="Inspelningen av mötesljudet avbröts oväntat.".into();(0,0)});
             let mic_dur = mf as f64 / mr.max(1) as f64;
             let sys_dur = sf as f64 / sr.max(1) as f64;
             Ok(MeetingFiles {
                 mic_wav: self.mic_wav.to_string_lossy().to_string(),
                 sys_wav: self.sys_wav.to_string_lossy().to_string(),
                 duration_s: mic_dur.max(sys_dur),
+                live_overflowed: self.live_overflowed.load(Ordering::Relaxed),
+                capture_error: super::levels().into_iter().find(|l|!l.error.is_empty()).map(|l|l.error),
             })
         }
     }
@@ -234,7 +289,8 @@ mod imp {
         wav_path: PathBuf,
         stop: Arc<AtomicBool>,
         ready: Sender<Result<(), String>>,
-        chunks: Sender<CapturedChunk>,
+        chunks: LiveSender,
+        selected_device: Option<String>,
     ) -> (u64, u32) {
         let _ = initialize_mta();
         let enumerator = match DeviceEnumerator::new() {
@@ -248,7 +304,11 @@ mod imp {
         // Open (or re-open) a capture/loopback stream on the *current* default device. Returns the
         // COM objects + channel count + the device id (so we can notice when the default changes).
         let open = || -> Result<_, String> {
-            let device = enumerator.get_default_device(&device_dir).map_err(es)?;
+            let device = match selected_device.as_deref().filter(|id|!id.is_empty()) {
+                Some(id)=>enumerator.get_device(id),None=>enumerator.get_default_device(&device_dir)
+            }.map_err(es)?;
+            let index=if source==Source::Mic {0}else{1};
+            super::LEVELS.lock().unwrap()[index].name=device.get_friendlyname().unwrap_or_else(|_|"Ljudenhet".into());
             let dev_id = device.get_id().map_err(es)?;
             let mut client = device.get_iaudioclient().map_err(es)?;
             let format = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, 2, None);
@@ -325,6 +385,8 @@ mod imp {
             let mut queue: VecDeque<u8> = VecDeque::new();
             let mut last_poll = Instant::now();
             let mut wav_fault = false;
+            let mut level_at=Instant::now();
+            let mut level_peak=0f32;
 
             loop {
                 if stop.load(Ordering::Relaxed) {
@@ -334,6 +396,7 @@ mod imp {
                 if capture_client.read_from_device_to_deque(&mut queue).is_err() {
                     // Device invalidated (often the default just changed) → re-open on the new one.
                     let _ = client.stop_stream();
+                    {let mut levels=super::LEVELS.lock().unwrap();let l=&mut levels[if source==Source::Mic {0}else{1}];l.active=false;l.peak=0.0;}
                     down_since = Some(Instant::now());
                     continue 'session;
                 }
@@ -359,8 +422,16 @@ mod imp {
                     frames += 1;
                 }
                 if wav_fault {
+                    super::LEVELS.lock().unwrap()[if source==Source::Mic {0}else{1}].error="Ljudet kunde inte sparas. Kontrollera ledigt diskutrymme.".into();
                     let _ = client.stop_stream();
                     break 'session;
+                }
+                level_peak=level_peak.max(max_abs(&batch));
+                if level_at.elapsed()>=Duration::from_millis(200) {
+                    let index=if source==Source::Mic {0}else{1};
+                    let mut levels=super::LEVELS.lock().unwrap();
+                    levels[index].peak=level_peak; levels[index].active=true;
+                    level_peak=0.0;level_at=Instant::now();
                 }
                 chunker.push(&batch, &chunks);
                 // Loopback is silent when nothing plays → the event simply times out; keep recording.
@@ -371,7 +442,9 @@ mod imp {
                 // erroring, so polling — not just the read error above — is what catches that case.
                 if last_poll.elapsed() >= Duration::from_secs(1) {
                     last_poll = Instant::now();
-                    let changed = enumerator
+                    // Refresh the WAV header too: a crash leaves a readable recording up to here.
+                    if writer.flush().is_err() { super::LEVELS.lock().unwrap()[if source==Source::Mic {0}else{1}].error="Ljudfilen kunde inte uppdateras. Kontrollera ledigt diskutrymme.".into();let _=client.stop_stream(); break 'session; }
+                    let changed = selected_device.as_deref().is_none_or(|id|id.is_empty()) && enumerator
                         .get_default_device(&device_dir)
                         .and_then(|d| d.get_id())
                         .is_ok_and(|cur| cur != dev_id);
@@ -384,8 +457,9 @@ mod imp {
             }
         }
 
+        super::LEVELS.lock().unwrap()[if source==Source::Mic {0}else{1}].active=false;
         chunker.flush(&chunks);
-        let _ = writer.finalize();
+        if writer.finalize().is_err(){super::LEVELS.lock().unwrap()[if source==Source::Mic {0}else{1}].error="Ljudfilen kunde inte avslutas korrekt.".into();}
         (frames, RATE)
     }
 }
@@ -403,6 +477,8 @@ mod imp {
         pub fn start(
             _mic_wav: PathBuf,
             _sys_wav: PathBuf,
+            _mic_device: Option<String>,
+            _system_device: Option<String>,
         ) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
             Err("Mötesinspelning stöds endast på Windows (kräver WASAPI-loopback).".to_string())
         }
@@ -416,6 +492,31 @@ pub use imp::MeetingCapture;
 
 // Re-export so callers can name the receiver type without importing std::sync::mpsc directly.
 pub type ChunkReceiver = Receiver<CapturedChunk>;
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+
+    #[test]
+    fn slow_transcription_has_bounded_memory_and_requires_full_wav_recovery() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let sender = LiveSender { tx, overflowed: overflowed.clone() };
+        let chunk = || CapturedChunk { source: Source::Mic, start_s: 0.0, samples: vec![0.3; 16], src_rate: 16000 };
+        sender.send(chunk());
+        assert!(!overflowed.load(Ordering::Relaxed));
+        sender.send(chunk()); // must return immediately, even when the worker is stuck
+        assert!(overflowed.load(Ordering::Relaxed));
+        assert!(rx.try_recv().is_ok());
+        sender.send(chunk()); // overflow stays latched, even if the worker catches up
+        assert!(rx.try_recv().is_err());
+        assert!(overflowed.load(Ordering::Relaxed));
+    }
+}
 
 #[cfg(all(windows, test))]
 mod spike {

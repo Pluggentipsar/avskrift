@@ -1,0 +1,12 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "04DAB1F67F61301DB370B3442AB4A2ACA6D98A325AEDA809BC3865946D9E2D4F",
+    "Path": "C:\\Koden\\Avskrift\\dist\\Avskrift-Vulkan-arbetsyta\\avskrift.exe"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "9C525ABB3C4A9D4CFC480DC5352A45E083E5F9C078CAE45A87ABB173066D7039",
+    "Path": "C:\\Koden\\Avskrift\\dist\\Avskrift-CPU-arbetsyta\\avskrift.exe"
+  }
+]

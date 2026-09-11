@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use docx_rs::{read_docx, DocumentChild, Docx, Paragraph, Run};
+use docx_rs::{read_docx, DocumentChild, Docx, Paragraph, Run, Table, TableChild, TableRowChild, TableCellContent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -34,7 +34,7 @@ pub struct LoadedDoc {
     pub text: String,
     /// Byte range of each paragraph within `text` (excluding the separator).
     pub para_ranges: Vec<(usize, usize)>,
-    /// True if the source contained tables; their text is currently not processed (v1 limitation).
+    /// Table cell text is flattened in row/cell order; original table layout is not preserved.
     pub has_tables: bool,
 }
 
@@ -61,7 +61,10 @@ pub fn load(path: &Path) -> Result<LoadedDoc> {
                         para_ranges.push((start, text.len()));
                         text.push('\n');
                     }
-                    DocumentChild::Table(_) => has_tables = true,
+                    DocumentChild::Table(table) => {
+                        has_tables = true;
+                        append_table(table, &mut text, &mut para_ranges);
+                    },
                     _ => {}
                 }
             }
@@ -72,7 +75,45 @@ pub fn load(path: &Path) -> Result<LoadedDoc> {
 }
 
 pub fn save_text(path: &Path, content: &str) -> Result<()> {
-    std::fs::write(path, content).with_context(|| format!("kunde inte skriva {}", path.display()))
+    crate::storage::atomic_write(path, content.as_bytes())
+}
+
+fn append_table(table: &Table, text: &mut String, ranges: &mut Vec<(usize,usize)>) {
+    for TableChild::TableRow(row) in &table.rows {
+        for TableRowChild::TableCell(cell) in &row.cells {
+            for content in &cell.children {
+                match content {
+                    TableCellContent::Paragraph(p) => {
+                        let start=text.len(); text.push_str(&p.raw_text());
+                        ranges.push((start,text.len())); text.push('\n');
+                    },
+                    TableCellContent::Table(nested) => append_table(nested,text,ranges),
+                    _ => {},
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use docx_rs::{TableCell,TableRow};
+    #[test]
+    fn imports_table_cells_in_order_with_valid_swedish_byte_ranges() {
+        let file=std::env::temp_dir().join(format!("avskrift-table-{}.docx",std::process::id()));
+        let paragraph=|s:&str| Paragraph::new().add_run(Run::new().add_text(s));
+        let nested=Table::new(vec![TableRow::new(vec![TableCell::new().add_paragraph(paragraph("Åsa"))])]);
+        let table=Table::new(vec![TableRow::new(vec![TableCell::new().add_paragraph(paragraph("Namn")),TableCell::new().add_table(nested)])]);
+        Docx::new().add_paragraph(paragraph("Före")).add_table(table).add_paragraph(paragraph("Efter")).build().pack(std::fs::File::create(&file).unwrap()).unwrap();
+        let doc=load(&file).unwrap();
+        assert!(doc.has_tables);
+        assert!(doc.text.find("Före").unwrap()<doc.text.find("Namn").unwrap());
+        assert!(doc.text.find("Namn").unwrap()<doc.text.find("Åsa").unwrap());
+        assert!(doc.text.find("Åsa").unwrap()<doc.text.find("Efter").unwrap());
+        assert!(doc.para_ranges.iter().any(|&(s,e)| &doc.text[s..e]=="Åsa"));
+        std::fs::remove_file(file).unwrap();
+    }
 }
 
 /// Write a .docx from anonymized paragraph texts. Rebuilds a clean document (paragraph structure
@@ -82,7 +123,7 @@ pub fn save_docx(path: &Path, paragraphs: &[String]) -> Result<()> {
     for p in paragraphs {
         docx = docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(p.as_str())));
     }
-    let file = std::fs::File::create(path).with_context(|| format!("kunde inte skapa {}", path.display()))?;
-    docx.build().pack(file).map_err(|e| anyhow!("kunde inte skriva Word-filen: {e:?}"))?;
-    Ok(())
+    let mut output=std::io::Cursor::new(Vec::new());
+    docx.build().pack(&mut output).map_err(|e| anyhow!("kunde inte skriva Word-filen: {e:?}"))?;
+    crate::storage::atomic_write(path,output.get_ref())
 }
