@@ -1,0 +1,22 @@
+{
+  "title": "FIKTIVT DEMO – skrivaren på plan två",
+  "lines": [
+    "Användare: Skrivaren på plan två svarar inte när jag skickar en utskrift.",
+    "Support: Har du provat att starta om skrivaren?",
+    "Användare: Ja, jag har startat om den. Det hjälpte inte. Jag kan fortfarande inte skriva ut.",
+    "Support: Vet du om andra också har problem?",
+    "Användare: Det vet jag inte. Jag kan bara säga att mina utskrifter inte kommer ut.",
+    "Support: Då undersöker jag skrivarens anslutning. Vi vet ännu inte vad felet beror på.",
+    "Användare: Bra, då gör vi så."
+  ],
+  "values": [
+    {"id":"title","text":"Skrivaren på plan två svarar inte vid utskrift","status":"found","evidence":[{"sourceId":"u0","quote":"Skrivaren på plan två svarar inte när jag skickar en utskrift."}]},
+    {"id":"problem","text":"Utskrifter kommer inte ut. Felorsaken är inte fastställd.","status":"found","evidence":[{"sourceId":"u0","quote":"Skrivaren på plan två svarar inte när jag skickar en utskrift."},{"sourceId":"u5","quote":"Vi vet ännu inte vad felet beror på."}]},
+    {"id":"location","text":"Skrivare på plan två. Skrivar-id framgår inte av underlaget.","status":"found","evidence":[{"sourceId":"u0","quote":"Skrivaren på plan två svarar inte när jag skickar en utskrift."}]},
+    {"id":"impact","text":"Användaren kan inte skriva ut. Det är okänt om andra berörs.","status":"found","evidence":[{"sourceId":"u4","quote":"Jag kan bara säga att mina utskrifter inte kommer ut."}]},
+    {"id":"tried","text":"Användaren har startat om skrivaren utan resultat.","status":"found","evidence":[{"sourceId":"u2","quote":"Ja, jag har startat om den. Det hjälpte inte."}]},
+    {"id":"next","text":"Supporten ska undersöka skrivarens anslutning. Tid för återkoppling framgår inte av underlaget.","status":"found","evidence":[{"sourceId":"u5","quote":"Då undersöker jag skrivarens anslutning."},{"sourceId":"u6","quote":"Bra, då gör vi så."}]},
+    {"id":"contact","text":"Framgår inte av underlaget","status":"missing","evidence":[]},
+    {"id":"missing","text":"Vilket skrivar-id gäller det? Vilka kontaktuppgifter ska användas? När ska återkoppling ske? Berörs fler användare?","status":"found","evidence":[]}
+  ]
+}

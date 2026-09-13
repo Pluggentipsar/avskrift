@@ -544,6 +544,13 @@ pub fn move_task_folder(file: &Path, from: &str, to: &str) -> Result<()> {
 
 fn meeting_fields(job: &Job) -> Vec<String> {
     let mut out=Vec::new();
+    if let Some(drafts)=job.extra.get("templateWork").and_then(|v|v.get("drafts")).and_then(|v|v.as_array()) {
+        for draft in drafts {
+            if let Some(text)=draft.get("freeText").and_then(|v|v.as_str()){out.push(text.to_lowercase());}
+            if let Some(name)=draft.pointer("/template/name").and_then(|v|v.as_str()){out.push(name.to_lowercase());}
+            if let Some(values)=draft.get("values").and_then(|v|v.as_array()) {for value in values {if let Some(text)=value.get("text").and_then(|v|v.as_str()){out.push(text.to_lowercase());}}}
+        }
+    }
     if let Some(text)=job.extra.get("agenda").and_then(|v|v.as_str()) {out.push(text.to_lowercase());}
     for key in ["decisions","bookmarks"] {
         if let Some(items)=job.extra.get(key).and_then(|v|v.as_array()) {

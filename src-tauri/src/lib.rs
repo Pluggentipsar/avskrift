@@ -20,6 +20,7 @@ mod memory;
 mod models;
 mod pii;
 mod summarize;
+mod templates;
 mod grounded;
 mod text_budget;
 mod storage;
@@ -320,6 +321,32 @@ async fn create_grounded_draft(app: AppHandle, args: DraftArgs, work_id: Option<
 async fn rewrite_dictation(app: AppHandle, args: DraftArgs, work_id: Option<String>) -> Result<String,String> {
     tauri::async_runtime::spawn_blocking(move || work::run(work_id, || with_draft_model(&app,&args.model,|model|model.rewrite(&args.text,&args.instructions))))
         .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all="camelCase")]
+struct TemplateArgs { template: templates::Template, sources: Vec<grounded::Source>, model: String }
+#[tauri::command]
+async fn create_template_draft(app: AppHandle, args: TemplateArgs, work_id: Option<String>) -> Result<Vec<templates::Value>,String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || {
+        templates::validate(&args.template)?;
+        with_draft_model(&app,&args.model,|model|model.from_template(&args.template,&args.sources,&|m|emit(&app,m)))
+    })).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+}
+#[tauri::command]
+fn template_package(template: templates::Template, sources: Vec<grounded::Source>, source_label: String) -> Result<String,String> {
+    templates::package(&template,&sources,&source_label).map_err(|e|e.to_string())
+}
+fn template_bank(backend: &Backend) -> PathBuf { backend.paths.jobs_dir.parent().unwrap_or(&backend.paths.jobs_dir).join("document-templates-v1.json") }
+#[tauri::command]
+fn list_document_templates(backend: State<Backend>) -> Result<Vec<templates::Template>,String> { templates::list(&template_bank(&backend)).map_err(|e|e.to_string()) }
+#[tauri::command]
+fn save_document_template(backend: State<Backend>, template: templates::Template, expected: Option<u32>) -> Result<templates::Template,String> { templates::save(&template_bank(&backend),template,expected).map_err(|e|e.to_string()) }
+#[tauri::command]
+fn import_document_template(path: String) -> Result<templates::Template,String> { templates::read_import(Path::new(&path)).map_err(|e|e.to_string()) }
+#[tauri::command]
+fn export_document_template(path: String, template: templates::Template) -> Result<(),String> {
+    (||->anyhow::Result<()>{templates::validate(&template)?;storage::atomic_write(Path::new(&path),&serde_json::to_vec_pretty(&template)?)})().map_err(|e|e.to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -1549,6 +1576,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![refresh_library, begin_work, cancel_work, forget_work,
+            create_template_draft, template_package, list_document_templates, save_document_template, import_document_template, export_document_template,
             dictation::dictation_snapshot,
             dictation::configure_dictation,
             dictation::toggle_dictation,

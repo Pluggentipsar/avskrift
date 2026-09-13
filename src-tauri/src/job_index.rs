@@ -16,14 +16,14 @@ fn connect(dir: &Path) -> Result<Connection> {
     db.execute_batch("PRAGMA cache_size=-8192; PRAGMA secure_delete=ON;
         PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")?;
     let version: i32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(version == 0 || version == 2, "Sökindexet behöver återskapas.");
+    anyhow::ensure!(version == 0 || version == 3, "Sökindexet behöver återskapas.");
     if version == 0 { db.execute_batch("CREATE TABLE IF NOT EXISTS files(name TEXT PRIMARY KEY, stamp TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS jobs(id TEXT UNIQUE NOT NULL, meta TEXT NOT NULL,
             paths TEXT NOT NULL, actions TEXT NOT NULL, fields TEXT NOT NULL, updated TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated DESC, id);
         CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(body, tokenize='trigram case_sensitive 1', columnsize=0);
         INSERT INTO search(search, rank) VALUES('secure-delete', 1);
-        PRAGMA user_version=2;")?; }
+        PRAGMA user_version=3;")?; }
     let mut checked = CHECKED.lock().unwrap();
     let checked = checked.get_or_insert_with(HashSet::new);
     if !checked.contains(&path) {

@@ -25,7 +25,7 @@
     <button onclick={onmodels}>Modeller på datorn</button>
     <button aria-current={active === 'summarize' ? 'page' : undefined} onclick={() => onnavigate('summarize')}>Sammanfatta text</button>
   </nav>
-  <div class="bottom"><button class="new" onclick={onnew}>Nytt arbete</button><p>Bearbetas på din dator<br />{#if version}<span>Version {version} · arbetsyta 9</span>{/if}</p></div>
+  <div class="bottom"><button class="new" onclick={onnew}>Nytt arbete</button><p>Bearbetas på din dator<br />{#if version}<span>Version {version} · mallflöde</span>{/if}</p></div>
 </aside>
 
 <style>

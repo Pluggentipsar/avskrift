@@ -9,6 +9,10 @@
   import AppNavigation from "$lib/AppNavigation.svelte";
   import VersionsDialog from "$lib/VersionsDialog.svelte";
   import GroundedDraft from '$lib/GroundedDraft.svelte';
+  import TemplateWorkspace from '$lib/TemplateWorkspace.svelte';
+  import type {TemplateWork} from '$lib/document-templates';
+  import supportDemo from '$lib/support-demo.json';
+  import supportTemplate from '$lib/support-template.json';
   import ReviewComparison from '$lib/ReviewComparison.svelte';
   import ReviewProfiles from '$lib/ReviewProfiles.svelte';
   import type {GroundedWork,SourceUnit} from '$lib/grounded';
@@ -99,7 +103,7 @@
   // ---- Transcript / review state ----
   let transcript = $state<Transcript | null>(null);
   let speakerLabels = $state<Record<string, string>>({});
-  let view = $state<"transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions">("transcript");
+  let view = $state<"transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions" | "templates">("transcript");
   let modelsOpen = $state(false);
   let transcriptToolsOpen = $state(false);
   let transcriptView = $state<TranscriptView>();
@@ -131,17 +135,13 @@
     { id: "egen", label: "Egen prompt", body: "" },
   ];
   const AI_PROMPTS_KEY = "avskrift.aiPrompts.v1";
-  // Targets for "Öppna i …". `q` = URL that prefills the composer (ChatGPT/Claude); null = no
-  // reliable prefill, so we just open the chat and rely on the clipboard + paste.
+  // Only open empty service pages. The user pastes their copied text manually.
   const AI_TARGETS = [
-    { id: "chatgpt", label: "ChatGPT", url: "https://chatgpt.com/", q: "https://chatgpt.com/?q=" },
-    { id: "claude", label: "Claude", url: "https://claude.ai/new", q: "https://claude.ai/new?q=" },
+    { id: "chatgpt", label: "ChatGPT", url: "https://chatgpt.com/", q: null },
+    { id: "claude", label: "Claude", url: "https://claude.ai/new", q: null },
     { id: "gemini", label: "Gemini", url: "https://gemini.google.com/app", q: null },
     { id: "copilot", label: "Copilot", url: "https://copilot.microsoft.com/", q: null },
   ];
-  // Encoded-URL length above which we skip prefill (long text won't fit / gets truncated) and
-  // just open the chat for a paste. Keeps sensitive-ish text out of very long URLs too.
-  const AI_PREFILL_MAX = 6000;
   let aiOpen = $state(false);
   let aiSource = $state<"anon" | "summary" | "transcript">("anon");
   let aiText = $state("");
@@ -167,6 +167,28 @@
   let originalTranscript = $state<Transcript | null>(null);
   let originalSourceText = $state<string | null>(null);
   let groundedWork = $state<GroundedWork|null>(null);
+  let templateWork = $state<TemplateWork>({drafts:[]});
+  const templateUsesTranscript=$derived.by(()=>screen==='transcribe'||srcMode==='transcript');
+  const templateOriginalSources=$derived.by(()=>groundedSources.map(s=>({...s,start:audioPath?s.start:null})));
+  const templateCanAnonymize=$derived.by(()=>!!analysis&&!reviewStale&&(templateUsesTranscript?!deidentDoc:deidentDoc));
+  async function openSupportDemo(){
+    if(busy||qaBusy||actionsBusy||recording||meetingActive||meetingBusy)return;
+    if(!(await flushCurrentSave()))return;
+    const id=crypto.randomUUID(),now=new Date().toISOString();
+    const sources=supportDemo.lines.map((text,i)=>({id:'u'+i,text,start:null}));
+    const demoDraft={id:crypto.randomUUID(),createdAt:now,template:supportTemplate,sources,basis:JSON.stringify([id,sources,'original',null]),sourceKind:'original',origin:'prepared',values:supportDemo.values.map(v=>({...v,originalText:v.text,reviewed:false}))};
+    try{await invoke('save_job',{job:{version:2,id,jobType:'transcribe',title:supportDemo.title,createdAt:now,updatedAt:now,transcript:{utterances:supportDemo.lines.map(text=>({text,start:0,end:0,speaker:null})),language:'sv',model:'FÖRBERETT FIKTIVT EXEMPEL – inte transkriberat ljud',diarized:false},templateWork:{drafts:[demoDraft],activeId:demoDraft.id},lastView:'templates'}});await openJobById(id);}catch(e){error=String(e);}
+  }
+  function templateBasis(kind:'original'|'anonymized') { return JSON.stringify([currentJobId,templateUsesTranscript?templateOriginalSources:srcText,kind,kind==='anonymized'?reviewBasis:null]); }
+  async function templateSources(kind:'original'|'anonymized'):Promise<SourceUnit[]> {
+    if(kind==='original')return templateUsesTranscript?templateOriginalSources:[{id:'text',text:srcText,start:null}];
+    if(!templateCanAnonymize)throw Error('Granska det aktuella underlaget innan du använder avidentifierad text.');
+    if(!templateUsesTranscript)return [{id:'text',text:await invoke<string>('copy_anonymized',{rejected:rejectedIds()}),start:null}];
+    const bodies=await invoke<string[]>('anonymized_segments',{rejected:rejectedIds()});
+    if(bodies.length!==transcript?.utterances.length)throw Error('Den avidentifierade texten matchar inte transkriptet. Granska igen.');
+    // Never reintroduce named speaker labels into a masked source.
+    return bodies.map((text,i)=>({id:`u${i}`,text,start:transcript!.utterances[i].start})).filter(s=>s.text.trim());
+  }
   let reviewApprovedBasis = $state<string|null>(null);
   const reviewBasis = $derived.by(()=>JSON.stringify([analysis?.snapshot??analysis?.text,rejectedIds()]));
   const groundedSources = $derived<SourceUnit[]>(transcript?.utterances.map((u,i)=>({id:`u${i}`,text:(u.speaker?`${speakerLabels[u.speaker]??u.speaker}: `:'')+u.text,start:u.start})).filter(s=>s.text.trim())??[]);
@@ -551,8 +573,7 @@
     }
   }
 
-  /** Copy the payload, then open the chosen AI — prefilling its composer when the text is short
-   *  enough, otherwise just opening the chat so the user pastes (Ctrl+V). */
+  /** Copy the payload and open a blank service page. Never include source text in URLs. */
   async function openInAi(target: { id: string; label: string; url: string; q: string | null }) {
     if (!aiDeid && !aiUseOriginal) return;
     const payload = aiPayload();
@@ -563,13 +584,7 @@
     }
     let url = target.url;
     let prefilled = false;
-    if (target.q) {
-      const enc = encodeURIComponent(payload);
-      if (enc.length <= AI_PREFILL_MAX) {
-        url = target.q + enc;
-        prefilled = true;
-      }
-    }
+    // Open a blank service page. Source text is only copied to the clipboard.
     try {
       await openUrl(url);
       showToast(prefilled ? `Öppnar ${target.label}…` : `Kopierat – öppnar ${target.label}, klistra in (Ctrl+V)`);
@@ -1341,7 +1356,7 @@
   });
   let screen = $state<Screen>("home");
   const transcriptReading = $derived(screen === "transcribe" && !!transcript && view === "transcript");
-  const controlsCollapsed = $derived(["overview","notes","actions"].includes(view)&&screen==="transcribe" ? true : transcriptReading ? !transcriptToolsOpen : sidebarCollapsed);
+  const controlsCollapsed = $derived(["overview","notes","actions","templates"].includes(view)&&screen==="transcribe" ? true : transcriptReading ? !transcriptToolsOpen : sidebarCollapsed);
 
   function go(s: Screen) {
     if(currentJobId&&!meetingActive&&screen==="transcribe")saveWorkspace();
@@ -1358,7 +1373,7 @@
   }
 
   /** Switch to a tab of the current transcript workspace (driven by the context-aware top nav). */
-  function tab(v: "transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions") {
+  function tab(v: "transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions" | "templates") {
     view = v;
     if(currentJobId)saveWorkspace();
     screen = "transcribe";
@@ -2311,6 +2326,7 @@
       reviewSnapshot: analysis?.snapshot ?? null,
       reviewIsDocument: deidentDoc,
       groundedWork,
+      templateWork,
       reviewApprovedBasis,
       selectedProfile,
       id: currentJobId,
@@ -2385,6 +2401,7 @@
     agenda="";bookmarks=[];decisions=[];meetingWarning="";playbackTrack="mix";followupFrom=null;
     summaryAnonymized = false;
     groundedWork = null; reviewApprovedBasis = null;
+    templateWork = {drafts:[]};
     notes = "";
     participants = [];
     actions = [];
@@ -2691,6 +2708,7 @@
       undoStack = []; editingIdx = null; rejected = new Set();
       originalSourceText = j.originalSourceText ?? (j.version < 2 ? j.sourceText : null) ?? null;
       groundedWork = j.groundedWork ?? null;
+      templateWork = j.templateWork ?? {drafts:[]};
       reviewApprovedBasis = j.reviewApprovedBasis ?? null;
       selectedProfile = j.selectedProfile ?? 'skola';
       summaryBasis = j.summaryBasis ?? null;
@@ -2736,7 +2754,7 @@
         meetingMicWav = j.jobType === "meeting" ? j.micWavPath ?? null : null;
         meetingMixWav = j.jobType === "meeting" ? j.mixWavPath ?? null : null;
         summaryDraft = j.summaryDraft ?? "";
-        view = ["overview","transcript","notes","actions","summary","review","qa"].includes(j.lastView)?j.lastView:(j.jobType==="meeting"?"overview":j.summaryDraft?"summary":"transcript");
+        view = ["overview","transcript","notes","actions","summary","review","qa","templates"].includes(j.lastView)?j.lastView:(j.jobType==="meeting"?"overview":j.summaryDraft?"summary":"transcript");
         currentTime=j.lastPosition??0;
         screen = "transcribe";
       } else if (j.jobType === "deidentify") {
@@ -2865,10 +2883,11 @@
       <button aria-pressed={view==='actions'} onclick={()=>tab('actions')}>Beslut och åtgärder</button>
       <button aria-pressed={view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
       <button aria-pressed={view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
+      <button aria-pressed={view === "templates"} onclick={() => tab("templates")}>Skapa från mall</button>
       <button aria-pressed={view === "qa"} onclick={() => tab("qa")}>Fråga källan</button>
     </nav>
   {/if}
-  {#if (screen === "transcribe" && transcript && !["overview","notes","actions"].includes(view)) || screen === "deidentify" || screen === "summarize"}
+  {#if (screen === "transcribe" && transcript && !["overview","notes","actions","templates"].includes(view)) || screen === "deidentify" || screen === "summarize"}
     <div class="panel-control"><button class="link" aria-expanded={!controlsCollapsed} onclick={() => {if(transcriptReading)transcriptToolsOpen=!transcriptToolsOpen;else sidebarCollapsed=!sidebarCollapsed;}}>{transcriptReading ? (transcriptToolsOpen ? "Dölj verktyg för transkriptet" : "Visa verktyg för transkriptet") : (sidebarCollapsed ? "Visa källa och inställningar" : "Dölj källa och inställningar")}</button></div>
   {/if}
 
@@ -2886,6 +2905,10 @@
         {/each}
       </ul></section>
     {/if}
+  {/snippet}
+  {#snippet documentTemplates()}
+    <p class="template-demo-link"><button class="link" onclick={openSupportDemo} disabled={busy||qaBusy||actionsBusy||recording||meetingActive||meetingBusy}>Öppna fiktivt supportdemo med förberett utkast</button></p>
+    <TemplateWorkspace workspaceId={currentJobId} value={templateWork} model={selectedSummaryModel} modelReady={summaryDownloaded} bind:busy disabled={qaBusy||actionsBusy||currentJobPending||meetingActive} canAnonymize={templateCanAnonymize} getSources={templateSources} getBasis={templateBasis} before={async()=>{if(!(await flushCurrentSave()))return false;return true;}} onchange={v=>{templateWork=v;saveWorkspace();}} onseek={seekGrounded}/>
   {/snippet}
   {#snippet sourcePicker()}
     <section>
@@ -3337,6 +3360,8 @@
     </div>
 
   {:else if screen === "summarize"}
+    <p><button class="btn" onclick={openSupportDemo} disabled={busy||qaBusy||actionsBusy||recording||meetingActive||meetingBusy}>Öppna fiktivt supportdemo med förberett utkast</button></p>
+    <details class="document-template-entry"><summary>Skapa från mall – ärendeunderlag och andra dokument</summary>{@render documentTemplates()}</details>
     <div class="layout" class:collapsed={controlsCollapsed}>
       <aside class="sidebar" inert={controlsCollapsed}>
         {@render sourcePicker()}
@@ -3747,7 +3772,7 @@
         {#if busy || qaBusy || actionsBusy}
           <div class="working" role="status" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Arbetar…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
         {/if}
-        <div class="review-head actions-only">
+        {#if view!=="templates"}<div class="review-head actions-only">
           <div class="actions">
             {#if currentJobType==='meeting'}<button class="btn" onclick={()=>openExport('meeting')}>Exportera mötesunderlag</button>{/if}
             {#if view === "overview"}<span class="hint">Välj innehåll och granska före export.</span>
@@ -3770,6 +3795,7 @@
           </div>
         </div>
 
+        {/if}
         {#if audioSrc}
           <div class="player">
             {#if meetingMicWav}<label class="track-choice">Lyssna på<select aria-label="Ljudspår" bind:value={playbackTrack} onchange={()=>{audioEl?.pause();playing=false;}}><option value="mix">Båda spåren</option><option value="mic">Min mikrofon</option><option value="system">Övriga deltagare</option></select></label>{/if}
@@ -3879,6 +3905,8 @@
             <p class="hint">Välj kategorier (och ev. djupare AI-granskning) och klicka <strong>Avidentifiera transkript</strong> i panelen till vänster — träffarna dyker upp här för granskning.</p>
           </div>
           {/if}
+        {:else if view === "templates"}
+          {@render documentTemplates()}
         {:else if view === "summary"}
           <GroundedDraft disabled={qaBusy || actionsBusy} value={groundedWork} sources={groundedSources} context={groundedContext} model={selectedSummaryModel} canListen={!!audioPath} bind:busy before={checkpointWork} onchange={saveGrounded} onseek={seekGrounded} onaction={addGroundedAction} ondecision={addGroundedDecision} onuse={useGrounded} />
           {#if summaryDraft}

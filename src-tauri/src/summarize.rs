@@ -192,6 +192,24 @@ pub struct Summarizer {
 }
 
 impl Summarizer {
+    pub fn from_template(&self, template: &crate::templates::Template, sources: &[crate::grounded::Source], progress: &dyn Fn(&str)) -> Result<Vec<crate::templates::Value>> {
+        crate::templates::validate(template)?;
+        // Check every field before starting; never truncate or first reduce to meeting minutes.
+        let mut requests=Vec::new();
+        for field in &template.fields {
+            let mut single=template.clone();single.fields=vec![field.clone()];
+            let prompt=crate::templates::prompt(&single,sources)?;
+            crate::templates::check_budget(&self.qwen,&prompt)?;requests.push((single,prompt));
+        }
+        let mut values=Vec::new();
+        for (i,(single,prompt)) in requests.iter().enumerate(){
+            crate::work::check()?;
+            progress(&format!("Fyller fält {} av {}: {}…",i+1,requests.len(),single.fields[0].heading));
+            let raw=self.qwen.generate_complete(prompt,crate::templates::OUTPUT)?;
+            values.extend(crate::templates::from_text(&raw,single,sources)?);
+        }
+        Ok(values)
+    }
     pub fn grounded(
         &self,
         sources: &[crate::grounded::Source],

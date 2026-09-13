@@ -1,0 +1,57 @@
+{
+  "formatVersion": 1,
+  "id": "support-case",
+  "revision": 1,
+  "name": "Supportärende",
+  "purpose": "Skapa ett sakligt ärendeunderlag från ett supportsamtal. Inget ärende registreras.",
+  "fields": [
+    {
+      "id": "title",
+      "heading": "Ärenderubrik",
+      "instruction": "Vilken kort ärenderubrik beskriver användarens problem? Skriv en kort rubrik.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "problem",
+      "heading": "Problem och symtom",
+      "instruction": "Vad fungerar inte för användaren och vilka symtom beskriver användaren? Skilj beskrivna symtom från en fastställd felorsak.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "location",
+      "heading": "Plats och utrustning",
+      "instruction": "Var finns den berörda utrustningen, och vilken utrustning eller tjänst gäller problemet? Ta med angiven plats. Ange att utrustnings-id saknas om det inte sägs.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "impact",
+      "heading": "Påverkan",
+      "instruction": "Vem säger att de påverkas av problemet och vad kan de inte göra? Om påverkan på andra är okänd, behåll den osäkerheten. Gissa inte prioritet.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "tried",
+      "heading": "Redan provade åtgärder",
+      "instruction": "Vad har användaren redan provat för att lösa problemet? Hjälpte det eller hjälpte det inte? Ta med både åtgärden och resultatet.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "next",
+      "heading": "Överenskommen nästa åtgärd",
+      "instruction": "Vad har supporten och användaren kommit överens om att göra härnäst? Vem ska göra det? Ange bara uttalade överenskommelser. Tid och ansvarigt namn får bara anges om de sägs.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "contact",
+      "heading": "Kontaktuppgifter",
+      "instruction": "Vilka kontaktuppgifter till användaren anges i samtalet? Om inga anges: svara exakt Framgår inte av underlaget. Behåll eventuella pseudonymer.",
+      "missing": "Framgår inte av underlaget"
+    },
+    {
+      "id": "missing",
+      "heading": "Saknade uppgifter och öppna frågor",
+      "instruction": "Vilka uppgifter behöver kompletteras? Kontrollera utrustnings-id, kontaktuppgifter, tid för återkoppling och vilka användare som berörs. Lista frågor om sådant som saknas, inte gissade svar.",
+      "missing": "Framgår inte av underlaget"
+    }
+  ]
+}

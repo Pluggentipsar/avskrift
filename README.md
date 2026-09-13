@@ -12,6 +12,12 @@ Ingen Python eller molntjänst behövs för att använda appen.
 
 ## Funktioner
 
+- **Mallflöde (0.7.0-beta.1, förhandsrelease)** — stöd för Supportärende och egna dokumentmallar,
+  separata redigerbara utkast, källkopior och manuell AI-överlämning. Se
+  [demoguide och avgränsningar](docs/MALLFLODE-MVP.md). Lokal modellkvalitet är ännu inte
+  godkänd i de nya supportfallen; [testprotokollet](docs/demo-support/VERIFIERING.md) skiljer
+  fungerande programflöde från återstående kvalitetsarbete. [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.7.0-beta.1).
+
 - **Version 0.6.0 / arbetsyta 9** — ett sammanhängande mötesflöde med ljudtest, kanalval,
   anteckningar, beslut, åtgärder och uppföljning. Byt namn direkt i mötet, fäst eller arkivera
   arbeten och exportera ett samlat mötesunderlag. Svagt mikrofonljud hanteras bättre.
