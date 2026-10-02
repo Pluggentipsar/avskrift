@@ -24,7 +24,7 @@
     : !model?.downloaded ? 'Talmodellen behöver hämtas först.' : '');
 
   async function refresh() {
-    try { projects = await invoke<ProjectMeta[]>('textklipp_list'); } catch (e) { error = String(e); }
+    try { projects = (await invoke<ProjectMeta[] | null>('textklipp_list')) ?? []; } catch (e) { error = String(e); }
     try { alignReady = (await invoke<{ ready: boolean }>('wordalign_status')).ready; } catch { alignReady = null; }
   }
   async function pick() {

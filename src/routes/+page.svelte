@@ -1437,6 +1437,15 @@
     go("home");
   }
 
+  /** Own entry for transcribing a file: always opens a fresh start view. Whatever is open is
+   *  saved first (it stays in Biblioteket); running work is never interrupted. */
+  async function startTranscription() {
+    if (screen === "transcribe" && !transcript && !currentJobPending) return;
+    const running = recording || meetingActive || meetingBusy || busy || qaBusy || actionsBusy;
+    if ((transcript || currentJobId) && !running) await newProject();
+    go("transcribe");
+  }
+
   // ---- Standalone source for de-identify / summarize (no transcript needed) ----
   // "paste" = use srcText · "file" = a loaded .txt/.md/.docx · "transcript" = the in-app transcript.
   let srcMode = $state<"paste" | "file" | "transcript">("paste");
@@ -2845,11 +2854,11 @@
       </div>
     </div>
   {/snippet}
-  <AppNavigation active={screen === "transcribe" ? "meeting" : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion}
-    onmodels={openModels} onnavigate={(page) => go(page as Screen)} onnew={() => void newProject()} />
+  <AppNavigation active={screen === "transcribe" ? (currentJobType === "meeting" ? "meeting" : "transcribe") : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion}
+    onmodels={openModels} onnavigate={(page) => page === "transcribe" ? void startTranscription() : go(page as Screen)} onnew={() => void newProject()} />
   <div class="app-content">
   <header class="workspace-header">
-    <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : screen === "textklipp" ? "Textklipp" : "Möten och transkribering"}</span>
+    <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : screen === "textklipp" ? "Textklipp" : currentJobType === "meeting" ? "Möten" : "Transkribera"}</span>
       {#if currentJobTitle && !["home", "history", "tasks", "dictation", "textklipp"].includes(screen)}<strong>{currentJobTitle}</strong><button class="link" onclick={()=>editTitle()}>Byt namn</button>{/if}
     </div>
     <div class="spacer"></div>
@@ -2968,11 +2977,12 @@
       {#if meetingActive||bgMeetings.length}<section class="home-current"><h2>Pågår nu</h2>{#if meetingActive}<button class="btn" onclick={()=>go('meeting')}>Till inspelningen: {currentJobTitle}</button>{/if}{#each bgMeetings as m}<button class="btn" onclick={()=>openJobById(m.id)}>{m.title} — {m.msg}</button>{/each}</section>{/if}
       <div class="entrypoints">
         <button onclick={() => go("meeting")}><h3>Möten</h3><p>Från samtal och ljudfiler till anteckningar och beslut.</p><span>Öppna möten</span></button>
+        <button onclick={() => void startTranscription()}><h3>Transkribera</h3><p>Gör om en ljud- eller videofil till text, med talare och tider.</p><span>Transkribera en fil</span></button>
         <button onclick={() => go("dictation")}><h3>Diktering</h3><p>Tala där du skriver. Hitta texten igen när du behöver den.</p><span>Öppna diktering</span></button>
         <button onclick={() => go("deidentify")}><h3>Avidentifiering</h3><p>Granska uppgifter i text och dokument och skapa en maskerad kopia.</p><span>Öppna avidentifiering</span></button>
         <button onclick={() => go("textklipp")}><h3>Textklipp</h3><p>Klipp video genom att redigera texten. Strukna ord försvinner ur filmen.</p><span>Öppna textklipp</span></button>
       </div>
-      <div class="home-tools"><button class="link" onclick={() => go("transcribe")}>Transkribera en ljudfil</button><button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button><button class="link" onclick={() => go("history")}>Öppna biblioteket</button></div>
+      <div class="home-tools"><button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button><button class="link" onclick={() => go("history")}>Öppna biblioteket</button></div>
       {#if recentJobs.length}
         <div class="recent">
           <h2>Fortsätt arbeta</h2>
@@ -3427,7 +3437,7 @@
 
   {:else if screen === "meeting"}
     <div class="home">
-      <div class="meeting-heading"><h2 class="big-title">Möten</h2><button class="btn" onclick={() => go("transcribe")}>Transkribera ljudfil</button>{#if transcript&&!meetingActive}<button class="btn" onclick={() => tab("overview")}>Tillbaka till {currentJobTitle || "aktuellt möte"}</button>{/if}</div>
+      <div class="meeting-heading"><h2 class="big-title">Möten</h2><button class="btn" onclick={() => void startTranscription()}>Transkribera ljudfil</button>{#if transcript&&!meetingActive}<button class="btn" onclick={() => tab("overview")}>Tillbaka till {currentJobTitle || "aktuellt möte"}</button>{/if}</div>
       <div class="meeting-card" class:wide={meetingActive}>
         {#if !meetingActive && !meetingBusy}
           <h3>Förbered ett möte</h3><label>Mötesnamn<input aria-label="Mötesnamn" bind:value={meetingName} placeholder="Till exempel Veckomöte med arbetslaget" /></label>
@@ -4618,7 +4628,7 @@
   .workspace-tabs button { font:inherit; font-size:14px; color:var(--muted); background:transparent; border:0; border-radius:7px; padding:8px 11px; cursor:pointer; } .workspace-tabs button[aria-pressed=true] { background:var(--accent-soft); color:var(--accent); }
   .panel-control { padding:10px 28px; border-bottom:1px solid var(--line); }
   .home-intro { margin:12px 0 0; color:var(--muted); font-size:16px; }
-  .entrypoints { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); border-block:1px solid var(--line-2); margin:30px 0 20px; }
+  .entrypoints { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); border-block:1px solid var(--line-2); margin:30px 0 20px; }
   .entrypoints button { font:inherit; color:var(--ink); background:none; border:0; text-align:left; padding:24px 22px; cursor:pointer; display:flex; flex-direction:column; }
   .entrypoints button:first-child { padding-left:0; } .entrypoints button + button { border-left:1px solid var(--line-2); } .entrypoints button:hover { background:var(--nav-bg); }
   .entrypoints h3 { font:28px/1.2 'Instrument Serif',serif; margin:0 0 12px; } .entrypoints p { font-size:14px; line-height:1.7; color:var(--muted); margin:0 0 18px; } .entrypoints span { font-size:13px; color:var(--accent); margin-top:auto; }

@@ -46,7 +46,7 @@ const mocks = fs.readFileSync('node_modules/@tauri-apps/api/mocks.js','utf8').re
   try {
     await page.goto('http://127.0.0.1:1420');
     await page.getByRole('heading',{name:'Ditt arbete',exact:true}).waitFor();
-    assert.equal(await page.locator('.entrypoints button').count(),3);
+    assert.equal(await page.locator('.entrypoints button').count(),5);
     fs.mkdirSync('docs/ui-step1',{recursive:true});
     await page.screenshot({path:'docs/ui-step1/home.png',fullPage:true});
     await page.getByRole('button',{name:/Veckomöte på biblioteket/}).click();

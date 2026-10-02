@@ -4,7 +4,7 @@
     onnavigate: (page: string) => void; onnew: () => void; onmodels: () => void;
   } = $props();
   const destinations = [
-    { id: 'home', label: 'Ditt arbete' }, { id: 'meeting', label: 'Möten' },
+    { id: 'home', label: 'Ditt arbete' }, { id: 'meeting', label: 'Möten' }, { id: 'transcribe', label: 'Transkribera' },
     { id: 'dictation', label: 'Diktering' }, { id: 'deidentify', label: 'Avidentifiering' },
     { id: 'textklipp', label: 'Textklipp' },
   ];
