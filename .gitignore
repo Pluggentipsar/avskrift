@@ -27,6 +27,8 @@ __pycache__/
 
 # Native runtime DLLs copied in for the installer bundle (build artifacts, ~94 MB)
 /src-tauri/runtime/
+# LGPL FFmpeg for Textklipp, fetched by model-tools/fetch-ffmpeg.ps1 (~160 MB)
+/src-tauri/ffmpeg/
 
 # Local sample/test transcripts — may contain real speech; keep out of the public repo
 /samples/

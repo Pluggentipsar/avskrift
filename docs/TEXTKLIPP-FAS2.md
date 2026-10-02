@@ -57,9 +57,15 @@ avbrottet, ingen halvfärdig fil, ingen kvarvarande process. Ordinarie svit: 112
 
 ## Återstår i fas 2
 
-1. **LGPL-FFmpeg i paketet.** Under utveckling används installerad FFmpeg (gyan.dev,
-   GPL) – den får inte skickas med. Behöver en LGPL-build (t.ex. BtbN `win64-lgpl`),
-   låst version + SHA-256, licenstext i NOTICE och paketeringssteg.
+1. ~~LGPL-FFmpeg i paketet.~~ **Klart:** `model-tools/fetch-ffmpeg.ps1` hämtar BtbN
+   `ffmpeg-n8.1.3-…-win64-lgpl-shared-8.1.zip` (låst release, SHA-256) till
+   `src-tauri/ffmpeg/` (git-ignorerad, ~160 MB, ~80 MB i ZIP): bara `ffmpeg.exe`, `ffprobe.exe`,
+   DLL:er och licenstext. LGPL v3, utan x264/x265. Följer med installationspaketet via
+   `tauri.conf.json`; portabla ZIP-paket ska få mappen `ffmpeg/` bredvid `avskrift.exe`.
+   Licens och källa i [NOTICE.md](../NOTICE.md).
+   **FFmpeg 9.0 valdes bort:** dess NVENC kräver NVIDIA-drivrutin ≥ 610 (testdatorn hade
+   591.86) och föll då tillbaka på Media Foundation. Med 8.1 fungerar NVENC.
+   Med medföljande FFmpeg: korta testfilmen importerad på 16,6 s (proxy med NVENC).
 2. Ljudfiler utan bild fungerar i importen (ingen proxy) men är inte provade.
 3. Variabel bildfrekvens och roterad mobilvideo är bara enhetstestade, inte provade
    på riktiga filer.

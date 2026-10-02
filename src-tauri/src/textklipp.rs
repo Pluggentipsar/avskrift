@@ -421,7 +421,16 @@ mod tests {
         assert!(n.starts_with("20") && n.ends_with('Z'));
     }
 
-    /// Paths for opt-in tests: models from env, projects in a scratch dir, FFmpeg from PATH.
+    fn bundled(exe: &str) -> PathBuf {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("ffmpeg").join(exe);
+        if p.is_file() {
+            p
+        } else {
+            exe.into()
+        }
+    }
+
+    /// Paths for opt-in tests: models from env, projects in a scratch dir.
     fn test_paths(root: &Path) -> ModelPaths {
         let env = |k: &str| PathBuf::from(std::env::var(k).unwrap_or_default());
         let whisper = env("AVSKRIFT_TEXTKLIPP_TEST_WHISPER");
@@ -441,8 +450,9 @@ mod tests {
             meetings_dir: root.join("none"),
             tasks_file: root.join("none"),
             textklipp_dir: root.to_path_buf(),
-            ffmpeg: "ffmpeg.exe".into(),
-            ffprobe: "ffprobe.exe".into(),
+            // The bundled LGPL build when fetched (model-tools/fetch-ffmpeg.ps1), else PATH.
+            ffmpeg: bundled("ffmpeg.exe"),
+            ffprobe: bundled("ffprobe.exe"),
         }
     }
 
