@@ -47,8 +47,36 @@ pauser kortade till 0,7 s.
 Tester: `textklipp` 18 enhetstester (renderingsplan, undertexter), apptest
 `export_real_video` (opt-in), UI-test 21 steg inklusive exportdialogen.
 
+## Tillägg: parallell rendering och rumston
+
+- **Två grupper renderas samtidigt** (`render::WORKERS`). Arbetstrådarna får begärans
+  avbrottsflagga uttryckligen (de saknar annars arbetskontext). En grupp som misslyckas
+  körs om **ensam** när de andra är klara – under provningen misslyckades exporten två gånger
+  av drygt tjugo med *Nothing was written…* medan en annan app samtidigt använde NVENC;
+  omkörningen är provad med ett inlagt fel (`export_repeat`, `AVSKRIFT_TEXTKLIPP_INJECT_FAIL`).
+  Felmeddelandet visar nu FFmpegs verkliga felrad i stället för den allmänna slutraden.
+- **Rumston vid tysta skarvar:** exporten lade aldrig in tystnad, men varje skarv tonades ut
+  och in, vilket gav en kort dipp till *digital* tystnad där rummets brus försvann. Där båda
+  sidor är tysta överlappas nu ljudet 30 ms (`acrossfade`, lika effekt) så bruset fortsätter.
+  Bitarnas längd – och synken – är oförändrad. Skarvar i tal tonas som förut, så slutet på
+  ett bortklippt ord inte läcker in.
+- **Grupper delas vid tonade skarvar**, inte mitt i en rumstonsövergång (som inte kan gå
+  över två mellanfiler); tvingad delning först vid 48 bitar.
+
+`model-tools/textklipp-join-check.py` mäter dippen vid varje skarv (tystaste 5 ms inom
+±25 ms jämfört med nivån 50–200 ms runt omkring).
+
+| Film | Rendering | Synk | Dipp vid skarvar i pauser |
+| --- | --- | --- | --- |
+| 3 min, före | 18,9 s | 0,0 ms | median 19,3 dB, 9 av 9 > 10 dB |
+| 3 min, efter | 11,6 s | 0,0 ms | median 4,7 dB; äkta pausskarvar 1,5–6 dB |
+| 32 min, före | 242 s | 0,0 ms | – |
+| 32 min, efter | **140 s** (1,7×) | 0,0 ms (521 punkter) | median 4,3 dB |
+
+Kvarvarande dippar > 10 dB ligger vid skarvar intill tal eller andning (sidan före eller
+efter över tystnadsgränsen), där toningen är avsiktlig – kontrollerat skarv för skarv i
+den korta filmen. Inte riktigt dubbel fart: sammanfogning och ljudkodning sker en gång.
+
 ## Återstår
 
-- Parallella grupper (två samtidiga NVENC-sessioner) för ungefär dubbel fart.
-- Rumston i stället för tystnad vid förkortade pauser.
 - Provning med mobilvideo (variabel bildfrekvens, rotation) och ljudfiler.

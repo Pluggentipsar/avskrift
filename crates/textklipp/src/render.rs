@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// Pieces per intermediate file: bounds open decoders per FFmpeg run.
 pub const GROUP: usize = 24;
+/// Groups rendered at the same time (two FFmpeg processes ≈ twice as fast with NVENC).
+pub const WORKERS: usize = 2;
+/// Room tone: at joins where both sides are quiet, the pieces' audio overlaps by this much
+/// (equal-power crossfade) instead of fading each side to digital silence. The room's own noise
+/// then runs on without a dip; piece lengths, and therefore sync, are unchanged.
+pub const XFADE: f64 = 0.030;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +37,9 @@ pub struct Piece {
     /// Audio fade at the piece's start and end, seconds (0 at the file's own start/end).
     pub fade_in: f64,
     pub fade_out: f64,
+    /// The cut at the start / end lies in silence (false at the file's own start/end).
+    pub quiet_in: bool,
+    pub quiet_out: bool,
 }
 
 /// Fade length at a join: short when the cut sits in silence, longer when it cuts through sound.
@@ -57,12 +66,16 @@ pub fn pieces(keep: &[(f64, f64)], duration: f64, fps: Option<f64>, quiet: impl 
             if end - start < 0.02 || (fps.is_some() && frames == 0) {
                 return None;
             }
+            let (first, last) = (a <= 0.001, b >= duration - 0.001);
+            let (quiet_in, quiet_out) = (!first && quiet(a), !last && quiet(b));
             Some(Piece {
                 start,
                 end,
                 frames,
-                fade_in: if a <= 0.001 { 0.0 } else { fade_for(quiet(a)) },
-                fade_out: if b >= duration - 0.001 { 0.0 } else { fade_for(quiet(b)) },
+                fade_in: if first { 0.0 } else { fade_for(quiet_in) },
+                fade_out: if last { 0.0 } else { fade_for(quiet_out) },
+                quiet_in,
+                quiet_out,
             })
         })
         .collect()
@@ -105,48 +118,99 @@ pub fn video_quality(encoder: &str, q: Quality, height: u32) -> Vec<String> {
     }
 }
 
+/// For each piece in a group: does it crossfade (room tone) into the next one? Only at quiet
+/// joins, and only between pieces long enough to carry the overlap.
+pub fn blends(pieces: &[Piece], fps: Option<f64>) -> Vec<bool> {
+    (0..pieces.len())
+        .map(|i| {
+            i + 1 < pieces.len()
+                && pieces[i].quiet_out
+                && pieces[i + 1].quiet_in
+                && length(&pieces[i], fps) > 3.0 * XFADE
+                && length(&pieces[i + 1], fps) > 3.0 * XFADE
+        })
+        .collect()
+}
+
+/// Split pieces into render groups of about [`GROUP`]. A group ends only where the join fades
+/// anyway (not at a room-tone crossfade, which cannot span two intermediate files), unless the
+/// group reaches twice the target size.
+pub fn groups(pieces: &[Piece], fps: Option<f64>) -> Vec<std::ops::Range<usize>> {
+    let blend = blends(pieces, fps);
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 0..pieces.len() {
+        let size = i + 1 - start;
+        let last = i + 1 == pieces.len();
+        if last || (size >= GROUP && !blend[i]) || size >= 2 * GROUP {
+            out.push(start..i + 1);
+            start = i + 1;
+        }
+    }
+    out
+}
+
 /// One intermediate file from up to [`GROUP`] pieces. `fps` is the output frame rate (constant).
 pub fn group_args(src: &str, pieces: &[Piece], video: Option<(&str, Quality, u32, f64)>, out: &str) -> Vec<String> {
+    let fps = video.map(|v| v.3);
+    let blend = blends(pieces, fps);
     let mut a = s(&["-hide_banner", "-v", "error", "-nostdin", "-y"]);
-    for p in pieces {
-        a.extend(s(&["-ss", &format!("{:.6}", p.start), "-t", &format!("{:.6}", p.end - p.start), "-i", src]));
-    }
-    let mut graph = String::new();
-    let mut labels = String::new();
     for (i, p) in pieces.iter().enumerate() {
-        let len = length(p, video.map(|v| v.3));
-        if let Some((.., fps)) = video {
+        // A piece that crossfades into the next reads XFADE more audio; its picture is still cut to
+        // exactly `frames` below, so only the sound overlaps.
+        let extra = if blend[i] { XFADE } else { 0.0 };
+        a.extend(s(&["-ss", &format!("{:.6}", p.start), "-t", &format!("{:.6}", p.end - p.start + extra), "-i", src]));
+    }
+    let mut chains: Vec<String> = Vec::new();
+    let mut video_labels = String::new();
+    for (i, p) in pieces.iter().enumerate() {
+        let len = length(p, fps);
+        if let Some(fps) = fps {
             // Constant rate, then exactly `frames` frames (the last one repeated if the source ends early).
-            graph.push_str(&format!(
-                "[{i}:v]setpts=PTS-STARTPTS,fps={fps},tpad=stop_mode=clone:stop_duration=1,trim=end_frame={},setpts=PTS-STARTPTS[v{i}];",
+            chains.push(format!(
+                "[{i}:v]setpts=PTS-STARTPTS,fps={fps},tpad=stop_mode=clone:stop_duration=1,trim=end_frame={},setpts=PTS-STARTPTS[v{i}]",
                 p.frames
             ));
-            labels.push_str(&format!("[v{i}]"));
+            video_labels.push_str(&format!("[v{i}]"));
         }
+        let blended_in = i > 0 && blend[i - 1];
+        let extra = if blend[i] { XFADE } else { 0.0 };
         let mut af = format!("[{i}:a]asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0");
-        if p.fade_in > 0.0 {
+        if p.fade_in > 0.0 && !blended_in {
             af.push_str(&format!(",afade=t=in:d={:.3}", p.fade_in));
         }
-        if p.fade_out > 0.0 {
+        if p.fade_out > 0.0 && !blend[i] {
             af.push_str(&format!(",afade=t=out:st={:.6}:d={:.3}", (len - p.fade_out).max(0.0), p.fade_out));
         }
-        // Pad/trim audio to exactly the piece length so every join stays in sync with the picture.
-        af.push_str(&format!(",apad,atrim=0:{len:.6}[a{i}];"));
-        graph.push_str(&af);
-        labels.push_str(&format!("[a{i}]"));
+        // Pad/trim audio to exactly the piece length (+ overlap) so every join stays in sync.
+        af.push_str(&format!(",apad,atrim=0:{:.6}[a{i}]", len + extra));
+        chains.push(af);
+    }
+    // Sound: piece by piece, crossfaded where blended (the overlap is consumed, so the total
+    // equals the sum of piece lengths), otherwise simply appended.
+    let mut sound = "a0".to_string();
+    for i in 1..pieces.len() {
+        let next = format!("m{i}");
+        chains.push(if blend[i - 1] {
+            format!("[{sound}][a{i}]acrossfade=d={XFADE}:c1=qsin:c2=qsin[{next}]")
+        } else {
+            format!("[{sound}][a{i}]concat=n=2:v=0:a=1[{next}]")
+        });
+        sound = next;
     }
     let n = pieces.len();
+    let sound_map = format!("[{sound}]");
     match video {
         Some((encoder, q, height, fps)) => {
-            graph.push_str(&format!("{labels}concat=n={n}:v=1:a=1[cv][ca];[cv]format=yuv420p[v]"));
-            a.extend(s(&["-filter_complex", &graph, "-map", "[v]", "-map", "[ca]", "-c:v", encoder]));
+            chains.push(format!("{video_labels}concat=n={n}:v=1:a=0[cv]"));
+            chains.push("[cv]format=yuv420p[v]".into());
+            a.extend(s(&["-filter_complex", &chains.join(";"), "-map", "[v]", "-map", &sound_map, "-c:v", encoder]));
             a.extend(video_quality(encoder, q, height));
             // Closed GOPs, a keyframe at each file start, so stream copy can join the parts.
             a.extend(s(&["-g", &format!("{}", (fps * 2.0).round().max(1.0)), "-bf", "0"]));
         }
         None => {
-            graph.push_str(&format!("{labels}concat=n={n}:v=0:a=1[ca]"));
-            a.extend(s(&["-filter_complex", &graph, "-map", "[ca]"]));
+            a.extend(s(&["-filter_complex", &chains.join(";"), "-map", &sound_map]));
         }
     }
     a.extend(s(&["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-progress", "pipe:1", "-nostats", out]));
@@ -184,13 +248,43 @@ mod tests {
     #[test]
     fn group_reads_each_piece_with_its_own_seek() {
         // 6.25 s is not on the 30 fps grid: frame 187.5 rounds to 188 (6.2667 s); 4.0-6.2667 = 68 frames.
-        let p = pieces(&[(1.5, 2.0), (4.0, 6.25)], 10.0, Some(30.0), |_| true);
+        // The join at 2.0/4.0 is in sound, so no room-tone overlap: plain lengths.
+        let p = pieces(&[(1.5, 2.0), (4.0, 6.25)], 10.0, Some(30.0), |t| t < 1.6 || t > 6.0);
         assert_eq!((p[0].frames, p[1].frames), (15, 68));
+        assert_eq!(blends(&p, Some(30.0)), [false, false]);
         let a = group_args("in.mp4", &p, Some(("h264_nvenc", Quality::High, 1080, 30.0)), "part.mkv").join(" ");
         assert!(a.contains("-ss 1.500000 -t 0.500000 -i in.mp4") && a.contains("-ss 4.000000 -t 2.266667 -i in.mp4"), "{a}");
-        assert!(a.contains("trim=end_frame=68") && a.contains("concat=n=2:v=1:a=1") && a.contains("-cq 19"));
-        // Sound is cut to exactly the same 68/30 s as the picture.
-        assert!(a.contains("apad,atrim=0:2.266667") && a.contains("-c:a pcm_s16le") && a.ends_with("part.mkv"));
+        assert!(a.contains("trim=end_frame=68") && a.contains("concat=n=2:v=1:a=0") && a.contains("-cq 19"));
+        assert!(a.contains("[a0][a1]concat=n=2:v=0:a=1[m1]") && a.contains("-map [m1]"));
+        // Sound is cut to exactly the same 68/30 s as the picture, with fades at the loud join.
+        assert!(a.contains("apad,atrim=0:2.266667") && a.contains("afade=t=out") && a.ends_with("part.mkv"));
+    }
+
+    #[test]
+    fn quiet_joins_overlap_room_tone_instead_of_fading_to_silence() {
+        let p = pieces(&[(1.5, 2.0), (4.0, 6.25)], 10.0, Some(30.0), |_| true);
+        assert_eq!(blends(&p, Some(30.0)), [true, false]);
+        let a = group_args("in.mp4", &p, Some(("h264_nvenc", Quality::High, 1080, 30.0)), "part.mkv").join(" ");
+        // The first piece reads 30 ms more audio, keeps its picture at 15 frames, and crossfades.
+        assert!(a.contains("-ss 1.500000 -t 0.530000 -i in.mp4") && a.contains("trim=end_frame=15"), "{a}");
+        assert!(a.contains("apad,atrim=0:0.530000[a0]") && a.contains("[a0][a1]acrossfade=d=0.03:c1=qsin:c2=qsin[m1]"));
+        // No fade to silence on either side of the blended join.
+        let first = a.split("[a0]").next().unwrap();
+        assert!(!first.contains("afade=t=out"));
+    }
+
+    #[test]
+    fn groups_end_at_fading_joins_not_inside_room_tone() {
+        // 60 one-second pieces; joins are quiet (room tone) except after piece 29.
+        let keep: Vec<(f64, f64)> = (0..60).map(|i| (i as f64 * 2.0, i as f64 * 2.0 + 1.0)).collect();
+        let p = pieces(&keep, 200.0, Some(25.0), |t| (t - 59.0).abs() > 0.01 && (t - 60.0).abs() > 0.01);
+        let g = groups(&p, Some(25.0));
+        // Not after 24 pieces (a crossfade there), but at the first fading join after it.
+        assert_eq!(g[0], 0..30);
+        assert_eq!(g.iter().map(|r| r.len()).sum::<usize>(), 60);
+        // All quiet: forced split at twice the target.
+        let p = pieces(&keep, 200.0, Some(25.0), |_| true);
+        assert_eq!(groups(&p, Some(25.0))[0], 0..48);
     }
 
     #[test]
@@ -204,7 +298,7 @@ mod tests {
     fn audio_only_groups_have_no_video_chain() {
         let p = pieces(&[(0.0, 1.0)], 1.0, None, |_| true);
         let a = group_args("in.wav", &p, None, "part.mkv").join(" ");
-        assert!(a.contains("concat=n=1:v=0:a=1") && !a.contains("[0:v]"));
+        assert!(a.contains("-map [a0]") && !a.contains("[0:v]"));
     }
 
     #[test]

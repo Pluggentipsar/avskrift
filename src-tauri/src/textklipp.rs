@@ -134,6 +134,12 @@ pub fn encoder(tools: &Tools) -> Result<&'static str> {
 
 /// Run FFmpeg with `-progress pipe:1`; reports 0..=100 over `duration` and kills it on cancel.
 fn run_ffmpeg(tools: &Tools, args: &[String], duration: f64, pct: &dyn Fn(i32)) -> Result<()> {
+    run_ffmpeg_until(tools, args, duration, pct, &|| work::check().is_err())
+}
+
+/// As [`run_ffmpeg`], with an explicit stop check: worker threads have no work context of their
+/// own, so they pass the request's cancel token (and a "sibling failed" flag) instead.
+fn run_ffmpeg_until(tools: &Tools, args: &[String], duration: f64, pct: &dyn Fn(i32), stop: &dyn Fn() -> bool) -> Result<()> {
     let mut child = command(&tools.ffmpeg)
         .args(args)
         .stdin(Stdio::null())
@@ -149,19 +155,31 @@ fn run_ffmpeg(tools: &Tools, args: &[String], duration: f64, pct: &dyn Fn(i32)) 
         s
     });
     for line in BufReader::new(stdout).lines() {
-        if work::check().is_err() {
+        if stop() {
             let _ = child.kill();
             let _ = child.wait();
-            work::check()?;
+            return Err(anyhow!(work::Cancelled));
         }
         if let Some(t) = line.ok().as_deref().and_then(ffmpeg::progress_seconds) {
             pct(((t / duration.max(0.001)) * 100.0).clamp(0.0, 100.0) as i32);
         }
     }
     let status = child.wait()?;
-    work::check()?;
+    if stop() {
+        return Err(anyhow!(work::Cancelled));
+    }
     let errors = errors.join().unwrap_or_default();
-    ensure!(status.success(), "FFmpeg misslyckades: {}", errors.lines().last().unwrap_or("okänt fel"));
+    if !status.success() {
+        eprintln!("AVskrift FFmpeg-fel ({}):\n{errors}", args.last().map_or("", |s| s.as_str()));
+    }
+    // The last line is often only "Nothing was written…"; the cause (e.g. an encoder that could not
+    // start) is the first real error line.
+    let cause = errors
+        .lines()
+        .find(|l| (l.contains("rror") || l.contains("failed") || l.contains("Cannot")) && !l.contains("Nothing was written"))
+        .or_else(|| errors.lines().last())
+        .unwrap_or("okänt fel");
+    ensure!(status.success(), "FFmpeg misslyckades: {}", cause.trim());
     Ok(())
 }
 
@@ -428,7 +446,13 @@ fn stream_durations(tools: &Tools, file: &Path) -> Result<(Option<f64>, f64)> {
 /// Render the edited film from the original file, in full quality. Uses the saved edit list and
 /// the same cut points as the editor's preview. Writes to a temporary name and renames at the end,
 /// so a cancel or failure never leaves a half film under the chosen name.
-pub fn export(paths: &ModelPaths, id: &str, args: &ExportArgs, progress: &dyn Fn(&str), pct: &dyn Fn(i32)) -> Result<ExportResult> {
+pub fn export(
+    paths: &ModelPaths,
+    id: &str,
+    args: &ExportArgs,
+    progress: &dyn Fn(&str),
+    pct: &(dyn Fn(i32) + Sync),
+) -> Result<ExportResult> {
     use avskrift_textklipp::{render, subtitles};
     let started = std::time::Instant::now();
     let root = &paths.textklipp_dir;
@@ -463,18 +487,69 @@ pub fn export(paths: &ModelPaths, id: &str, args: &ExportArgs, progress: &dyn Fn
     let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
     let partial = output.with_extension(format!("avskrift-tmp.{ext}"));
     let result = (|| -> Result<Vec<String>> {
-        let mut parts = Vec::new();
-        let mut done = 0.0;
-        let groups: Vec<&[render::Piece]> = pieces.chunks(render::GROUP).collect();
-        for (i, group) in groups.iter().enumerate() {
-            progress(&format!("Renderar del {} av {}…", i + 1, groups.len()));
-            let len: f64 = group.iter().map(|x| render::length(x, fps)).sum();
-            let file = tmp.join(format!("part{i:04}.mkv"));
-            let a = render::group_args(&src.to_string_lossy(), group, video, &file.to_string_lossy());
-            let base = done;
-            run_ffmpeg(&tools, &a, len, &|q| pct(((base + len * q as f64 / 100.0) / expected * 90.0) as i32))?;
-            done += len;
-            parts.push(file.to_string_lossy().into_owned());
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        let groups: Vec<&[render::Piece]> = render::groups(&pieces, fps).into_iter().map(|r| &pieces[r]).collect();
+        let parts: Vec<String> =
+            (0..groups.len()).map(|i| tmp.join(format!("part{i:04}.mkv")).to_string_lossy().into_owned()).collect();
+        // Groups render in parallel (two FFmpeg processes: roughly twice as fast; consumer NVIDIA
+        // cards allow several NVENC sessions). Worker threads have no work context, so they get the
+        // request's cancel token explicitly; the first failure stops the other worker too.
+        let workers = render::WORKERS.min(groups.len());
+        // AVSKRIFT_TEXTKLIPP_DEBUG: keep FFmpeg arguments and intermediate files for diagnosis.
+        let debug = std::env::var_os("AVSKRIFT_TEXTKLIPP_DEBUG").is_some();
+        progress(&format!("Renderar {} delar, {workers} åt gången…", groups.len()));
+        let token = work::token();
+        let stop = || token.as_ref().is_some_and(|t| t.load(Relaxed));
+        let next = AtomicUsize::new(0);
+        let done = std::sync::Mutex::new(vec![0.0f64; groups.len()]);
+        let results: std::sync::Mutex<Vec<Option<Result<()>>>> = std::sync::Mutex::new((0..groups.len()).map(|_| None).collect());
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, Relaxed);
+                    if i >= groups.len() || stop() {
+                        break;
+                    }
+                    let len: f64 = groups[i].iter().map(|x| render::length(x, fps)).sum();
+                    #[allow(unused_mut)]
+                    let mut a = render::group_args(&src.to_string_lossy(), groups[i], video, &parts[i]);
+                    #[cfg(test)]
+                    if tests::FAIL_ONE_GROUP.swap(false, Relaxed) {
+                        a.insert(0, "-this-option-does-not-exist".into()); // simulated encoder failure
+                    }
+                    if debug {
+                        let _ = std::fs::write(format!("{}.args.txt", parts[i]), a.join("\n"));
+                    }
+                    let report = |q: i32| {
+                        let mut d = done.lock().unwrap();
+                        d[i] = len * q as f64 / 100.0;
+                        pct((d.iter().sum::<f64>() / expected * 90.0) as i32);
+                    };
+                    // A failed group does not stop the other worker: it is retried alone below.
+                    let r = run_ffmpeg_until(&tools, &a, len, &report, &stop);
+                    results.lock().unwrap()[i] = Some(r);
+                });
+            }
+        });
+        work::check()?;
+        // Retry failed groups one at a time: a parallel failure is typically the hardware encoder
+        // being unavailable for a moment (e.g. another program holding NVENC sessions).
+        let mut results = results.into_inner().unwrap();
+        for i in 0..groups.len() {
+            if matches!(results[i], Some(Ok(()))) {
+                continue;
+            }
+            if let Some(Err(e)) = &results[i] {
+                eprintln!("AVskrift textklipp: del {} misslyckades parallellt ({e}); försöker igen ensam", i + 1);
+            }
+            progress(&format!("Försöker igen med del {} av {}…", i + 1, groups.len()));
+            let len: f64 = groups[i].iter().map(|x| render::length(x, fps)).sum();
+            let a = render::group_args(&src.to_string_lossy(), groups[i], video, &parts[i]);
+            let base: f64 = done.lock().unwrap().iter().enumerate().filter(|(k, _)| *k != i).map(|(_, d)| d).sum();
+            results[i] = Some(run_ffmpeg(&tools, &a, len, &|q| pct(((base + len * q as f64 / 100.0) / expected * 90.0) as i32)));
+            if let Some(Err(e)) = &results[i] {
+                return Err(anyhow!("{e}"));
+            }
         }
         progress("Sätter ihop filmen…");
         let list = tmp.join("parts.txt");
@@ -510,7 +585,9 @@ pub fn export(paths: &ModelPaths, id: &str, args: &ExportArgs, progress: &dyn Fn
         }
         Ok(extra)
     })();
-    let _ = std::fs::remove_dir_all(&tmp);
+    if std::env::var_os("AVSKRIFT_TEXTKLIPP_DEBUG").is_none() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     let extra = match result {
         Ok(extra) => extra,
         Err(e) => {
@@ -649,6 +726,9 @@ mod tests {
         assert_eq!(n.len(), 20);
         assert!(n.starts_with("20") && n.ends_with('Z'));
     }
+
+    /// Makes the next rendered group fail once (see `export_repeat`).
+    pub(super) static FAIL_ONE_GROUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     fn bundled(exe: &str) -> PathBuf {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("ffmpeg").join(exe);
@@ -795,6 +875,37 @@ mod tests {
         assert!(!srt.is_empty() && text.split_whitespace().count() < words.len());
         assert!(!out_dir.read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("avskrift-tmp")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Opt-in stress test: export an already imported project (AVSKRIFT_TEXTKLIPP_TEST_ROOT = the
+    /// projects folder, AVSKRIFT_TEXTKLIPP_TEST_ID) AVSKRIFT_TEXTKLIPP_REPEAT times; FFmpeg's full
+    /// error output is printed for any failure.
+    #[test]
+    #[ignore]
+    fn export_repeat() {
+        let root = PathBuf::from(std::env::var("AVSKRIFT_TEXTKLIPP_TEST_ROOT").unwrap());
+        let id = std::env::var("AVSKRIFT_TEXTKLIPP_TEST_ID").unwrap();
+        let times: usize = std::env::var("AVSKRIFT_TEXTKLIPP_REPEAT").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let paths = test_paths(&root);
+        // AVSKRIFT_TEXTKLIPP_INJECT_FAIL: the first group of the first export fails once.
+        if std::env::var_os("AVSKRIFT_TEXTKLIPP_INJECT_FAIL").is_some() {
+            FAIL_ONE_GROUP.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let out = std::env::temp_dir().join(format!("avskrift-tk-repeat-{}.mp4", new_id()));
+        let ex = ExportArgs { output: out.to_string_lossy().into(), quality: avskrift_textklipp::render::Quality::High, srt: false, vtt: false, text: false };
+        let mut failures = 0;
+        for i in 0..times {
+            match export(&paths, &id, &ex, &|_| {}, &|_| {}) {
+                Ok(r) => println!("REPEAT {i}: ok {:.1}s sync_ok={}", r.seconds, r.sync_ok),
+                Err(e) => {
+                    failures += 1;
+                    println!("REPEAT {i}: FAIL {e}");
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&out);
+        println!("REPEAT {failures} failures of {times}");
+        assert_eq!(failures, 0);
     }
 
     /// Opt-in: cancelling during the proxy stops FFmpeg promptly and leaves no partial file.
