@@ -57,8 +57,8 @@
 </dialog>
 
 <style>
-  dialog { box-sizing:border-box; width:min(850px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:28px; border:1px solid var(--line); border-radius:12px; color:var(--ink); background:var(--bg); font:14px/1.5 Archivo,sans-serif; box-shadow:0 18px 80px #17172b33; }
-  dialog::backdrop { background:#17172b66; } .head { display:flex; justify-content:space-between; gap:20px; } h2 { font:32px/1.2 'Instrument Serif',serif; margin:0; } p { color:var(--muted); } .close { font-size:24px; align-self:flex-start; border:0; }
+  dialog { box-sizing:border-box; width:min(850px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:28px; border:1px solid var(--line); border-radius:12px; color:var(--ink); background:var(--bg); font:14px/1.5 Archivo,sans-serif; box-shadow:0 18px 80px #1c1d1a33; }
+  dialog::backdrop { background:#1c1d1a66; } .head { display:flex; justify-content:space-between; gap:20px; } h2 { font:32px/1.2 'Instrument Serif',serif; margin:0; } p { color:var(--muted); } .close { font-size:24px; align-self:flex-start; border:0; }
   fieldset { border:0; margin:12px 0; padding:0; } .options { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .options label { display:grid; gap:7px; } select { width:100%; }
   input,select,textarea,button { font:inherit; color:inherit; } button,select { border:1px solid var(--line-2); background:var(--bg); border-radius:7px; padding:10px 13px; } button { cursor:pointer; } button:disabled { opacity:.5; cursor:default; }
   .checks { display:flex; flex-wrap:wrap; gap:18px; margin-top:15px; } .checks label { display:flex; align-items:center; gap:8px; } input { accent-color:var(--accent); }

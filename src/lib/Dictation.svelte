@@ -185,13 +185,13 @@
   .workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 28px; align-items: start; }
   aside { border-right: 1px solid #e8e8eb; padding-right: 28px; } .recorder { padding-bottom: 22px; }
   .state { display: flex; align-items: center; gap: 9px; min-height: 40px; line-height: 1.5; margin-bottom: 14px; }
-  .state span { width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: #a6a7ad; } .state span.working { background: #3a36b0; } .state span.recording { background: #b4233b; }
+  .state span { width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: #a6a7ad; } .state span.working { background: var(--accent); } .state span.recording { background: #b4233b; }
   .controls, .entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   button { font: inherit; color: #1a1a1d; background: white; border: 1px solid #dadadf; border-radius: 6px; padding: 9px 12px; cursor: pointer; } button:hover { background: #f4f4f7; }
-  button.primary { background: #3a36b0; color: white; border-color: #3a36b0; } button.primary:hover { background: #2e2b8f; } button:disabled { opacity: .5; cursor: default; }
-  :is(button, input, textarea):focus-visible { outline: 2px solid #3a36b0; outline-offset: 3px; }
+  button.primary { background: var(--accent); color: white; border-color: var(--accent); } button.primary:hover { background: var(--accent-press); } button:disabled { opacity: .5; cursor: default; }
+  :is(button, input, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   fieldset { margin: 0; padding: 20px 0; border: 0; border-top: 1px solid #e8e8eb; min-width: 0; } legend { font-weight: 600; padding: 0 6px 0 0; }
-  .check { display: flex; gap: 8px; align-items: start; line-height: 1.5; margin: 12px 0; } input[type=checkbox] { accent-color: #3a36b0; margin-top: 3px; }
+  .check { display: flex; gap: 8px; align-items: start; line-height: 1.5; margin: 12px 0; } input[type=checkbox] { accent-color: var(--accent); margin-top: 3px; }
   input[type=search], textarea { box-sizing: border-box; font: inherit; padding: 10px; border: 1px solid #dadadf; border-radius: 6px; background: white; color: inherit; }
   .hint { color: var(--muted); font-size: 13px; line-height: 1.65; margin: 12px 0 0; }
   .list-heading { display: flex; gap: 16px; justify-content: space-between; align-items: center; margin-bottom: 20px; } .list-heading h3 { font-size: 18px; margin: 0; } .list-heading h3 span { color: #696a6f; font-weight: 400; margin-left: 5px; } .list-heading input { width: 210px; }

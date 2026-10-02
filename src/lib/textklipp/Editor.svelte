@@ -387,7 +387,7 @@
   .cutbar, .nudge { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; } .nudge span { display: inline-flex; align-items: center; gap: 4px; }
   .retakes summary { cursor: pointer; font-weight: 600; } .retakes ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; } .retakes li.done { opacity: .6; }
   .latency { display: grid; gap: 4px; } .latency input { width: 100%; accent-color: var(--accent); }
-  .hit { background: #ffe58a; } .hit.struck { background: #f3c9b8; }
+  .hit { box-shadow: inset 0 -2px 0 var(--accent); } .hit.struck { background: #f3c9b8; }
   .doc { font: 17px/1.75 Archivo, sans-serif; max-height: calc(100dvh - 250px); overflow: auto; padding-right: 12px; user-select: text; }
   .para { margin: 0 0 14px; content-visibility: auto; contain-intrinsic-size: auto 90px; } .para.hidden-deleted { display: none; }
   .speaker { display: block; font-size: 12px; font-weight: 600; color: var(--muted); user-select: none; }
@@ -395,6 +395,6 @@
   .doc span[data-id]:hover { background: var(--accent-soft); }
   .struck { text-decoration: line-through; color: var(--muted); background: #9231151a; }
   .sound { color: #6a4a00; font-style: italic; font-size: 14px; }
-  .current { background: var(--accent); color: #fff; } .current.struck { background: #923115; }
+  .current { background: var(--mark); color: var(--ink); } .current.struck { background: #f3c9b8; }
   @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .player { position: static; } .doc { max-height: none; } }
 </style>

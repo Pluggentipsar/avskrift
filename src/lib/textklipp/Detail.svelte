@@ -43,7 +43,7 @@
     const g = canvas.getContext('2d')!;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, width, h);
-    const ink = color('--ink', '#17172b'), muted = color('--muted', '#666'), accent = color('--accent', '#3a33b8');
+    const ink = color('--ink', '#1c1d1a'), muted = color('--muted', '#5f605a'), accent = color('--accent', '#1f4e46');
     // Removed stretches.
     let prev = 0;
     for (const [a, b] of [...keep, [duration, duration] as [number, number]]) {

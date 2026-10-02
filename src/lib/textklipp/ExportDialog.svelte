@@ -75,7 +75,7 @@
 
 <style>
   dialog { box-sizing: border-box; width: min(560px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--ink); font: 14px/1.6 Archivo, sans-serif; }
-  dialog::backdrop { background: #17172b66; }
+  dialog::backdrop { background: #1c1d1a66; }
   header { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
   h2 { font: 28px 'Instrument Serif', serif; margin: 0; }
   header button { font: inherit; font-size: 22px; background: none; border: 0; cursor: pointer; color: var(--muted); }

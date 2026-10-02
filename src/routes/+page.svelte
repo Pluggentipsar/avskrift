@@ -3365,14 +3365,14 @@
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           </ReviewComparison>
           <div class="reassure">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" style="stroke:var(--accent)" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
         {:else}
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
               <path d="M12 2.5l7.5 3v4.6c0 5-3.2 7.4-7.5 8.6-4.3-1.2-7.5-3.6-7.5-8.6V5.5L12 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              <path d="M8.5 10.4h5M8.5 13.4h3.4" stroke="#3a36b0" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="M8.5 10.4h5M8.5 13.4h3.4" style="stroke:var(--accent)" stroke-width="1.7" stroke-linecap="round"/>
             </svg>
             <p class="state-title">Avidentifiera en text</p>
             <p class="state-sub">Klistra in en text eller välj ett dokument till vänster och klicka <strong>Avidentifiera</strong>. Granska träffarna och exportera maskerad text.</p>
@@ -3424,9 +3424,9 @@
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
               <rect x="4.5" y="3" width="15" height="18" rx="2.2" stroke="currentColor" stroke-width="1.5"/>
-              <circle cx="8.4" cy="8" r="1.1" fill="#3a36b0"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              <circle cx="8.4" cy="12" r="1.1" fill="#3a36b0"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              <circle cx="8.4" cy="16" r="1.1" fill="#3a36b0"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="8" r="1.1" style="fill:var(--accent)"/><path d="M11 8h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="12" r="1.1" style="fill:var(--accent)"/><path d="M11 12h5.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <circle cx="8.4" cy="16" r="1.1" style="fill:var(--accent)"/><path d="M11 16h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
             <p class="state-title">Sammanfatta en text</p>
             <p class="state-sub">Klistra in en text eller välj ett dokument, välj mall och klicka <strong>Skapa sammanfattning</strong>.</p>
@@ -3787,7 +3787,7 @@
       {:else if !transcript && !["notes","actions","overview"].includes(view)}
         <div class="state">
           <svg class="state-icon" viewBox="0 0 24 24" fill="none">
-            <path d="M4 9v6M7 6.5v11M10 9.5v5" stroke="#3a36b0" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M4 9v6M7 6.5v11M10 9.5v5" style="stroke:var(--accent)" stroke-width="1.5" stroke-linecap="round"/>
             <path d="M14 8.5h6M14 12h6M14 15.5h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
           <p class="state-title">Välj en ljudfil och transkribera</p>
@@ -3921,7 +3921,7 @@
                   onclick={() => toggleSpan(seg.span!)}>{seg.text}</button>{/if}{/each}</div>
           </ReviewComparison>
           <div class="reassure">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#3a36b0" stroke-width="2"/></svg>
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 3l8 4v5c0 5-3.4 7.7-8 9-4.6-1.3-8-4-8-9V7l8-4z" stroke="#111214" stroke-width="2"/><path d="M9 12l2 2 4-4" style="stroke:var(--accent)" stroke-width="2"/></svg>
             Granska alltid träffarna innan du delar. Ingen automatik fångar 100 %.
           </div>
           {:else}
@@ -4184,10 +4184,10 @@
 
 <style>
   :global(:root) {
-    --ink: #242431; --muted: #626275; --faint: #626275; --bg: #ffffff;
-    --nav-bg: #f3f3f8; --accent-soft: #ededff;
-    --canvas: #ffffff; /* pure white */
-    --line: #e8e8eb; --line-2: #dadadf; --accent: #3a36b0; --accent-press: #2e2b8f; /* deep ink-indigo */
+    --ink: #1c1d1a; --muted: #5f605a; --faint: #5f605a; --bg: #ffffff;
+    --nav-bg: #f1f1ee; --accent-soft: #ecece7; --mark: #f6e39a; /* highlighter: the word being played */
+    --canvas: #fafaf8; /* warm-neutral paper, no blue cast */
+    --line: #e3e3df; --line-2: #d3d3cd; --accent: #1f4e46; --accent-press: #173b35; /* deep forest green, used sparingly */
     --shadow-sm: none; --shadow-md: none; --shadow-lg: none; /* editorial: depth from hairlines + space, not shadows */
   }
   :global(body) { margin: 0; font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--canvas); -webkit-font-smoothing: antialiased; }
@@ -4339,10 +4339,10 @@
   .job-row { flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 12px 15px; cursor: pointer; font: inherit; color: var(--ink); box-shadow: var(--shadow-sm); transition: border-color .14s, box-shadow .14s, transform .14s; min-width: 0; }
   .job-row:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 3%, var(--bg)); }
   .job-badge { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 3px; white-space: nowrap; color: #fff; background: var(--faint); }
-  .job-badge.transcribe { background: #3a36b0; }
+  .job-badge.transcribe { background: var(--accent); }
   .job-badge.deidentify { background: #be123c; }
   .job-badge.summarize { background: #0d9488; }
-  .job-badge.meeting { background: #7c3aed; }
+  .job-badge.meeting { background: #855700; } /* ochre: second palette color */
   .meeting-card { max-width: 560px; margin: 12px auto 0; display: flex; flex-direction: column; gap: 14px; text-align: left; box-sizing: border-box; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 26px 28px; box-shadow: var(--shadow-md); }
   .consent { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 3px; background: color-mix(in srgb, #f59e0b 12%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent); font-size: 13px; line-height: 1.45; color: #7c5410; }
   .consent svg { width: 22px; height: 22px; flex-shrink: 0; color: #b45309; }
@@ -4350,14 +4350,14 @@
   .m-tip svg { width: 21px; height: 21px; flex-shrink: 0; color: var(--accent); margin-top: 1px; }
   .m-tip em { font-style: normal; font-weight: 600; }
   .m-fields { display: flex; gap: 12px; }
-  .m-field { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: #5b6270; }
+  .m-field { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
   .m-field .profile { width: 100%; }
   .big-rec { font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 10px; justify-content: center; padding: 16px 0 2px; }
   .live-feed { max-height: 340px; overflow-y: auto; text-align: left; background: color-mix(in srgb, var(--accent) 4%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; margin-top: 4px; }
   .live-line { margin: 0; font-size: 14px; line-height: 1.45; }
   .live-who { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 3px; color: #fff; margin-right: 6px; }
-  .live-who.me { background: #3a36b0; }
-  .live-who.them { background: #7c3aed; }
+  .live-who.me { background: var(--accent); }
+  .live-who.them { background: #855700; }
   /* Live meeting split view (live-text + notes/actions side by side) */
   .meeting-card.wide { max-width: 100%; background: transparent; border: none; box-shadow: none; padding: 0; }
   .m-live-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between; }
@@ -4481,7 +4481,7 @@
   .drag-handle:hover { color: var(--accent); }
   .drag-handle:active { cursor: grabbing; }
   .app.grabbing { user-select: none; cursor: grabbing; }
-  .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 3px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(58,54,176,.4); }
+  .drag-ghost { position: fixed; z-index: 100; pointer-events: none; transform: translate(14px, 10px); background: var(--accent); color: #fff; padding: 6px 12px; border-radius: 3px; font-size: 13px; font-weight: 500; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 10px 30px rgba(31,78,70,.4); }
   .job-check { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
   .job-item.sel { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); border-radius: 3px; }
   .bulkbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: color-mix(in srgb, var(--accent) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--bg)); border-radius: 3px; padding: 8px 12px; margin-bottom: 12px; }
@@ -4542,7 +4542,7 @@
   .fp-create input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; font-size: 13px; }
   .fp-create input:focus { outline: none; border-color: var(--accent); }
   @keyframes workpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-  .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 3px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(58,54,176,.35); white-space: nowrap; }
+  .sel-mask-btn { position: fixed; transform: translate(-50%, -125%); z-index: 45; background: var(--accent); color: #fff; border: none; border-radius: 3px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 18px rgba(31,78,70,.35); white-space: nowrap; }
   .sel-mask-btn:hover { filter: brightness(1.08); }
   .empty-view { max-width: 460px; margin: 48px auto; text-align: center; }
   .empty-view h3 { font-family: "Instrument Serif", serif; font-weight: 400; margin: 0 0 8px; font-size: 25px; letter-spacing: -.01em; color: var(--ink); }
