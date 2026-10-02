@@ -204,6 +204,8 @@ fs.mkdirSync(shots, { recursive: true });
     await step('nudging the active cut by one frame stores a manual range', async () => {
       const at = await page.evaluate(id => window.fixture.project.transcript.utterances.flatMap(u => u.words)[id].start, egentligen);
       await page.evaluate(t => { document.querySelector('video').currentTime = t - 0.6; }, at);
+      // The label shows the cut's real times (a broken template once rendered "Klipp ,–,").
+      await page.waitForFunction(() => /^Klipp \d+:\d\d,\d–\d+:\d\d,\d \(/.test(document.querySelector('.nudge span')?.textContent ?? ''));
       await page.getByRole('button', { name: 'Börja klippet en bildruta tidigare' }).click();
       await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
       const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);

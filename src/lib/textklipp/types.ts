@@ -95,7 +95,7 @@ export function fmt(seconds: number): string {
 /** m:ss,t – tenths of a second, for short cuts. */
 export function fmtPrecise(seconds: number): string {
   const tenths = Math.floor((Math.max(0, seconds) % 1) * 10);
-  return `,`;
+  return `${fmt(seconds)},${tenths}`;
 }
 
 export function bytes(n: number): string {
