@@ -4,6 +4,8 @@
 pub mod edl;
 pub mod ffmpeg;
 pub mod media;
+pub mod render;
+pub mod subtitles;
 
 pub use edl::{keep_ranges, EditList, Item};
 pub use media::MediaInfo;

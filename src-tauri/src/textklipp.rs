@@ -379,6 +379,165 @@ fn preview_with(p: &Project, edits: &EditList, loudness: &avskrift_wordalign::Lo
     Preview { edited_duration: keep.iter().map(|(a, b)| b - a).sum(), keep }
 }
 
+// ---------------------------------------------------------------- Export
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportArgs {
+    /// Target file chosen by the user (.mp4 for video, .m4a for audio-only projects).
+    pub output: String,
+    pub quality: avskrift_textklipp::render::Quality,
+    #[serde(default)]
+    pub srt: bool,
+    #[serde(default)]
+    pub vtt: bool,
+    #[serde(default)]
+    pub text: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    pub output: String,
+    /// Extra files written next to the film (subtitles, text).
+    pub extra: Vec<String>,
+    pub expected_duration: f64,
+    pub video_duration: Option<f64>,
+    pub audio_duration: f64,
+    /// Picture and sound end within one frame of each other, and the length is as planned.
+    pub sync_ok: bool,
+    pub encoder: Option<String>,
+    pub pieces: usize,
+    pub seconds: f64,
+}
+
+fn stream_durations(tools: &Tools, file: &Path) -> Result<(Option<f64>, f64)> {
+    let out = command(&tools.ffprobe)
+        .args(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json"])
+        .arg(file)
+        .output()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    let dur = |kind: &str| {
+        v["streams"].as_array().and_then(|s| {
+            s.iter().find(|x| x["codec_type"] == kind).and_then(|x| x["duration"].as_str()?.parse::<f64>().ok())
+        })
+    };
+    Ok((dur("video"), dur("audio").ok_or_else(|| anyhow!("exporten saknar ljudspår"))?))
+}
+
+/// Render the edited film from the original file, in full quality. Uses the saved edit list and
+/// the same cut points as the editor's preview. Writes to a temporary name and renames at the end,
+/// so a cancel or failure never leaves a half film under the chosen name.
+pub fn export(paths: &ModelPaths, id: &str, args: &ExportArgs, progress: &dyn Fn(&str), pct: &dyn Fn(i32)) -> Result<ExportResult> {
+    use avskrift_textklipp::{render, subtitles};
+    let started = std::time::Instant::now();
+    let root = &paths.textklipp_dir;
+    let tools = paths.ffmpeg_tools();
+    let p = load(root, id)?;
+    ensure!(p.status == Status::Ready && p.transcript.is_some(), "Projektet är inte färdigimporterat.");
+    let src = PathBuf::from(&p.source_path);
+    ensure!(src.is_file(), "Originalfilen finns inte längre: {}. Flytta tillbaka den och försök igen.", src.display());
+    let output = PathBuf::from(&args.output);
+    progress("Räknar fram klippen…");
+    let (keep, quiet_at): (Vec<(f64, f64)>, Vec<(f64, bool)>) = with_loudness(root, id, |l| {
+        let keep = preview_with(&p, &p.edits, l).keep;
+        let quiet = keep.iter().flat_map(|&(a, b)| [(a, l.is_quiet(a)), (b, l.is_quiet(b))]).collect();
+        (keep, quiet)
+    })?;
+    ensure!(!keep.is_empty(), "Allt är bortklippt – det finns inget att exportera.");
+    let quiet = |t: f64| quiet_at.iter().find(|q| q.0 == t).is_none_or(|q| q.1);
+    let video = match &p.media.video {
+        Some(v) => {
+            let fps = if v.fps > 0.0 && v.fps <= 120.0 { v.fps } else { 30.0 };
+            Some((encoder(&tools)?, args.quality, v.width.min(v.height), fps))
+        }
+        None => None,
+    };
+    let fps = video.map(|v| v.3);
+    let pieces = render::pieces(&keep, p.media.duration, fps, quiet);
+    ensure!(!pieces.is_empty(), "Allt är bortklippt – det finns inget att exportera.");
+    let expected: f64 = pieces.iter().map(|x| render::length(x, fps)).sum();
+    let tmp = project_dir(root, id)?.join("export-tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
+    let partial = output.with_extension(format!("avskrift-tmp.{ext}"));
+    let result = (|| -> Result<Vec<String>> {
+        let mut parts = Vec::new();
+        let mut done = 0.0;
+        let groups: Vec<&[render::Piece]> = pieces.chunks(render::GROUP).collect();
+        for (i, group) in groups.iter().enumerate() {
+            progress(&format!("Renderar del {} av {}…", i + 1, groups.len()));
+            let len: f64 = group.iter().map(|x| render::length(x, fps)).sum();
+            let file = tmp.join(format!("part{i:04}.mkv"));
+            let a = render::group_args(&src.to_string_lossy(), group, video, &file.to_string_lossy());
+            let base = done;
+            run_ffmpeg(&tools, &a, len, &|q| pct(((base + len * q as f64 / 100.0) / expected * 90.0) as i32))?;
+            done += len;
+            parts.push(file.to_string_lossy().into_owned());
+        }
+        progress("Sätter ihop filmen…");
+        let list = tmp.join("parts.txt");
+        std::fs::write(&list, render::concat_list(&parts))?;
+        let a = render::final_args(&list.to_string_lossy(), video.is_some(), &partial.to_string_lossy());
+        run_ffmpeg(&tools, &a, expected, &|q| pct(90 + q * 9 / 100))?;
+        if output.exists() {
+            std::fs::remove_file(&output)?;
+        }
+        std::fs::rename(&partial, &output)?;
+
+        let mut extra = Vec::new();
+        let t = p.transcript.as_ref().unwrap();
+        let words: Vec<(String, f64, f64)> =
+            t.utterances.iter().flat_map(|u| u.words.iter().map(|w| (w.text.clone(), w.start, w.end))).collect();
+        let cues = subtitles::cues(&words, &keep);
+        let mut write = |ext: &str, body: String| -> Result<()> {
+            let file = output.with_extension(ext);
+            storage::atomic_write(&file, body.as_bytes())?;
+            extra.push(file.to_string_lossy().into_owned());
+            Ok(())
+        };
+        if args.srt {
+            write("srt", subtitles::srt(&cues))?;
+        }
+        if args.vtt {
+            write("vtt", subtitles::vtt(&cues))?;
+        }
+        if args.text {
+            let paras: Vec<Vec<(String, f64, f64)>> =
+                t.utterances.iter().map(|u| u.words.iter().map(|w| (w.text.clone(), w.start, w.end)).collect()).collect();
+            write("txt", subtitles::text(&paras, &keep))?;
+        }
+        Ok(extra)
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let extra = match result {
+        Ok(extra) => extra,
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
+        }
+    };
+    progress("Kontrollerar synk…");
+    let (video_duration, audio_duration) = stream_durations(&tools, &output)?;
+    let frame = video.map_or(0.05, |v| 1.0 / v.3);
+    let sync_ok = video_duration.is_none_or(|v| (v - audio_duration).abs() <= frame + 0.03)
+        && (audio_duration - expected).abs() <= 0.25;
+    pct(100);
+    progress("Klar");
+    Ok(ExportResult {
+        output: output.to_string_lossy().into_owned(),
+        extra,
+        expected_duration: expected,
+        video_duration,
+        audio_duration,
+        sync_ok,
+        encoder: video.map(|v| v.0.to_string()),
+        pieces: pieces.len(),
+        seconds: started.elapsed().as_secs_f64(),
+    })
+}
+
 // ---------------------------------------------------------------- Projects
 
 pub fn project_dir(root: &Path, id: &str) -> Result<PathBuf> {
@@ -574,6 +733,68 @@ mod tests {
         } else {
             println!("kept {}", dir.display());
         }
+    }
+
+    /// Opt-in end-to-end export (same env as `import_real_video`; AVSKRIFT_TEXTKLIPP_EXPORT_DIR
+    /// receives the film). Strikes the first two words, every other sentence's first word, and
+    /// shortens pauses, then checks sync, length and that struck words are not in the subtitles.
+    #[test]
+    #[ignore]
+    fn export_real_video() {
+        let root = std::env::temp_dir().join(format!("avskrift-tk-export-{}", new_id()));
+        let paths = test_paths(&root);
+        let whisper = PathBuf::from(std::env::var("AVSKRIFT_TEXTKLIPP_TEST_WHISPER").unwrap());
+        let args = ImportArgs {
+            path: std::env::var("AVSKRIFT_TEXTKLIPP_TEST_VIDEO").unwrap(),
+            model: whisper.file_stem().unwrap().to_string_lossy().into_owned(),
+            language: "sv".into(),
+            diarize: false,
+            num_speakers: None,
+        };
+        let pct: Pct = std::sync::Arc::new(|_| {});
+        let mut p = import(&paths, &args, &|_| {}, &pct).unwrap();
+        let words: Vec<(u32, String)> = p
+            .transcript
+            .as_ref()
+            .unwrap()
+            .utterances
+            .iter()
+            .flat_map(|u| u.words.iter().map(|w| w.text.clone()))
+            .enumerate()
+            .map(|(i, w)| (i as u32, w))
+            .collect();
+        // Strike the first two words and the first word after every sentence end.
+        let mut struck: Vec<u32> = vec![0, 1];
+        struck.extend(words.windows(2).filter(|w| w[0].1.ends_with('.')).map(|w| w[1].0));
+        p.edits.deleted = struck.iter().copied().collect();
+        p.edits.pause_limit = Some(0.7);
+        save(&root, &p).unwrap();
+        let out_dir = PathBuf::from(std::env::var("AVSKRIFT_TEXTKLIPP_EXPORT_DIR").unwrap());
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let output = out_dir.join("export-test.mp4");
+        // The keep ranges, for an external sync check against the original audio.
+        // The pieces exactly as exported (snapped to frames), for an external sync check.
+        let fps = p.media.video.as_ref().map(|v| v.fps);
+        let keep: Vec<(f64, f64)> = avskrift_textklipp::render::pieces(&preview(&root, &p.id, &p.edits).unwrap().keep, p.media.duration, fps, |_| true)
+            .iter()
+            .map(|x| (x.start, x.start + avskrift_textklipp::render::length(x, fps)))
+            .collect();
+        std::fs::write(out_dir.join("export-test.keep.json"), serde_json::to_string(&keep).unwrap()).unwrap();
+        std::fs::copy(project_dir(&root, &p.id).unwrap().join(AUDIO_FILE), out_dir.join("export-test.source16k.wav")).unwrap();
+        let ex = ExportArgs { output: output.to_string_lossy().into(), quality: avskrift_textklipp::render::Quality::High, srt: true, vtt: true, text: true };
+        let started = std::time::Instant::now();
+        let r = export(&paths, &p.id, &ex, &|m| println!("{:6.1}s {m}", started.elapsed().as_secs_f64()), &|_| {}).unwrap();
+        println!(
+            "EXPORT {:.1}s: {} pieces, expected {:.3}s, video {:?}, audio {:.3}, sync_ok={}, encoder={:?}",
+            r.seconds, r.pieces, r.expected_duration, r.video_duration, r.audio_duration, r.sync_ok, r.encoder
+        );
+        assert!(r.sync_ok);
+        assert!(output.is_file() && r.extra.len() == 3);
+        let srt = std::fs::read_to_string(output.with_extension("srt")).unwrap();
+        let text = std::fs::read_to_string(output.with_extension("txt")).unwrap();
+        assert!(!srt.is_empty() && text.split_whitespace().count() < words.len());
+        assert!(!out_dir.read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("avskrift-tmp")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Opt-in: cancelling during the proxy stops FFmpeg promptly and leaves no partial file.

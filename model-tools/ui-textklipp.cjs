@@ -66,6 +66,10 @@ fs.mkdirSync(shots, { recursive: true });
         case 'textklipp_media': return { playback: 'C:/synthetic/textklipp/tk-fixture/proxy.mp4', isVideo: true };
         case 'textklipp_preview': { f.previews++; const keep = keepRanges(f.project, args.edits); window.__lastPreview = { keep }; return { keep, editedDuration: keep.reduce((s, [a, b]) => s + b - a, 0) }; }
         case 'textklipp_waveform': return Array.from({ length: args.bars }, (_, i) => 0.5 + 0.4 * Math.sin((args.start + (args.end - args.start) * i / args.bars) * 9));
+        case 'plugin:dialog|save': f.saveDialog = args; return 'C:/synthetic/Testklipp (klippt).mp4';
+        case 'plugin:opener|reveal_item_in_dir': f.revealed = args; return;
+        case 'textklipp_export': f.exported = structuredClone(args); await new Promise(r => setTimeout(r, 300));
+          return { output: args.args.output, extra: args.args.srt ? ['C:/synthetic/Testklipp (klippt).srt'] : [], expectedDuration: 154, videoDuration: 153.999, audioDuration: 153.999, syncOk: true, encoder: 'h264_nvenc', pieces: 50, seconds: 19.6 };
         case 'textklipp_save_edits': f.saves.push(structuredClone(args.edits)); f.project.edits = structuredClone(args.edits); return '2026-10-02T10:01:00Z';
         default: return null;
       }
@@ -279,7 +283,24 @@ fs.mkdirSync(shots, { recursive: true });
       await page.waitForFunction(() => { const s = window.fixture.saves.at(-1); return s.deleted.length === 0 && s.pauseLimit === null; });
       await page.locator('.stats dd').nth(2).filter({ hasText: /^0$/ }).waitFor();
     });
-    await step('back to the list saves and closes', async () => {
+    await step('export dialog: options, saves edits first, reports sync, reveals the file', async () => {
+      await page.getByRole('button', { name: 'Exportera…' }).click();
+      const dialog = page.getByRole('dialog', { name: /Exportera klippt film/ });
+      await dialog.waitFor();
+      await dialog.getByLabel('Undertexter (.srt)').check();
+      await dialog.getByLabel('Mindre fil').check();
+      await dialog.getByRole('button', { name: 'Välj plats och exportera…' }).click();
+      await dialog.getByText('Bild och ljud kontrollerade').waitFor();
+      const ex = await page.evaluate(() => window.fixture.exported);
+      assert.equal(ex.args.quality, 'small'); assert.equal(ex.args.srt, true); assert.equal(ex.args.vtt, false);
+      assert.match(await page.evaluate(() => window.fixture.saveDialog.options.defaultPath), /Testklipp \(klippt\)\.mp4$/);
+      await dialog.getByText('Testklipp (klippt).srt').waitFor();
+      await dialog.getByRole('button', { name: 'Visa i mappen' }).click();
+      await page.waitForFunction(() => !!window.fixture.revealed);
+      await page.screenshot({ path: `${shots}/export-done.png` });
+      await dialog.getByRole('button', { name: 'Stäng', exact: true }).last().click();
+      await dialog.waitFor({ state: 'hidden' });
+    });    await step('back to the list saves and closes', async () => {
       await page.getByRole('button', { name: '← Alla klipp' }).click();
       await page.getByRole('button', { name: 'Välj video eller ljudfil…' }).waitFor();
     });

@@ -286,6 +286,20 @@ async fn textklipp_import(app: AppHandle, args: textklipp::ImportArgs, work_id: 
 }
 
 #[tauri::command]
+async fn textklipp_export(app: AppHandle, id: String, args: textklipp::ExportArgs, work_id: Option<String>) -> Result<textklipp::ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        work::run(work_id, || {
+            let paths = &app.state::<Backend>().paths;
+            let pct = emit_percent(&app);
+            textklipp::export(paths, &id, &args, &|m| emit(&app, m), &*pct)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn textklipp_make_proxy(app: AppHandle, id: String, work_id: Option<String>) -> Result<textklipp::Project, String> {
     tauri::async_runtime::spawn_blocking(move || {
         work::run(work_id, || {
@@ -1815,6 +1829,7 @@ pub fn run() {
             textklipp_save_edits,
             textklipp_preview,
             textklipp_waveform,
+            textklipp_export,
             textklipp_media,
             textklipp_delete,
             list_summary_models,

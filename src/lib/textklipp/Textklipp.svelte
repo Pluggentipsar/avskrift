@@ -62,7 +62,7 @@
 </script>
 
 {#if open_}
-  {#key open_.id}<Editor project={open_} {visible} {onmodels} onclose={() => { open_ = null; void refresh(); }} />{/key}
+  {#key open_.id}<Editor project={open_} {visible} {progress} {percent} {onmodels} onclose={() => { open_ = null; void refresh(); }} />{/key}
 {:else}
   <div class="textklipp">
     <h2 class="big-title">Textklipp</h2>

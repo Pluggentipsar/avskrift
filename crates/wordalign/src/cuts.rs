@@ -74,6 +74,11 @@ impl Loudness {
         self.db[lo..hi].iter().sum::<f32>() / (hi - lo).max(1) as f32
     }
 
+    /// True when the audio around `t` (±15 ms) is below the pause level.
+    pub fn is_quiet(&self, t: f64) -> bool {
+        self.level(t) < self.quiet_db
+    }
+
     /// Quietest frame boundary (1/fps grid) in `[lo, hi]`; if none fits, the frame boundary
     /// nearest the quietest millisecond. Video and audio are both cut there, keeping sync.
     pub fn cut_point(&self, fps: f64, lo: f64, hi: f64) -> f64 {

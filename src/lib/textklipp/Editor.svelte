@@ -3,12 +3,14 @@
   import { invoke, convertFileSrc } from '@tauri-apps/api/core';
   import { invokeWork, isWorkCancelled } from '$lib/work';
   import Detail from './Detail.svelte';
+  import ExportDialog from './ExportDialog.svelte';
   import { paragraphs, playable, toEdited, toSource, fmt, fmtPrecise, tokenAt, search, parseTime, findRetakes,
     type Project, type Preview, type Token, type EditList, type Edge } from './types';
 
-  let { project: initial, visible, onclose, onmodels }: {
-    project: Project; visible: boolean; onclose: () => void; onmodels: () => void;
+  let { project: initial, visible, progress = '', percent = 0, onclose, onmodels }: {
+    project: Project; visible: boolean; progress?: string; percent?: number; onclose: () => void; onmodels: () => void;
   } = $props();
+  let exporting = $state(false);
 
   // The editor is keyed by project id, so it starts from the given project and then owns its state.
   const init = untrack(() => initial);
@@ -240,7 +242,12 @@
     <button class="link" onclick={async () => { await flush(); onclose(); }}>← Alla klipp</button>
     <h2>{project.title}</h2>
     <span class="save" class:error={saveState === 'error'} role="status">{saveState === 'saving' ? 'Sparar…' : saveState === 'pending' ? 'Ändringar väntar' : saveState === 'error' ? 'Kunde inte spara' : 'Sparat'}</span>
+    <button class="btn primary" onclick={() => { video?.pause(); exporting = true; }} disabled={!preview.editedDuration}>Exportera…</button>
   </header>
+  {#if exporting}
+    <ExportDialog projectId={project.id} title={project.title} isVideo={!!project.media.video} editedDuration={preview.editedDuration} {cuts}
+      {progress} {percent} before={flush} onclose={() => (exporting = false)} />
+  {/if}
   {#if saveError}<p class="banner error" role="alert">{saveError}</p>{/if}
   {#if project.wordTimes !== 'exakta'}
     <p class="banner warn">Ordtiderna kommer från talmodellen och kan ligga flera tiondels sekunder fel – klipp kan höras. Hämta <button class="link" onclick={onmodels}>Exakta ordtider</button> och importera filen igen.</p>
@@ -330,7 +337,7 @@
       {#if query.trim().length >= 2}<span class="hint" role="status">{hits.length ? `${hitIndex + 1} av ${hits.length}` : 'Inga träffar'}</span>
         <button class="btn small" onclick={() => showHit(hitIndex - 1)} disabled={!hits.length} aria-label="Föregående träff">↑</button>
         <button class="btn small" onclick={() => showHit(hitIndex + 1)} disabled={!hits.length} aria-label="Nästa träff">↓</button>{/if}
-      <input class="time" placeholder="Gå till tid" aria-label="Gå till tid (minuter:sekunder)" bind:value={timeInput} class:invalid={timeError}
+      <input class="time" placeholder="Gå till tid" aria-label="Gå till tid (minuter:sekunder)" bind:value={timeInput} class:invalid={timeError} oninput={() => (timeError = false)}
         onkeydown={e => { if (e.key === 'Enter') { e.preventDefault(); goTime(); } }} />
     </div>
     <article class="doc" bind:this={docEl} aria-label="Transkript – markera text för att klippa">
@@ -349,7 +356,7 @@
 
 <style>
   .editor { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-  header { display: flex; align-items: baseline; gap: 16px; }
+  header { display: flex; align-items: center; gap: 16px; }
   h2 { font: 28px 'Instrument Serif', serif; margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .save { font-size: 12px; color: var(--muted); } .save.error, .error { color: #923115; }
   .banner { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
