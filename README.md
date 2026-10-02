@@ -12,6 +12,11 @@ Ingen Python eller molntjänst behövs för att använda appen.
 
 ## Funktioner
 
+- **Pianissimo (0.7.0-beta.2, förhandsrelease)** — experimentell, valbar CPU-motor för svensk
+  transkribering av ljudfiler, möten och diktering, med lokal modellförberedelse och minneskontroll.
+  KB-Whisper är fortfarande standard. Se [Pianissimo i Avskrift](docs/PIANISSIMO.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.7.0-beta.2).
+
 - **Mallflöde (0.7.0-beta.1, förhandsrelease)** — stöd för Supportärende och egna dokumentmallar,
   separata redigerbara utkast, källkopior och manuell AI-överlämning. Se
   [demoguide och avgränsningar](docs/MALLFLODE-MVP.md). Lokal modellkvalitet är ännu inte
