@@ -69,8 +69,10 @@ Egen inspelning, 1 945,8 s (32,4 min), 1080p50:
 
 ## Återstår i fas 1
 
-1. **Var modellen publiceras.** `wordalign::SOURCE` är `None`; modellinställningarna visar
-   "Inte tillgänglig i den här versionen ännu" tills en källa är vald.
+1. ~~Var modellen publiceras.~~ Publicerad som egen release
+   [`models-wordalign-1`](https://github.com/Pluggentipsar/avskrift/releases/tag/models-wordalign-1)
+   (ej "Latest"). Testad hämtning: 632 MB på 27 s, SHA-256 kontrollerad, förnyad
+   kontroll 0,3 s utan ny hämtning (`install_from_source`, opt-in).
 2. Manuell kontroll: 100 markerade ordgränser i tre inspelningar (mål median ≤ 30 ms).
 3. Spara ljudblock och pauser med transkriptet när Textklipp-projektet finns (fas 2).
 

@@ -13,9 +13,10 @@ use std::{
     sync::Mutex,
 };
 
-/// Where the exported model is downloaded from (`{SOURCE}/{file}`). `None` until it is published;
-/// install then fails with a clear message instead of guessing a location.
-pub const SOURCE: Option<&str> = None;
+/// Where the exported model is downloaded from (`{SOURCE}/{file}`): a dedicated, immutable release
+/// of this repository (model-tools/export-voxrex.py output). Files are verified against
+/// `avskrift_wordalign::FILES`. `None` would disable installation with a clear message.
+pub const SOURCE: Option<&str> = Some("https://github.com/Pluggentipsar/avskrift/releases/download/models-wordalign-1");
 
 /// Host memory needed to run the model on CPU (fp16 weights are expanded to fp32 there).
 const CPU_BYTES: u64 = 2 * 1024 * memory::MIB;
@@ -165,6 +166,23 @@ pub fn sweep(now: std::time::Instant, pressure: bool) {
 mod tests {
     use super::*;
     use crate::transcript::Word;
+
+    /// Opt-in network test: downloads and verifies the published model into
+    /// AVSKRIFT_WORDALIGN_INSTALL_DIR (a scratch dir, never the user's appdata).
+    #[test]
+    #[ignore]
+    fn install_from_source() {
+        let dir = PathBuf::from(std::env::var("AVSKRIFT_WORDALIGN_INSTALL_DIR").unwrap());
+        install(&dir, &|m| println!("{m}"), &|_, _| {}).unwrap();
+        assert!(ready(&dir));
+        for (file, expected) in native::FILES {
+            assert_eq!(native::hash(&dir.join(file)).unwrap(), expected);
+        }
+        // A second install verifies the existing files and downloads nothing.
+        let started = std::time::Instant::now();
+        install(&dir, &|_| {}, &|_, _| panic!("must not download again")).unwrap();
+        println!("INSTALL ok, re-check {:.1}s", started.elapsed().as_secs_f64());
+    }
 
     /// Opt-in: AVSKRIFT_WORDALIGN_TEST_MODEL (dir with model.fp16.onnx + vocab.json) and
     /// AVSKRIFT_WORDALIGN_TEST_AUDIO (16 kHz mono WAV of someone saying the words in
