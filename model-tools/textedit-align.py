@@ -7,6 +7,7 @@ so the same algorithm can later be ported to Rust/ort.
 Usage: python textedit-align.py MODEL_DIR AUDIO16K.wav WHISPER.json OUT.json
 """
 import json
+import os
 import sys
 import time
 import wave
@@ -22,6 +23,19 @@ def load_wav(path):
     with wave.open(path) as w:
         assert w.getframerate() == RATE and w.getnchannels() == 1 and w.getsampwidth() == 2
         return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+
+
+class OnnxModel:
+    """Same call shape as the PyTorch model, backed by an exported ONNX file (TEXTEDIT_ONNX)."""
+
+    def __init__(self, path, vocab_size):
+        import onnxruntime as ort
+        self.sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        self.config = type("C", (), {"inputs_to_logits_ratio": 320, "vocab_size": vocab_size})
+
+    def __call__(self, x):
+        logits = self.sess.run(None, {"input_values": x.numpy()})[0]
+        return type("O", (), {"logits": torch.from_numpy(logits)})
 
 
 def emissions(model, audio):
@@ -80,7 +94,8 @@ def viterbi(lp, tokens, blank=0):
 def main():
     model_dir, wav_path, whisper_path, out_path = sys.argv[1:5]
     vocab = json.load(open(f"{model_dir}/vocab.json", encoding="utf-8"))
-    model = Wav2Vec2ForCTC.from_pretrained(model_dir).eval()
+    onnx = os.environ.get("TEXTEDIT_ONNX")
+    model = OnnxModel(onnx, len(vocab)) if onnx else Wav2Vec2ForCTC.from_pretrained(model_dir).eval()
     torch.set_num_threads(8)
     audio = load_wav(wav_path)
     t0 = time.time()
