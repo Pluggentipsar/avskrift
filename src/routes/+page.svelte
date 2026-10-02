@@ -1365,6 +1365,15 @@
   });
   let screen = $state<Screen>("home");
   const transcriptReading = $derived(screen === "transcribe" && !!transcript && view === "transcript");
+  // The rail shows a plain excerpt; markdown markers would only be noise there.
+  const plainSummary = $derived(summaryDraft.replace(/^#{1,6}\s*/gm, "").replace(/^\s*[-*]\s+/gm, "• ").replace(/\*\*|__/g, ""));
+  const MORE_VIEWS = [["review", "Avidentifiering"], ["templates", "Skapa från mall"], ["qa", "Fråga källan"]] as const;
+  const moreViewLabel = $derived(MORE_VIEWS.find(([v]) => v === view)?.[1] ?? "");
+  const aiCopyKind = $derived<"anon" | "summary" | "transcript" | null>(
+    view === "summary" ? (summaryDraft ? "summary" : null) : view === "review" ? (analysis ? "anon" : null)
+    : view === "transcript" || view === "qa" ? (transcript ? "transcript" : null) : null);
+  // Header menus are <details>; close one after a choice so it doesn't stay hanging open.
+  function closeMenu(e: MouseEvent) { if ((e.target as HTMLElement).closest("button")) (e.currentTarget as HTMLElement).closest("details")?.removeAttribute("open"); }
   const controlsCollapsed = $derived(["overview","notes","actions","templates"].includes(view)&&screen==="transcribe" ? true : transcriptReading ? !transcriptToolsOpen : sidebarCollapsed);
 
   function go(s: Screen) {
@@ -2883,8 +2892,19 @@
     <div class="spacer"></div>
     {#if bgMeetings.length}<div class="working" role="status"><span class="working-dot"></span>{bgMeetings.length} {bgMeetings.length === 1 ? "möte bearbetas" : "möten bearbetas"}</div>{/if}
     {#if saveState !== "idle"}<div class="save-status" class:failed={saveState === "error"} role="status">{saveState === "saving" ? "Sparar på datorn…" : saveState === "pending" ? "Ändringar väntar på att sparas" : saveState === "error" ? "Kunde inte spara" : "Sparat på datorn"}{#if saveState === "saved" && savedAt}<span>{new Date(savedAt).toLocaleTimeString("sv-SE", {hour:"2-digit", minute:"2-digit"})}</span>{/if}</div>{/if}
-    {#if currentJobId && !["home","history","tasks","dictation","textklipp"].includes(screen)}<button class="btn" onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>{/if}
-    {#if currentJobId && !["home","history","tasks","dictation","textklipp"].includes(screen)}{@const meta=allJobs.find(j=>j.id===currentJobId)}{#if meta}{@render workMenu(meta)}{/if}{/if}
+    {#if screen === "transcribe" && currentJobId}
+      {@render viewActions()}
+      {@const meta=allJobs.find(j=>j.id===currentJobId)}
+      <details class="work-menu more-actions"><summary aria-label="Fler åtgärder">⋯</summary><div onclick={closeMenu} role="presentation">
+        {#if aiCopyKind}<button onclick={() => openAiCopy(aiCopyKind)}>Kopiera för AI</button>{/if}
+        {#if currentJobType==='meeting' && view !== "overview"}<button onclick={()=>openExport('meeting')}>Exportera mötesunderlag</button>{/if}
+        <button onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>
+        {#if meta}<button onclick={()=>organize(meta,'pinned')}>{meta.pinned?'Lossa':'Fäst'}</button><button onclick={()=>organize(meta,'archived')}>{meta.archived?'Återställ från arkivet':'Arkivera'}</button>{/if}
+      </div></details>
+    {:else if currentJobId && !["home","history","tasks","dictation","textklipp"].includes(screen)}
+      <button class="btn" onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>
+      {@const meta=allJobs.find(j=>j.id===currentJobId)}{#if meta}{@render workMenu(meta)}{/if}
+    {/if}
     {#if hasActiveJob && !["home","history","tasks","dictation","textklipp"].includes(screen)}
       <div class="hdr-folder">
         <button class="hdr-folder-btn" onclick={() => (folderPickerFor = folderPickerFor === "header" ? null : "header")} title="Mapp för det här projektet">
@@ -2915,15 +2935,19 @@
     <nav class="workspace-tabs" aria-label="Vyer i aktuellt arbete">
       {#if currentJobType==="meeting"}<button aria-pressed={view==='overview'} onclick={()=>tab('overview')}>Översikt</button>{/if}
       <button aria-pressed={view === "transcript"} onclick={() => tab("transcript")}>Transkript</button>
-      <button aria-pressed={(view === "notes" || view === "actions")} onclick={() => tab("notes")}>Anteckningar</button>
+      <button aria-pressed={view === "notes"} onclick={() => tab("notes")}>Anteckningar</button>
       <button aria-pressed={view==='actions'} onclick={()=>tab('actions')}>Beslut och åtgärder</button>
-      <button aria-pressed={view === "review"} onclick={() => tab("review")}>Avidentifiering</button>
       <button aria-pressed={view === "summary"} onclick={() => tab("summary")}>Sammanfattning</button>
-      <button aria-pressed={view === "templates"} onclick={() => tab("templates")}>Skapa från mall</button>
-      <button aria-pressed={view === "qa"} onclick={() => tab("qa")}>Fråga källan</button>
+      <!-- The less common views live under "Mer"; the summary names the open one. -->
+      <details class="tab-more" class:active={!!moreViewLabel}><summary aria-label="Fler vyer">{moreViewLabel || "Mer"}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary><div onclick={closeMenu} role="presentation">
+        {#each MORE_VIEWS as [v, label]}<button aria-pressed={view === v} onclick={() => tab(v)}>{label}</button>{/each}
+      </div></details>
+      {#if transcript && !["overview","notes","actions","templates"].includes(view)}
+        <button class="link tab-tools" aria-expanded={!controlsCollapsed} onclick={() => {if(transcriptReading)transcriptToolsOpen=!transcriptToolsOpen;else sidebarCollapsed=!sidebarCollapsed;}}>{transcriptReading ? (transcriptToolsOpen ? "Dölj verktyg för transkriptet" : "Visa verktyg för transkriptet") : (sidebarCollapsed ? "Visa källa och inställningar" : "Dölj källa och inställningar")}</button>
+      {/if}
     </nav>
   {/if}
-  {#if (screen === "transcribe" && transcript && !["overview","notes","actions","templates"].includes(view)) || screen === "deidentify" || screen === "summarize"}
+  {#if screen === "deidentify" || screen === "summarize"}
     <div class="panel-control"><button class="link" aria-expanded={!controlsCollapsed} onclick={() => {if(transcriptReading)transcriptToolsOpen=!transcriptToolsOpen;else sidebarCollapsed=!sidebarCollapsed;}}>{transcriptReading ? (transcriptToolsOpen ? "Dölj verktyg för transkriptet" : "Visa verktyg för transkriptet") : (sidebarCollapsed ? "Visa källa och inställningar" : "Dölj källa och inställningar")}</button></div>
   {/if}
 
@@ -2932,6 +2956,22 @@
       <button onclick={()=>editTitle(j)}>Byt namn</button><button onclick={async()=>{await openJobById(j.id);folderPickerFor='header';}}>Flytta</button>
       <button onclick={()=>organize(j,'pinned')}>{j.pinned?'Lossa':'Fäst'}</button><button onclick={()=>organize(j,'archived')}>{j.archived?'Återställ från arkivet':'Arkivera'}</button>
     </div></details>
+  {/snippet}
+  {#snippet viewActions()}
+    <!-- One primary action per view: export what you are looking at. Copy sits beside it. -->
+    <div class="view-actions">
+      {#if view === "overview"}
+        {#if currentJobType==='meeting'}<button class="btn primary" onclick={()=>openExport('meeting')}>Exportera mötesunderlag</button>{/if}
+      {:else if view === "summary"}
+        {#if summaryDraft}<button class="btn" onclick={copySummary}>Kopiera</button><button class="btn primary" onclick={() => openExport("summary")} disabled={busy}>Exportera…</button>{/if}
+      {:else if view === "review"}
+        {#if analysis}<button class="btn" onclick={copyAnon}>Kopiera</button><button class="btn primary" onclick={() => openExport("anon")} disabled={busy}>Exportera…</button>{/if}
+      {:else if view === "notes" || view === "actions"}
+        <button class="btn" onclick={copyWorkspace} disabled={!wsHasContent}>Kopiera</button><button class="btn primary" onclick={() => openExport("notes")} disabled={!wsHasContent || busy}>Exportera…</button>
+      {:else if view !== "templates" && transcript}
+        <button class="btn" onclick={copyTranscript}>Kopiera</button><button class="btn primary" onclick={() => openExport("transcript")} disabled={busy}>Exportera…</button>
+      {/if}
+    </div>
   {/snippet}
   {#snippet savedDictations()}
     {#if dictation?.entries.some(entry=>entry.saved)}
@@ -3832,30 +3872,6 @@
         {#if busy || qaBusy || actionsBusy}
           <div class="working" role="status" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Arbetar…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
         {/if}
-        {#if view!=="templates"}<div class="review-head actions-only">
-          <div class="actions">
-            {#if currentJobType==='meeting'}<button class="btn" onclick={()=>openExport('meeting')}>Exportera mötesunderlag</button>{/if}
-            {#if view === "overview"}<span class="hint">Välj innehåll och granska före export.</span>
-            {:else if view === "summary" && summaryDraft}
-              <button class="btn primary" onclick={copySummary}>Kopiera</button>
-              <button class="btn" onclick={() => openAiCopy("summary")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => openExport("summary")} disabled={busy}>Exportera…</button>
-            {:else if view === "review" && analysis}
-              <button class="btn primary" onclick={copyAnon}>Kopiera</button>
-              <button class="btn" onclick={() => openAiCopy("anon")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => openExport("anon")} disabled={busy}>Exportera…</button>
-            {:else if (view === "notes" || view === "actions")}
-              <button class="btn primary" onclick={copyWorkspace} disabled={!wsHasContent}>Kopiera</button>
-              <button class="btn" onclick={() => openExport("notes")} disabled={!wsHasContent || busy}>Exportera…</button>
-            {:else}
-              <button class="btn primary" onclick={copyTranscript}>Kopiera</button>
-              <button class="btn" onclick={() => openAiCopy("transcript")}>Kopiera för AI</button>
-              <button class="btn" onclick={() => openExport("transcript")} disabled={busy}>Exportera…</button>
-            {/if}
-          </div>
-        </div>
-
-        {/if}
         {#if audioSrc}
           <div class="player">
             {#if meetingMicWav}<label class="track-choice">Lyssna på<select aria-label="Ljudspår" bind:value={playbackTrack} onchange={()=>{audioEl?.pause();playing=false;}}><option value="mix">Båda spåren</option><option value="mic">Min mikrofon</option><option value="system">Övriga deltagare</option></select></label>{/if}
@@ -3905,6 +3921,7 @@
           </section>
         {:else if view === "transcript"}
           {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
+          <div class="t-with-rail"><div class="t-main">
           <div class="t-toolbar">
             <button class="btn small" class:on={editMode} onclick={() => (editMode = !editMode)} title="Växla mellan att spela upp och att rätta text">
               {editMode ? "✓ Redigerar" : "Redigera"}
@@ -3919,6 +3936,29 @@
             <TranscriptView bind:this={transcriptView} utterances={transcript?.utterances??[]} {speakerLabels} {speakerOptions} {playing} {currentTime} {editMode} {editingIdx} bind:editText
               onseek={seekTo} onedit={startEdit} oncommit={commitEdit} oncancel={cancelEdit} onrename={renameSpeaker} onspeaker={setSpeaker} ondelete={deleteUtterance} />
           {/key}
+          </div>
+          <!-- What the recording led to, beside the text it came from. -->
+          <aside class="t-rail" aria-label="Sammanfattning, beslut och åtgärder">
+            <section>
+              <h3>Sammanfattning</h3>
+              {#if summaryDraft}<p class="rail-summary">{plainSummary}</p><button class="link" onclick={()=>tab('summary')}>Läs och redigera</button>
+              {:else}<p class="hint">Inget utkast ännu.</p><button class="link" onclick={()=>tab('summary')}>Skapa sammanfattning</button>{/if}
+            </section>
+            <section>
+              <h3>Beslut <span>{decisions.length || ""}</span></h3>
+              {#each decisions as d (d.id)}
+                <button class="rail-item" onclick={()=>d.start!=null && seekTo(d.start)} disabled={d.start==null} title={d.start!=null ? "Spela där det sades" : undefined}>{#if d.start!=null}<span class="rail-time">{fmtTime(d.start)}</span>{/if}{d.text}</button>
+              {:else}<p class="hint">Inga beslut noterade.</p>{/each}
+            </section>
+            <section>
+              <h3>Åtgärder <span>{actions.filter(a=>!a.done).length || ""}</span></h3>
+              {#each actions as a, i (a.id ?? i)}
+                <label class="rail-action" class:done={a.done}><input type="checkbox" checked={a.done} onchange={() => toggleAction(i)} /><span>{a.text}{#if a.assignee || a.due}<small>{[a.assignee, a.due].filter(Boolean).join(" · ")}</small>{/if}</span></label>
+              {:else}<p class="hint">Inga åtgärder ännu.</p>{/each}
+              <button class="link" onclick={()=>tab('actions')}>Lägg till eller ändra</button>
+            </section>
+          </aside>
+          </div>
         {:else if view === "qa"}
           <div class="qa">
             {#if qaHistory.length}
@@ -4342,7 +4382,7 @@
   .banner.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
   .banner.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 
-  .toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 12px 18px 12px 20px; border-radius: 3px; font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 9px; box-shadow: 0 18px 44px rgba(0,0,0,.28); overflow: hidden; }
+  .toast { position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 12px 18px 12px 20px; border-radius: 3px; font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 9px; box-shadow: 0 18px 44px rgba(0,0,0,.28); overflow: hidden; }
   .toast svg { width: 16px; height: 16px; color: var(--accent); }
   .toast .accentbar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
 
@@ -4697,6 +4737,37 @@
   .workspace-tabs { display:flex; flex-wrap:wrap; gap:6px; padding:14px 28px; border-bottom:1px solid var(--line); }
   .workspace-tabs button { font:inherit; font-size:14px; color:var(--muted); background:transparent; border:0; border-radius:7px; padding:8px 11px; cursor:pointer; } .workspace-tabs button[aria-pressed=true] { background:var(--accent-soft); color:var(--accent); }
   .panel-control { padding:10px 28px; border-bottom:1px solid var(--line); }
+  /* Compact workspace: title row with one primary action, rare views under "Mer", player pinned to the bottom, rail on the right. */
+  .workspace-heading strong { font:24px/1.15 'Instrument Serif',serif; } .workspace-heading .link { justify-self:start; font-size:12px; }
+  .view-actions { display:flex; gap:8px; }
+  .more-actions summary { list-style:none; font-size:18px; line-height:1; padding:8px 12px; } .more-actions summary::-webkit-details-marker { display:none; }
+  .more-actions button:disabled { opacity:.45; cursor:default; }
+  .workspace-tabs { align-items:center; padding-block:10px; }
+  .tab-more { position:relative; }
+  .tab-more summary { list-style:none; display:flex; align-items:center; gap:5px; font-size:14px; color:var(--muted); border-radius:7px; padding:8px 11px; cursor:pointer; }
+  .tab-more summary::-webkit-details-marker { display:none; }
+  .tab-more summary svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; }
+  .tab-more.active summary { background:var(--accent-soft); color:var(--accent); }
+  .tab-more > div { position:absolute; z-index:30; top:calc(100% + 4px); left:0; min-width:190px; background:var(--bg); border:1px solid var(--line-2); border-radius:8px; padding:6px; display:grid; box-shadow:0 8px 24px #0000000f; }
+  .tab-more > div button { text-align:left; } .workspace-tabs .tab-more > div button:hover { background:var(--nav-bg); color:var(--ink); }
+  .tab-tools { margin-left:auto; font-size:13px; }
+  .review { container-type:inline-size; }
+  .review:has(> .player) { padding-bottom:0; }
+  .review > .player { order:1000; position:sticky; bottom:0; z-index:5; margin:auto -30px 0; padding:10px 30px; border:0; border-top:1px solid var(--line); border-radius:0; background:var(--bg); }
+  .t-with-rail { display:grid; grid-template-columns:minmax(0,1fr) 270px; gap:28px; align-items:start; }
+  .t-main { display:flex; flex-direction:column; min-width:0; }
+  .t-rail { position:sticky; top:0; border-left:1px solid var(--line); padding-left:22px; font-size:14px; }
+  .t-rail section { margin-bottom:22px; }
+  .t-rail h3 { display:flex; gap:6px; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; } .t-rail h3 span { color:var(--ink); }
+  .t-rail .hint { margin:0 0 4px; }
+  .rail-summary { margin:0 0 6px; line-height:1.6; white-space:pre-line; display:-webkit-box; -webkit-line-clamp:7; line-clamp:7; -webkit-box-orient:vertical; overflow:hidden; }
+  .rail-item { display:block; width:calc(100% + 16px); text-align:left; font:inherit; line-height:1.5; color:var(--ink); background:none; border:0; border-radius:6px; padding:6px 8px; margin:0 -8px; cursor:pointer; }
+  .rail-item:hover:not(:disabled) { background:var(--nav-bg); } .rail-item:disabled { cursor:default; }
+  .rail-time { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; margin-right:8px; }
+  .rail-action { display:flex; gap:9px; align-items:flex-start; padding:5px 0; line-height:1.5; cursor:pointer; }
+  .rail-action input { margin-top:4px; accent-color:var(--accent); } .rail-action small { display:block; color:var(--muted); font-size:12px; }
+  .rail-action.done span { color:var(--muted); text-decoration:line-through; }
+  @container (max-width:880px) { .t-with-rail { grid-template-columns:minmax(0,1fr); } .t-rail { display:none; } }
   .meeting-heading { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:24px; } .meeting-heading .big-title { margin:0 auto 0 0; }
   .job-strip .job-row { width:100%; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:18px 0; }
   .job-strip .job-badge { color:var(--accent); background:var(--accent-soft); text-transform:none; font-size:12px; letter-spacing:0; }
@@ -4706,7 +4777,7 @@
   .layout { min-height:440px; } .summary-edit { font-size:16px; } .ts { font-size:12px; }
   :global(button:focus-visible),:global(input:focus-visible),:global(textarea:focus-visible),:global(select:focus-visible),:global(summary:focus-visible) { outline:3px solid var(--accent); outline-offset:3px; }
   @media(max-width:1050px) { .app { height:auto; min-height:100dvh; grid-template-columns:1fr; } .app-content { overflow:visible; } .layout { overflow:visible; } .review { overflow:visible; } }
-  @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }
+  @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .review > .player { margin:auto -18px 0; padding:10px 18px; flex-wrap:wrap; } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }
   @media(prefers-reduced-motion:reduce) { :global(*),:global(*::before),:global(*::after) { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
 
   .dictation-container { min-width:0; overflow:auto; }

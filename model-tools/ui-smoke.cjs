@@ -44,12 +44,13 @@ const mocks = fs.readFileSync('node_modules/@tauri-apps/api/mocks.js','utf8').re
     },{shouldMockEvents:true});
   `);
   try {
-    await page.goto('http://127.0.0.1:1420');
+    await page.goto(process.env.AVSKRIFT_UI_URL || 'http://localhost:1420');
     await page.getByRole('heading',{name:'Ditt arbete',exact:true}).waitFor();
     assert.equal(await page.locator('.h-tiles button').count(),5);
     fs.mkdirSync('docs/ui-step1',{recursive:true});
     await page.screenshot({path:'docs/ui-step1/home.png',fullPage:true});
     await page.getByRole('button',{name:/Veckomöte på biblioteket/}).click();
+    await page.getByRole('button',{name:'Sammanfattning',exact:true}).click();
     const draft=page.getByLabel('Sammanfattning – redigerbart utkast');
     await draft.fill('Ett nytt utkast som ska sparas.');
     await page.locator('.save-status').filter({hasText:'Sparat på datorn'}).waitFor();
@@ -75,7 +76,7 @@ const mocks = fs.readFileSync('node_modules/@tauri-apps/api/mocks.js','utf8').re
     await page.screenshot({path:'docs/ui-step1/export.png',fullPage:true});
     await page.keyboard.press('Escape');
     await dialog.waitFor({state:'hidden'});
-    await page.getByRole('button',{name:'Anteckningar och åtgärder',exact:true}).click();
+    await page.getByRole('button',{name:'Anteckningar',exact:true}).click();
     await page.locator('.ws-notes').fill('Anteckning precis före projektbyte.');
     await page.getByRole('button',{name:'Nytt arbete',exact:true}).click();
     await page.getByRole('heading',{name:'Ditt arbete',exact:true}).waitFor();

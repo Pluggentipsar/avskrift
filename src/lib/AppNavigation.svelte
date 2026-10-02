@@ -83,7 +83,7 @@
     .app-navigation { padding:12px 20px; flex-direction:row; align-items:center; flex-wrap:wrap; gap:12px; border-right:0; border-bottom:1px solid var(--line); overflow:visible; }
     .brand { font-size:28px; padding:0; } .brand span, .status, .version, .group-label { display:none; }
     .new { height:36px; padding:0 12px; }
-    nav { flex-direction:row; flex-wrap:wrap; gap:4px; } .group { flex-direction:row; flex-wrap:wrap; }
+    nav { flex:1 1 100%; min-width:0; flex-direction:row; flex-wrap:wrap; gap:4px; } .group { flex-direction:row; flex-wrap:wrap; }
     nav button { height:34px; padding:0 9px; }
   }
 </style>
