@@ -63,6 +63,26 @@
   let src = $state(''), isVideo = $state(false), mediaError = $state('');
   let time = $state(0), playing = $state(false), skipCuts = $state(true), showDeleted = $state(true);
   let currentId = $state(-1);
+  // What you hear lags the media clock by the audio output latency (large on Bluetooth). Only the
+  // playhead and word highlight are shifted, and only while playing; cut times are never affected.
+  const LATENCY_KEY = 'textklipp.latencyMs';
+  let latencyMs = $state(0), latencyAuto = $state<number | null>(null), latencyManual = $state(false);
+  function loadLatency() {
+    try { const v = localStorage.getItem(LATENCY_KEY); if (v !== null) { latencyMs = Number(v) || 0; latencyManual = true; } } catch { /* storage unavailable */ }
+    try {
+      const ctx = new AudioContext();
+      latencyAuto = Math.round(((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000);
+      void ctx.close();
+      if (!latencyManual) latencyMs = latencyAuto;
+    } catch { latencyAuto = null; }
+  }
+  function setLatency(v: number | null) {
+    latencyManual = v !== null;
+    latencyMs = v ?? latencyAuto ?? 0;
+    try { if (v === null) localStorage.removeItem(LATENCY_KEY); else localStorage.setItem(LATENCY_KEY, String(v)); } catch { /* ignore */ }
+  }
+  /** Where the sound you hear is: the media time minus output latency while playing. */
+  const heard = $derived(playing ? Math.max(0, time - latencyMs / 1000) : time);
   async function loadMedia() {
     const m = await invoke<{ playback: string | null; isVideo: boolean }>('textklipp_media', { id: project.id });
     src = m.playback ? convertFileSrc(m.playback) : ''; isVideo = m.isVideo;
@@ -77,8 +97,9 @@
     }
     if (loop && playing && toEdited(preview.keep, t) >= loop.until) { video.currentTime = loop.from; t = loop.from; }
     time = t;
-    const i = tokenAt(tokens, t);
-    currentId = i >= 0 && t <= tokens[i].end + 0.25 ? tokens[i].id : -1;
+    const h = playing ? Math.max(0, t - latencyMs / 1000) : t;
+    const i = tokenAt(tokens, h);
+    currentId = i >= 0 && h <= tokens[i].end + 0.25 ? tokens[i].id : -1;
     if (playing) requestAnimationFrame(frame);
   }
   function togglePlay() {
@@ -207,7 +228,7 @@
   function showRetake(r: { from: number; start: number }) { seek(r.start); docEl?.querySelector(`[data-id="${tokens[r.from].id}"]`)?.scrollIntoView({ block: 'center' }); }
 
   onMount(() => {
-    void loadMedia(); void refreshPreview();
+    void loadMedia(); void refreshPreview(); loadLatency();
     window.addEventListener('keydown', onkey);
     return () => { window.removeEventListener('keydown', onkey); void flush(); };
   });
@@ -247,9 +268,9 @@
       <div class="timeline" role="slider" tabindex="0" aria-label="Tidslinje" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(time)}
         onclick={timelineClick} onkeydown={e => { if (e.key === 'ArrowRight') seek(time + 5); if (e.key === 'ArrowLeft') seek(time - 5); }}>
         {#each gaps as [a, b]}<span class="cut" style:left="{(a / duration) * 100}%" style:width="{Math.max(0.15, ((b - a) / duration) * 100)}%"></span>{/each}
-        <span class="playhead" style:left="{(time / duration) * 100}%"></span>
+        <span class="playhead" style:left="{(heard / duration) * 100}%"></span>
       </div>
-      <Detail projectId={project.id} {time} {duration} keep={preview.keep} {tokens} {deleted} {fps} active={activeCut} onseek={seek} onedge={moveEdge} />
+      <Detail projectId={project.id} time={heard} {duration} keep={preview.keep} {tokens} {deleted} {fps} active={activeCut} onseek={seek} onedge={moveEdge} />
       <div class="cutbar" role="group" aria-label="Klipp">
         <button class="btn" onclick={() => gotoCut(-1)} disabled={!gaps.length}>◀ Föregående klipp</button>
         <button class="btn" onclick={() => gotoCut(1)} disabled={!gaps.length}>Nästa klipp ▶</button>
@@ -291,6 +312,13 @@
           </details>
         {/if}
         <label class="check"><input type="checkbox" bind:checked={showDeleted} /> Visa borttagen text</label>
+        <div class="latency">
+          <label for="latency">Markörens synk mot ljudet: <strong>{latencyMs} ms</strong></label>
+          <input id="latency" type="range" min="0" max="400" step="10" value={latencyMs} oninput={e => setLatency(Number(e.currentTarget.value))} />
+          <span class="hint">{latencyManual ? 'Inställt för hand.' : latencyAuto !== null ? 'Uppmätt för din ljudenhet.' : 'Kunde inte mätas.'}
+            {#if latencyManual}<button class="link" onclick={() => setLatency(null)}>Mät automatiskt{latencyAuto !== null ? ` (${latencyAuto} ms)` : ''}</button>{/if}
+            Öka om markören ligger före det du hör, till exempel med Bluetooth-hörlurar. Påverkar inte klippen.</span>
+        </div>
         <p class="hint">Markera text och tryck <kbd>Delete</kbd> för att ta bort. Markera borttagen text och tryck <kbd>Delete</kbd> igen för att återställa. <kbd>Ctrl</kbd>+<kbd>Z</kbd> ångrar, mellanslag spelar och pausar. Klicka på ett ord för att hoppa dit. Dra i en röd kant i detaljvyn för att flytta ett klipp.</p>
       </section>
     </section>
@@ -351,6 +379,7 @@
   .btn.small { padding: 3px 8px; font-size: 12px; }
   .cutbar, .nudge { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; } .nudge span { display: inline-flex; align-items: center; gap: 4px; }
   .retakes summary { cursor: pointer; font-weight: 600; } .retakes ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; } .retakes li.done { opacity: .6; }
+  .latency { display: grid; gap: 4px; } .latency input { width: 100%; accent-color: var(--accent); }
   .hit { background: #ffe58a; } .hit.struck { background: #f3c9b8; }
   .doc { font: 17px/1.75 Archivo, sans-serif; max-height: calc(100dvh - 250px); overflow: auto; padding-right: 12px; user-select: text; }
   .para { margin: 0 0 14px; content-visibility: auto; contain-intrinsic-size: auto 90px; } .para.hidden-deleted { display: none; }

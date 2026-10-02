@@ -246,7 +246,23 @@ fs.mkdirSync(shots, { recursive: true });
     });    await step('current word is highlighted while playing', async () => {
       assert.equal(await page.locator('.doc .current').count(), 1);
     });
-    await step('hiding struck text and shortening pauses', async () => {
+    await step('playhead latency compensation: adjustable, remembered, only while playing', async () => {
+      const slider = page.getByLabel(/Markörens synk mot ljudet/);
+      await slider.fill('200');
+      await page.getByText('200 ms').waitFor();
+      assert.equal(await page.evaluate(() => localStorage.getItem('textklipp.latencyMs')), '200');
+      await page.getByRole('button', { name: 'Spela' }).click();
+      await page.waitForTimeout(800);
+      const lag = await page.evaluate(() => {
+        const v = document.querySelector('video'), bar = document.querySelector('.timeline'), head = document.querySelector('.timeline .playhead');
+        const shown = (parseFloat(head.style.left) / 100) * window.fixture.project.media.duration;
+        return v.currentTime - shown;
+      });
+      assert.ok(lag > 0.12 && lag < 0.3, `playhead should trail media time by ~0.2 s, trails ${lag}`);
+      await page.getByRole('button', { name: 'Pausa' }).click();
+      await page.getByRole('button', { name: /Mät automatiskt/ }).click();
+      assert.equal(await page.evaluate(() => localStorage.getItem('textklipp.latencyMs')), null);
+    });    await step('hiding struck text and shortening pauses', async () => {
       await page.getByLabel('Visa borttagen text').uncheck();
       assert.equal(await page.locator('.doc .struck').count(), 0);
       const before = await page.evaluate(() => window.fixture.previews);
