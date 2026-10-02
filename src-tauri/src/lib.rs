@@ -1746,7 +1746,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Set before any ORT session, including NER. Encoder partitions share one pool.
+            // Set before any ORT session, including NER. Pianissimo and NER share one pool.
             let pool=ort::environment::GlobalThreadPoolOptions::default()
                 .with_intra_threads(num_cpus::get_physical().clamp(1,8))?
                 .with_inter_threads(1)?.with_spin_control(true)?;

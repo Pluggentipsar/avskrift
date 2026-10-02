@@ -1,4 +1,4 @@
-//! CPU-only feasibility engine for the pinned Pianissimo community ONNX export.
+//! CPU-only engine for Klang's pinned Pianissimo ONNX export (FastConformer encoder, TDT decoder).
 use anyhow::{ensure, Result};
 use ort::{session::Session, value::Tensor};
 use regex::{Captures, Regex};
@@ -10,6 +10,8 @@ pub struct Model {
     encoder: crate::encoder::Encoder,
     decoder: Session,
     vocab: Vec<String>,
+    /// Longest single inference. The segmenter keeps every pass within this.
+    pub max_samples: usize,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -65,24 +67,20 @@ pub(crate) fn session(
 }
 
 impl Model {
-    pub fn encoder_stage_count(&self) -> usize {
-        self.encoder.stage_count()
-    }
     pub fn load(
         dir: &Path,
         threads: usize,
         flush: bool,
         prepack: bool,
-        partitions: Option<&Path>,
     ) -> Result<(Self, [f64; 2])> {
         ensure!(threads > 0, "threads must be positive");
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("config.json"))?)?;
         ensure!(
-            cfg["features"] == 128
-                && cfg["sample_rate"] == 16000
-                && cfg["blank_id"] == BLANK
-                && cfg["durations"] == serde_json::json!([0, 1, 2, 3, 4]),
+            cfg["model_type"] == "nemo-conformer-tdt"
+                && cfg["features_size"] == 128
+                && cfg["subsampling_factor"] == 8
+                && cfg["max_tokens_per_step"] == 10,
             "Unsupported model configuration"
         );
         let mut vocab = Vec::new();
@@ -98,19 +96,17 @@ impl Model {
         }
         ensure!(vocab.len() == BLANK + 1, "Unsupported vocabulary size");
         let start = Instant::now();
-        let encoder = if let Some(path) = partitions {
-            crate::encoder::Encoder::load(path, threads, flush, prepack)?
-        } else {
-            crate::encoder::Encoder::single(session(
-                &dir.join("encoder-model.int8.onnx"),
-                threads,
-                flush,
-                prepack,
-                true,
-                true,
-                false,
-            )?)
-        };
+        // Klang's graph is small enough to load whole in a few seconds; splitting it into
+        // stages (as the earlier community export needed) made inference slower and larger.
+        let encoder = crate::encoder::Encoder::new(session(
+            &dir.join("encoder-model.int8.onnx"),
+            threads,
+            flush,
+            prepack,
+            true,
+            true,
+            false,
+        )?);
         let encoder_seconds = start.elapsed().as_secs_f64();
         eprintln!("Encoder loaded in {encoder_seconds:.3}s");
         let start = Instant::now();
@@ -119,7 +115,7 @@ impl Model {
             threads,
             flush,
             prepack,
-            partitions.is_none(),
+            true,
             true,
             false,
         )?;
@@ -129,6 +125,7 @@ impl Model {
                 encoder,
                 decoder,
                 vocab,
+                max_samples: crate::segments::MAX_PASS,
             },
             [encoder_seconds, decoder_seconds],
         ))
@@ -143,8 +140,8 @@ impl Model {
     ) -> Result<(Transcript, Timings)> {
         check()?;
         ensure!(
-            audio.len() <= 36 * 16000,
-            "Pianissimo behöver dela ljud längre än 36 sekunder i kortare avsnitt"
+            audio.len() <= self.max_samples,
+            "Pianissimo behöver dela långt ljud i kortare avsnitt"
         );
         let start = Instant::now();
         let (features, frames, valid) = crate::features::extract(audio)?;

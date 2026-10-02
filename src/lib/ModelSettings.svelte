@@ -53,8 +53,8 @@
       {:else if chosen?.downloaded}<span class="ready">Finns på datorn</span>{#if id==='pianissimo-sv'}<button onclick={()=>ondownload(kind,id)} disabled={!!downloading||locked||pending}>Kontrollera modell</button>{/if}
       {:else}<span>Behöver hämtas{chosen?.sizeMb ? ` · ${chosen.sizeMb} MB` : ''}</span><button onclick={()=>ondownload(kind,id)} disabled={!chosen||!!downloading||locked||pending}>Hämta modell</button>{/if}
     </div>
-    {#if id==='pianissimo-sv'}<p>Pianissimo är experimentell och körs på CPU. Hämtning: cirka 923 MB. Behöver cirka 2 GB diskutrymme efter förberedelse och tillfälligt cirka 3 GB. Första förberedelsen kan ta flera minuter. Svenska, utan översättning eller ordtider.</p>
-    <p>Modell: <a href="https://huggingface.co/KlangAI/pianissimo-sv" target="_blank" rel="noreferrer">KlangAI</a>. ONNX-export och kvantisering: <a href="https://huggingface.co/moonhouse/pianissimo-sv-onnx" target="_blank" rel="noreferrer">moonhouse</a>. <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a>. Avskrift förbereder en lokal kopia för snabbare start.</p>{/if}
+    {#if id==='pianissimo-sv'}<p>Pianissimo är experimentell och körs på CPU. Hämtning: cirka 660 MB, klar att använda direkt. Svenska, utan översättning eller ordtider. Har du hämtat en tidigare version: välj Hämta modell igen för Klangs egen export.</p>
+    <p>Modell: <a href="https://huggingface.co/KlangAI/pianissimo-sv" target="_blank" rel="noreferrer">KlangAI</a>. ONNX-export: <a href="https://huggingface.co/KlangAI/pianissimo-sv-onnx" target="_blank" rel="noreferrer">KlangAI</a>. <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a>.</p>{/if}
   {/snippet}
   <section><div><h3>Möten och ljudfiler</h3><p>Talmodellen används vid nästa transkribering. Sparad text ändras inte av modellvalet.</p></div><div>
     <label for="speech-model">Talmodell för möten</label><select id="speech-model" bind:value={speech} onchange={()=>queueMicrotask(onchange)} disabled={locked||pending}>

@@ -163,7 +163,7 @@ impl ModelPaths {
         if id == avskrift_pianissimo::ID { self.pianissimo_dir.clone() } else { self.whisper_file(id) }
     }
     pub fn speech_ready(&self, id: &str) -> bool {
-        if id == avskrift_pianissimo::ID { avskrift_pianissimo::prepare::ready(&self.pianissimo_dir) }
+        if id == avskrift_pianissimo::ID { avskrift_pianissimo::ready(&self.pianissimo_dir) }
         else { whisper_url(id).is_some() && self.whisper_file(id).is_file() }
     }
 
@@ -178,7 +178,7 @@ impl ModelPaths {
                 downloaded: self.whisper_file(id).exists(),
             })
             .collect();
-        catalogue.push(WhisperModelInfo { id: avskrift_pianissimo::ID.into(), label: "Pianissimo svenska — CPU (experimentell)".into(), size_mb: 923, downloaded: self.speech_ready(avskrift_pianissimo::ID) });
+        catalogue.push(WhisperModelInfo { id: avskrift_pianissimo::ID.into(), label: "Pianissimo svenska — CPU (experimentell)".into(), size_mb: 661, downloaded: self.speech_ready(avskrift_pianissimo::ID) });
         catalogue
     }
 

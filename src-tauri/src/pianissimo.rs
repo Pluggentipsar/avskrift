@@ -37,7 +37,7 @@ pub fn install(dir: &Path, progress: &dyn Fn(&str), bytes: &dyn Fn(u64, u64)) ->
         progress(&format!("Hämtar Pianissimo: {file}…"));
         let pending = dir.join(format!("{file}.download"));
         crate::download::to_file(
-            &format!("https://huggingface.co/moonhouse/pianissimo-sv-onnx/resolve/{}/{file}", native::REVISION),
+            &format!("https://huggingface.co/{}/resolve/{}/{file}", native::REPO, native::REVISION),
             &pending,
             bytes,
         )?;
@@ -50,28 +50,8 @@ pub fn install(dir: &Path, progress: &dyn Fn(&str), bytes: &dyn Fn(u64, u64)) ->
         }
         std::fs::rename(pending, path)?;
     }
-    progress("Väntar på att kunna förbereda Pianissimo…");
-    let _work = memory::enter()?;
-    crate::transcribe::release_cached();
-    crate::llm::release_cached();
-    release_cached();
-    let may_page = std::cell::Cell::new(false);
-    native::prepare::prepare_with_admission(
-        dir,
-        num_cpus::get_physical().clamp(1, 8),
-        &|message| {
-            if may_page.get() {
-                progress(&format!("{message} Lite ledigt RAM; förberedelsen kan ta längre tid."));
-            } else {
-                progress(message);
-            }
-        },
-        &work::check,
-        &|| {
-            may_page.set(admit_memory(4 * 1024 * memory::MIB, "förbereda")?);
-            Ok(())
-        },
-    )?;
+    progress("Kontrollerar Pianissimo…");
+    native::mark_verified(dir)?;
     progress("Pianissimo är klar att använda");
     Ok(())
 }
@@ -86,18 +66,12 @@ fn ensure_loaded(cache: &mut Cache<Loaded>, dir: &Path) -> Result<()> {
     }
     admit_memory(2 * 1024 * memory::MIB, "köra")?;
     ensure!(
-        native::prepare::ready(dir),
-        "Pianissimo behöver hämtas eller förberedas. Öppna Modeller på datorn och välj Hämta modell."
+        native::ready(dir),
+        "Pianissimo behöver hämtas. Öppna Modeller på datorn och välj Hämta modell."
     );
     native::verify(dir)?;
     work::check()?;
-    let (model, _) = native::model::Model::load(
-        dir,
-        num_cpus::get_physical().clamp(1, 8),
-        false,
-        true,
-        Some(&dir.join("prepared/manifest.json")),
-    )?;
+    let (model, _) = native::model::Model::load(dir, num_cpus::get_physical().clamp(1, 8), false, true)?;
     work::check()?;
     cache.value = Some(Loaded { path: dir.to_path_buf(), model });
     Ok(())
@@ -164,10 +138,8 @@ mod tests {
     /// Run against a dedicated local test model directory, never the user's appdata.
     #[test]
     #[ignore]
-    fn memory_preparation() {
+    fn install_and_load() {
         let dir = PathBuf::from(std::env::var("AVSKRIFT_PIANISSIMO_TEST_MODEL").unwrap());
-        let budget = memory::pageable_cpu_budget();
-        println!("MEMORY before: ram={:?}, commit={:?}", budget.ram_free, budget.commit_free);
         let pool = ort::environment::GlobalThreadPoolOptions::default()
             .with_intra_threads(8)
             .unwrap()
@@ -180,13 +152,7 @@ mod tests {
             panic!("Use verified local fixtures; no downloads in this test")
         })
         .unwrap();
-        assert!(native::prepare::ready(&dir));
-        // An existing verified cache needs no large allocation, even if a rebuild
-        // would be rejected. This used to fail before reaching cache reuse.
-        native::prepare::prepare_with_admission(&dir, 8, &|_| {}, &|| Ok(()), &|| {
-            anyhow::bail!("A cached model must bypass rebuild admission")
-        })
-        .unwrap();
+        assert!(native::ready(&dir));
         let silence = vec![0.0; 5 * 16000];
         let result = transcribe(&dir, &silence, &|message| println!("{message}"), |_| {}).unwrap();
         assert!(result.is_empty());

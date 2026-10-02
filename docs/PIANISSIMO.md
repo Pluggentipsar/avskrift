@@ -5,46 +5,77 @@ möten och diktering. KB-Whisper är fortfarande standard. Tidigare sparade
 modellval behålls. Modellvalen för möten/ljudfiler och diktering är separata.
 
 Öppna **Modeller på datorn**, välj **Pianissimo svenska — CPU (experimentell)**
-och välj **Hämta modell**. Cirka 923 MB hämtas från den låsta moonhouse-exporten.
-Varje fil kontrolleras med SHA-256. Därefter förbereds modellen lokalt; detta
-kan ta flera minuter första gången. Status visas i modellfönstret. Python
-behövs varken för förberedelse eller transkribering.
+och välj **Hämta modell**. Cirka 660 MB hämtas från Klangs egen ONNX-export
+(int8), låst till en bestämd version. Varje fil kontrolleras med SHA-256, och
+modellen kan användas direkt. Ingen lokal förberedelse och ingen Python behövs.
 
-Modellen sparas i appens datakatalog under `pianissimo-sv`. Originalfiler och
-förberedd modell tar cirka 1,8 GB; under förberedelsen behövs cirka 2,7 GB.
-Knappen **Kontrollera modell** verifierar filerna och återskapar en skadad cache.
-Efter ändrad ONNX Runtime eller CPU behöver modellen förberedas på nytt.
+Modellen sparas i appens datakatalog under `pianissimo-sv`. Knappen
+**Kontrollera modell** verifierar filerna.
+
+**Från 0.8.0-beta.1 eller tidigare:** den tidigare community-exporten byts ut.
+Pianissimo visas då som ej hämtad; välj **Hämta modell** igen. Bara de ändrade
+filerna hämtas, och den gamla förberedda cachen (`prepared/`) tas bort.
 
 ## Funktion och begränsningar
 
 Minneskontrollen för Pianissimo använder på Windows både ledigt RAM och
 operativsystemets återstående utrymme för minnesreservationer (commit headroom,
-inklusive växlingsfil). Den tidigare kontrollen krävde 4,5 GiB ledigt fysiskt RAM
-enbart för förberedelsen, vilket blockerade datorer som kunde använda växlingsfil.
-Nu krävs 4,5 GiB reservationsutrymme vid förberedelse, 2,5 GiB vid laddning och
+inklusive växlingsfil). Vid laddning krävs 2,5 GiB reservationsutrymme och
 minst 256 MiB ledigt RAM. RAM adderas aldrig till commit-uppgiften, eftersom
 det då skulle räknas två gånger. Vid lågt RAM visar förloppet att arbetet kan ta
-längre tid. GPU- och övriga modellers minnesregler är oförändrade.
+längre tid. Uppmätt högsta minnesanvändning vid transkribering: cirka 1,5 GiB.
 
-En redan färdig, verifierad cache behöver ingen ny förberedelse och kontrolleras
-därför utan förberedelsens stora minneskrav. Hämtade filer återanvänds efter
-ett avbrutet försök, förutsatt att deras kontrollsummor stämmer.
+Hämtade filer återanvänds efter ett avbrutet försök, förutsatt att deras
+kontrollsummor stämmer.
 
 - Endast svenska; inget översättningsläge. Dessa inställningar spärras även i backend.
 - Ungefärliga segmenttider för uppspelning, talartilldelning och undertexter.
-  Modellen ger tokenstarter, inte verifierade ordslut. Ordmarkering är därför avstängd.
-- Längre ljud bearbetas i avsnitt på 28 sekunder med två sekunders extra ljud
-  på varje sida. Ljud upp till 36 sekunder körs i ett stycke. Ett ord hör till det avsnitt där dess första token börjar.
-  Kontrollera texten särskilt nära avsnittsgränser och vid talarbyten.
-- Avbrytning kontrolleras före ljudbearbetning, mellan modellens tolv delar,
-  under avkodning och mellan ljudavsnitt. Ett pågående enskilt ONNX-anrop eller
-  modelladdning avslutas innan avbrytningen får effekt.
+  Motorn använder tokenstarter, inte verifierade ordslut. Ordmarkering är därför avstängd.
+- Ljud upp till 120 sekunder körs i ett stycke. Längre ljud bearbetas i avsnitt på
+  110 sekunder med fem sekunders extra ljud på varje sida. Ett ord hör till det
+  avsnitt där dess första token börjar. Kontrollera texten nära avsnittsgränser.
+- Avbrytning kontrolleras före ljudbearbetning, under avkodning och mellan
+  ljudavsnitt. Ett pågående enskilt ONNX-anrop (högst cirka tre sekunder för ett
+  avsnitt) eller modelladdning avslutas innan avbrytningen får effekt.
 - Den laddade modellen återanvänds och frigörs efter inaktivitet eller minnestryck,
   enligt samma princip som de befintliga talmodellerna.
 - Naturliga inspelningar, flera verkliga talare, brus och andra datorer behöver
   fortfarande kvalitetsbedömas innan ett eventuellt byte av standardmodell.
 
+## Byte till Klangs export, 2026-10-03
+
+Klang publicerade egna ONNX-versioner 28 september (int8 med SmoothQuant, int4,
+fp16, fp32), alla med modellens lokala attention kvar. Jämfört i Avskrifts egen
+Rust-motor, 8 trådar, Intel Core Ultra 7 265KF, WER räknat som på Klangs
+modellkort (gemener, skiljetecken till mellanslag):
+
+| Test | Tidigare export (moonhouse) | Klang int8 |
+| --- | --- | --- |
+| FLEURS sv test, 759 klipp | 6,47 % | 6,56 % (Klang anger 6,62 %) |
+| 30 min sammanfogat FLEURS-tal, 28 s avsnitt | 6,56 % | 6,04 % |
+| Samma, 110 s avsnitt | – | **5,63 %** (3 102 av 3 111 ord) |
+| Hastighet, hel modell | 4,8–10× realtid | **45–50× realtid** |
+| Modelladdning | 54 s (utan förberedelse) | 5 s |
+| Hämtning | 923 MB + lokal förberedelse | 660 MB |
+
+Korta klipp blir i praktiken lika bra; långa inspelningar blir bättre eftersom
+längre avsnitt ger färre skarvar. Den tidigare exporten tappade tal i långa
+avsnitt och krävde därför 28-sekundersavsnitt och en lokal uppdelning i tolv
+delar. Med Klangs export var den uppdelade varianten långsammare (35× mot 50×
+realtid) och använde mer minne (1,9 mot 1,5 GiB), så förberedelsen är borttagen.
+
+Mätverktyg: `crates/pianissimo/examples/eval.rs` (lista med WAV-filer in, text
+per fil ut). Testdata och poängskript ligger lokalt under `.build-tools/` och
+checkas inte in.
+
+Klangs Python-modul för egen ordlista (*phrase boosting*) och MLX-versionerna
+(endast Mac med Apple silicon) ingår inte. Egen ordlista är en möjlig senare
+förbättring.
+
 ## Implementation och kontroller
+
+*Mätningar och förberedelse i detta avsnitt gäller den tidigare exporten (2026-09-25);
+se bytet ovan för nuvarande motor.*
 
 `crates/pianissimo` innehåller den gemensamma Rust-motorn. Prototypverktyget
 använder samma motorfiler. Appadaptern i `src-tauri/src/pianissimo.rs` hanterar
@@ -104,10 +135,10 @@ Lokala rapporter ligger under `.build-tools/pianissimo/app-*.json` och checkas i
 ## Modellens upphov och licens
 
 Originalmodell: [KlangAI/Pianissimo](https://huggingface.co/KlangAI/pianissimo-sv).
-INT8-export: [moonhouse/pianissimo-sv-onnx](https://huggingface.co/moonhouse/pianissimo-sv-onnx),
-revision `72c38267654dadd538bceac7a851de00fb55f11a`.
+INT8-export: [KlangAI/pianissimo-sv-onnx](https://huggingface.co/KlangAI/pianissimo-sv-onnx),
+revision `63730c6021234f26b9bbae9a07a04fec39e7a52e`. Till och med 0.8.0-beta.1
+användes [moonhouse/pianissimo-sv-onnx](https://huggingface.co/moonhouse/pianissimo-sv-onnx).
 Modellen omfattas av [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Avskrift skapar en lokalt optimerad, uppdelad variant för snabbare modellstart.
 Se även [NOTICE](../crates/pianissimo/NOTICE.md) och
 [tidigare mätningar](PIANISSIMO-PROTOTYP.md).
 

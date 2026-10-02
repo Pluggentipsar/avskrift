@@ -1,4 +1,4 @@
-//! Opt-in native preparation/integration check using explicitly supplied local PCM fixtures.
+//! Opt-in native integration check using explicitly supplied local PCM fixtures.
 use anyhow::{ensure, Result};
 use avskrift_pianissimo as p;
 use std::{path::Path, time::Instant};
@@ -14,11 +14,9 @@ fn main() -> Result<()> {
         ort::init().with_global_thread_pool(pool).commit(),
         "ORT already initialized"
     );
+    p::verify(dir)?;
     let start = Instant::now();
-    let manifest = p::prepare::prepare(dir, 8, &|s| eprintln!("{s}"), &|| Ok(()))?;
-    let prepared = start.elapsed().as_secs_f64();
-    let start = Instant::now();
-    let (mut model, _) = p::model::Model::load(dir, 8, false, true, Some(&manifest))?;
+    let (mut model, _) = p::model::Model::load(dir, 8, false, true)?;
     let loaded = start.elapsed().as_secs_f64();
     let mut cases = Vec::new();
     for path in &args[3..] {
@@ -34,7 +32,7 @@ fn main() -> Result<()> {
             .map(|s| s.map(|s| s as f32 / 32768.0))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let start = Instant::now();
-        let direct = if samples.len() <= 36 * 16000 {
+        let direct = if samples.len() <= p::segments::MAX_PASS {
             Some(model.transcribe(&samples, || Ok(()))?.0)
         } else {
             None
@@ -50,7 +48,7 @@ fn main() -> Result<()> {
             segments.windows(2).all(|w| w[0].end <= w[1].start),
             "Timeline overlap"
         );
-        if samples.len() <= 36 * 16000 {
+        if samples.len() <= p::segments::MAX_PASS {
             ensure!(
                 segments
                     .iter()
@@ -80,7 +78,7 @@ fn main() -> Result<()> {
     std::fs::write(
         &args[2],
         serde_json::to_vec_pretty(
-            &serde_json::json!({"preparation_seconds":prepared,"load_seconds":loaded,"cases":cases,"cancellation":true}),
+            &serde_json::json!({"load_seconds":loaded,"cases":cases,"cancellation":true}),
         )?,
     )?;
     Ok(())

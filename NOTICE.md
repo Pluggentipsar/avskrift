@@ -24,5 +24,5 @@ Används av Textklipp för att läsa video, ta ut ljud och skapa uppspelningskop
 
 - **KBLab/wav2vec2-large-voxrex-swedish** (exakta ordtider), CC0 1.0. ONNX-export i halv
   precision publicerad som releasen `models-wordalign-1`; se `docs/TEXTKLIPP-FAS1.md`.
-- **Pianissimo** (KlangAI, CC BY 4.0) och ONNX-export (moonhouse): se
+- **Pianissimo** (KlangAI, CC BY 4.0), KlangAI:s egen ONNX-export: se
   `crates/pianissimo/NOTICE.md`.

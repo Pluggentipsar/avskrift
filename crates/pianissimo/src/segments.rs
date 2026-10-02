@@ -9,10 +9,13 @@ pub struct Segment {
     pub text: String,
 }
 const RATE: usize = 16000;
-// The pinned export loses speech on long single passes. Keep each inference
-// below the empirically verified 36-second range, including context.
-const CORE: usize = 28 * RATE;
-const CONTEXT: usize = 2 * RATE;
+// Klang's export keeps the model's local attention, so long passes do not drop speech.
+// On 30 min of joined FLEURS speech, 110 s passes gave 5.6 % WER against 6.0 % for 28 s
+// (fewer joins). 120 s is the feature extractor's limit.
+const CORE: usize = 110 * RATE;
+const CONTEXT: usize = 5 * RATE;
+/// Longest single inference: recordings up to this length run in one pass.
+pub const MAX_PASS: usize = 120 * RATE;
 
 pub fn transcribe(
     model: &mut Model,
@@ -20,21 +23,37 @@ pub fn transcribe(
     check: impl Fn() -> Result<()>,
     progress: impl Fn(i32),
 ) -> Result<Vec<Segment>> {
+    transcribe_with(model, samples, CORE, CONTEXT, check, progress)
+}
+
+/// Like [`transcribe`] with explicit chunk sizes; `core + 2 * context` must fit `model.max_samples`.
+pub fn transcribe_with(
+    model: &mut Model,
+    samples: &[f32],
+    core: usize,
+    context: usize,
+    check: impl Fn() -> Result<()>,
+    progress: impl Fn(i32),
+) -> Result<Vec<Segment>> {
+    ensure!(
+        core > 0 && core + 2 * context <= model.max_samples,
+        "Ogiltig avsnittslängd"
+    );
     ensure!(
         samples.iter().all(|x| x.is_finite()),
         "Ogiltigt ljud: innehåller icke ändliga värden"
     );
     let mut result = Vec::new();
-    let core = if samples.len() <= 36 * RATE {
+    let core = if samples.len() <= model.max_samples {
         samples.len().max(1)
     } else {
-        CORE
+        core
     };
     for begin in (0..samples.len()).step_by(core) {
         check()?;
         let end = (begin + core).min(samples.len());
-        let left = begin.saturating_sub(CONTEXT);
-        let right = (end + CONTEXT).min(samples.len());
+        let left = begin.saturating_sub(context);
+        let right = (end + context).min(samples.len());
         let mut audio = samples[left..right].to_vec();
         audio.resize(audio.len().max(512), 0.0);
         let (text, _) = model.transcribe(&audio, &check)?;
