@@ -12,6 +12,12 @@ Ingen Python eller molntjänst behövs för att använda appen.
 
 ## Funktioner
 
+- **Textklipp (0.8.0-beta.1, förhandsrelease)** — klipp en egen videoinspelning genom att stryka
+  text i transkriptet och exportera en färdig film med exakt synk. Releasen har också en ny
+  arbetsyta, egen ingång för Transkribera och installationsprogram för CPU och Vulkan. Se
+  [Textklipp](docs/TEXTKLIPP.md) och [release-anteckningarna](docs/RELEASE-0.8.0-beta.1.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.1).
+
 - **Pianissimo (0.7.0-beta.2, förhandsrelease)** — experimentell, valbar CPU-motor för svensk
   transkribering av ljudfiler, möten och diktering, med lokal modellförberedelse och minneskontroll.
   KB-Whisper är fortfarande standard. Se [Pianissimo i Avskrift](docs/PIANISSIMO.md).
