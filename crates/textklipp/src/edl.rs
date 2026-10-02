@@ -21,6 +21,9 @@ pub struct EditList {
     /// Pauses longer than this many seconds are shortened to it; `None` keeps pauses as they are.
     #[serde(default)]
     pub pause_limit: Option<f64>,
+    /// Ranges always kept, overriding every removal (a cut edge dragged inwards on the timeline).
+    #[serde(default)]
+    pub kept: Vec<(f64, f64)>,
 }
 
 /// A transcript item on the source timeline.
@@ -78,7 +81,18 @@ pub fn keep_ranges(
     if duration - t >= MIN_KEEP {
         keep.push((t, duration));
     }
-    keep
+    // Forced keeps win over removals: union, then merge touching pieces.
+    keep.extend(edits.kept.iter().map(|&(a, b)| (a.max(0.0), b.min(duration))).filter(|r| r.1 > r.0));
+    keep.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(keep.len());
+    for (a, b) in keep {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 + 1e-9 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    merged.retain(|r| r.1 - r.0 >= MIN_KEEP);
+    merged
 }
 
 /// Map a source time to the edited timeline (None when it was cut away).
@@ -134,6 +148,16 @@ mod tests {
         let keep = keep_ranges(&items(), &edits, &pauses, 10.0, mid);
         assert_eq!(keep.len(), 2);
         assert!((keep[0].1 - 2.2).abs() < 1e-9 && (keep[1].0 - 2.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kept_ranges_override_removals() {
+        let edits = EditList { deleted: [1, 2].into(), kept: vec![(2.3, 3.2)], ..Default::default() };
+        // Removed 2.5-6.5; keeping 2.3-3.2 pulls the first cut edge to 3.2.
+        assert_eq!(keep_ranges(&items(), &edits, &[], 10.0, mid), [(0.0, 3.2), (6.5, 10.0)]);
+        // A kept range inside a removal makes a separate piece.
+        let edits = EditList { deleted: [1, 2].into(), kept: vec![(4.0, 4.5)], ..Default::default() };
+        assert_eq!(keep_ranges(&items(), &edits, &[], 10.0, mid), [(0.0, 2.5), (4.0, 4.5), (6.5, 10.0)]);
     }
 
     #[test]

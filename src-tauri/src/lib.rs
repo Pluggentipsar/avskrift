@@ -345,6 +345,16 @@ fn textklipp_media(backend: State<Backend>, id: String) -> Result<TextklippMedia
 }
 
 #[tauri::command]
+async fn textklipp_waveform(app: AppHandle, id: String, start: f64, end: f64, bars: usize) -> Result<Vec<f32>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        textklipp::waveform(&app.state::<Backend>().paths.textklipp_dir, &id, start, end, bars)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn textklipp_preview(app: AppHandle, id: String, edits: avskrift_textklipp::EditList) -> Result<textklipp::Preview, String> {
     tauri::async_runtime::spawn_blocking(move || {
         textklipp::preview(&app.state::<Backend>().paths.textklipp_dir, &id, &edits)
@@ -1804,6 +1814,7 @@ pub fn run() {
             textklipp_open,
             textklipp_save_edits,
             textklipp_preview,
+            textklipp_waveform,
             textklipp_media,
             textklipp_delete,
             list_summary_models,

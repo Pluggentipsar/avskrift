@@ -4,7 +4,7 @@ export type Word = { start: number; end: number; text: string };
 export type Utterance = { start: number; end: number; speaker: string | null; text: string; words: Word[] };
 export type Transcript = { utterances: Utterance[]; language: string; model: string; diarized: boolean };
 export type Sound = { id: number; start: number; end: number; heard: string; score: number };
-export type EditList = { deleted: number[]; removed: [number, number][]; pauseLimit: number | null };
+export type EditList = { deleted: number[]; removed: [number, number][]; pauseLimit: number | null; kept: [number, number][] };
 export type MediaInfo = {
   duration: number; sizeBytes: number; container: string;
   video: { codec: string; width: number; height: number; fps: number; variableRate: boolean; rotation: number } | null;
@@ -18,6 +18,8 @@ export type Project = {
 export type ProjectMeta = { id: string; title: string; updatedAt: string; duration: number; status: Project['status']; hasProxy: boolean };
 export type Preview = { keep: [number, number][]; editedDuration: number };
 export type Probe = { media: MediaInfo; workingBytes: number };
+/** A cut edge: 'out' ends a kept range (a cut starts there), 'in' starts one (a cut ends). */
+export type Edge = { kind: 'in' | 'out'; at: number };
 
 /** One clickable unit in the document: a transcript word, or speech the transcript lacks. */
 export type Token = { kind: 'word' | 'sound'; id: number; start: number; end: number; text: string };
@@ -90,6 +92,12 @@ export function fmt(seconds: number): string {
   return h ? `${h}:${two(m)}:${two(r)}` : `${m}:${two(r)}`;
 }
 
+/** m:ss,t – tenths of a second, for short cuts. */
+export function fmtPrecise(seconds: number): string {
+  const tenths = Math.floor((Math.max(0, seconds) % 1) * 10);
+  return `,`;
+}
+
 export function bytes(n: number): string {
   return n >= 1e9 ? `${(n / 1e9).toLocaleString('sv-SE', { maximumFractionDigits: 1 })} GB` : `${Math.round(n / 1e6)} MB`;
 }
@@ -102,4 +110,91 @@ export function tokenAt(sorted: Token[], t: number): number {
     if (sorted[mid].start <= t) { found = mid; lo = mid + 1; } else hi = mid - 1;
   }
   return found;
+}
+
+// --- search -----------------------------------------------------------------------------------
+
+const norm = (s: string) => s.toLocaleLowerCase('sv').replace(/[^\p{L}\p{N}]+/gu, '');
+
+/** Token ranges (inclusive indices into `tokens`) whose words match `query` word by word;
+ *  the last query word may be a prefix ("bibl" finds "biblioteket"). */
+export function search(tokens: Token[], query: string): [number, number][] {
+  const q = query.split(/\s+/).map(norm).filter(Boolean);
+  if (!q.length) return [];
+  const words = tokens.map((t, i) => ({ i, w: t.kind === 'word' ? norm(t.text) : '' })).filter(x => x.w);
+  const out: [number, number][] = [];
+  for (let s = 0; s + q.length <= words.length; s++) {
+    const ok = q.every((part, k) => (k === q.length - 1 ? words[s + k].w.startsWith(part) : words[s + k].w === part));
+    if (ok) out.push([words[s].i, words[s + q.length - 1].i]);
+  }
+  return out;
+}
+
+/** "1:23", "01:02:03", "83" or "83,5" → seconds; null when not a time. */
+export function parseTime(s: string): number | null {
+  const parts = s.trim().replace(',', '.').split(':');
+  if (!parts.length || parts.length > 3 || parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return null;
+  return parts.reduce((acc, p) => acc * 60 + Number(p), 0);
+}
+
+// --- repeated takes ---------------------------------------------------------------------------
+
+export type Retake = {
+  /** First and last token index (inclusive) of the earlier take(s) to remove. */
+  from: number; to: number;
+  /** Token index where the later take starts. */
+  laterAt: number;
+  earlier: string; later: string;
+  start: number; end: number;
+};
+
+const RETAKE_WINDOW = 120; // seconds between takes
+const RETAKE_MAX = 150;    // never suggest removing more than this
+const RETAKE_PREFIX = 4;   // same opening words (3 catches phrases like "det här är") …
+const RETAKE_SIMILAR = 0.6; // … or this share of word pairs, of the longer sentence
+
+type Sentence = { from: number; to: number; words: string[]; start: number; text: string };
+
+function sentences(tokens: Token[]): Sentence[] {
+  const out: Sentence[] = [];
+  let cur: Sentence | null = null;
+  tokens.forEach((t, i) => {
+    if (t.kind !== 'word') return;
+    if (!cur) cur = { from: i, to: i, words: [], start: t.start, text: '' };
+    cur.to = i; cur.words.push(norm(t.text)); cur.text += (cur.text ? ' ' : '') + t.text;
+    if (/[.!?…]$/.test(t.text) || cur.words.length >= 40) { out.push(cur); cur = null; }
+  });
+  if (cur) out.push(cur);
+  return out.filter(s => s.words.length >= RETAKE_PREFIX);
+}
+
+function pairs(words: string[]): Set<string> {
+  const s = new Set<string>();
+  for (let i = 0; i + 1 < words.length; i++) s.add(words[i] + ' ' + words[i + 1]);
+  return s;
+}
+
+/** Earlier takes of something said again shortly after (restarts, "nej, en gång till").
+ *  Each suggestion removes from the start of an earlier take up to the later one, so accepting
+ *  every suggestion keeps the last take. */
+export function findRetakes(tokens: Token[]): Retake[] {
+  const ss = sentences(tokens);
+  const out: Retake[] = [];
+  for (let i = 0; i < ss.length; i++) {
+    const a = ss[i], pa = pairs(a.words);
+    for (let j = i + 1; j < ss.length && ss[j].start - a.start <= RETAKE_WINDOW; j++) {
+      const b = ss[j];
+      const samePrefix = a.words.slice(0, RETAKE_PREFIX).join(' ') === b.words.slice(0, RETAKE_PREFIX).join(' ');
+      const pb = pairs(b.words);
+      const shared = [...pa].filter(p => pb.has(p)).length / Math.max(1, pa.size, pb.size);
+      if (!samePrefix && shared < RETAKE_SIMILAR) continue;
+      const end = tokens[b.from - 1]?.end ?? b.start;
+      if (end - a.start > RETAKE_MAX) break;
+      if (!out.some(r => r.from <= a.from && a.from <= r.to)) {
+        out.push({ from: a.from, to: b.from - 1, laterAt: b.from, earlier: a.text, later: b.text, start: a.start, end });
+      }
+      break;
+    }
+  }
+  return out;
 }

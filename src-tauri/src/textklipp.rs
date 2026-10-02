@@ -347,8 +347,8 @@ pub fn items(p: &Project) -> Vec<avskrift_textklipp::Item> {
 }
 
 /// The same keep ranges an export will use: cuts at the quietest frame boundary between items.
-pub fn preview(root: &Path, id: &str, edits: &EditList) -> Result<Preview> {
-    let p = load(root, id)?;
+/// Run `f` with the project's loudness, reading the 16 kHz audio once per project.
+fn with_loudness<T>(root: &Path, id: &str, f: impl FnOnce(&avskrift_wordalign::Loudness) -> T) -> Result<T> {
     let mut cache = LOUDNESS.lock().map_err(|_| anyhow!("förhandsvisningen behöver startas om"))?;
     if cache.as_ref().is_none_or(|(cached, _)| cached != id) {
         let mut reader = hound::WavReader::open(project_dir(root, id)?.join(AUDIO_FILE))?;
@@ -356,13 +356,27 @@ pub fn preview(root: &Path, id: &str, edits: &EditList) -> Result<Preview> {
         let samples = reader.samples::<i16>().map_while(|s| s.ok()).map(|s| s as f32 / 32768.0);
         *cache = Some((id.to_string(), avskrift_wordalign::Loudness::from_samples(samples, rate)));
     }
-    let loudness = &cache.as_ref().unwrap().1;
+    Ok(f(&cache.as_ref().unwrap().1))
+}
+
+/// Waveform bars (0..1) for `[start, end)` seconds of the project's audio.
+pub fn waveform(root: &Path, id: &str, start: f64, end: f64, bars: usize) -> Result<Vec<f32>> {
+    ensure!(bars <= 20_000 && end >= start, "ogiltigt vågformsintervall");
+    with_loudness(root, id, |l| l.waveform(start, end, bars))
+}
+
+pub fn preview(root: &Path, id: &str, edits: &EditList) -> Result<Preview> {
+    let p = load(root, id)?;
+    with_loudness(root, id, |loudness| preview_with(&p, edits, loudness))
+}
+
+fn preview_with(p: &Project, edits: &EditList, loudness: &avskrift_wordalign::Loudness) -> Preview {
     // Video cuts snap to frames; audio-only projects to milliseconds.
     let fps = p.media.video.as_ref().map_or(1000.0, |v| if v.fps > 0.0 { v.fps } else { 25.0 });
-    let keep = avskrift_textklipp::keep_ranges(&items(&p), edits, &p.pauses, p.media.duration, |lo, hi| {
+    let keep = avskrift_textklipp::keep_ranges(&items(p), edits, &p.pauses, p.media.duration, |lo, hi| {
         loudness.cut_point(fps, lo, hi)
     });
-    Ok(Preview { edited_duration: keep.iter().map(|(a, b)| b - a).sum(), keep })
+    Preview { edited_duration: keep.iter().map(|(a, b)| b - a).sum(), keep }
 }
 
 // ---------------------------------------------------------------- Projects

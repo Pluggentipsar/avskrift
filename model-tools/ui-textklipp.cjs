@@ -37,11 +37,15 @@ fs.mkdirSync(shots, { recursive: true });
         removed.push([first ? (items[first - 1].end + items[first].start) / 2 : 0, i + 1 < items.length ? (items[i].end + items[i + 1].start) / 2 : p.media.duration]);
       }
       if (edits.pauseLimit != null) for (const [a, b] of p.pauses) if (b - a > edits.pauseLimit) removed.push([a + edits.pauseLimit / 2, b - edits.pauseLimit / 2]);
+      removed.push(...(edits.removed ?? []));
       removed.sort((a, b) => a[0] - b[0]);
-      const keep = []; let t = 0;
+      let keep = []; let t = 0;
       for (const [a, b] of removed) { if (a - t >= 0.04) keep.push([t, a]); t = Math.max(t, b); }
       if (p.media.duration - t >= 0.04) keep.push([t, p.media.duration]);
-      return keep;
+      keep.push(...(edits.kept ?? [])); keep.sort((a, b) => a[0] - b[0]);
+      const merged = [];
+      for (const [a, b] of keep) { const l = merged.at(-1); if (l && a <= l[1] + 1e-9) l[1] = Math.max(l[1], b); else merged.push([a, b]); }
+      return merged.filter(([a, b]) => b - a >= 0.04);
     }
     mockWindows('main');
     mockConvertFileSrc('windows');
@@ -60,7 +64,8 @@ fs.mkdirSync(shots, { recursive: true });
         case 'textklipp_list': return [{ id: f.project.id, title: f.project.title, updatedAt: f.project.updatedAt, duration: f.project.media.duration, status: 'ready', hasProxy: true }];
         case 'textklipp_open': return structuredClone(f.project);
         case 'textklipp_media': return { playback: 'C:/synthetic/textklipp/tk-fixture/proxy.mp4', isVideo: true };
-        case 'textklipp_preview': { f.previews++; const keep = keepRanges(f.project, args.edits); return { keep, editedDuration: keep.reduce((s, [a, b]) => s + b - a, 0) }; }
+        case 'textklipp_preview': { f.previews++; const keep = keepRanges(f.project, args.edits); window.__lastPreview = { keep }; return { keep, editedDuration: keep.reduce((s, [a, b]) => s + b - a, 0) }; }
+        case 'textklipp_waveform': return Array.from({ length: args.bars }, (_, i) => 0.5 + 0.4 * Math.sin((args.start + (args.end - args.start) * i / args.bars) * 9));
         case 'textklipp_save_edits': f.saves.push(structuredClone(args.edits)); f.project.edits = structuredClone(args.edits); return '2026-10-02T10:01:00Z';
         default: return null;
       }
@@ -159,7 +164,86 @@ fs.mkdirSync(shots, { recursive: true });
       assert.ok(seen.at(-1) > w.end, 'playback continues after the cut');
       await page.getByRole('button', { name: 'Pausa' }).click();
     });
-    await step('current word is highlighted while playing', async () => {
+    await step('detail view shows waveform around the playhead', async () => {
+      await page.locator('canvas[data-view]').waitFor();
+      assert.ok(await page.evaluate(() => document.querySelector('canvas[data-view]').width > 100));
+    });
+    await step('search finds all three takes and Enter jumps between them', async () => {
+      const box = page.getByRole('searchbox', { name: 'Sök i texten' });
+      await box.fill('heter joel');
+      await page.getByText('1 av 3').waitFor();
+      await box.press('Enter');
+      const first = await page.evaluate(() => document.querySelector('video').currentTime);
+      await box.press('Enter');
+      await page.getByText('2 av 3').waitFor();
+      const second = await page.evaluate(() => document.querySelector('video').currentTime);
+      assert.ok(first > 30 && second > first + 20, `${first} → ${second}`);
+      assert.ok(await page.locator('.doc .hit').count() >= 6);
+      await box.fill('');
+    });
+    await step('go to time', async () => {
+      const t = page.getByLabel('Gå till tid (minuter:sekunder)');
+      await t.fill('1:30'); await t.press('Enter');
+      await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 90) < 0.5);
+      await t.fill('99:00'); await t.press('Enter');
+      assert.ok(await t.evaluate(e => e.classList.contains('invalid')));
+      await t.fill('');
+    });
+    await step('retake suggestions: remove the first take, keep the last', async () => {
+      await page.getByText('2 möjliga omtagningar').waitFor();
+      await page.getByRole('button', { name: 'Ta bort tidigare tagning' }).first().click();
+      await page.waitForFunction(() => window.fixture.saves.at(-1)?.deleted.length > 50);
+      assert.equal(await page.locator('.retakes li.done').count(), 1);
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => window.fixture.saves.at(-1)?.deleted.length < 50);
+    });
+    await step('nudging the active cut by one frame stores a manual range', async () => {
+      const at = await page.evaluate(id => window.fixture.project.transcript.utterances.flatMap(u => u.words)[id].start, egentligen);
+      await page.evaluate(t => { document.querySelector('video').currentTime = t - 0.6; }, at);
+      await page.getByRole('button', { name: 'Börja klippet en bildruta tidigare' }).click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(b - a - 1 / 30) < 0.002, `one frame at 30 fps, got ${b - a}`);
+      await page.getByRole('button', { name: 'Sluta klippet en bildruta tidigare' }).click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.kept ?? []).length === 1);
+      await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => { const s = window.fixture.saves.at(-1); return !s.removed.length && !s.kept.length; });
+    });
+    await step('dragging a cut edge in the detail view moves the cut', async () => {
+      const canvas = page.locator('canvas[data-view]');
+      const box = await canvas.boundingBox();
+      const { view, span } = await page.evaluate(() => {
+        const c = document.querySelector('canvas[data-view]');
+        return { view: Number(c.dataset.view), span: Number(c.dataset.span) };
+      });
+      // A cut starts where a kept range ends; take the first one inside the detail view.
+      const preview = await page.evaluate(() => window.__lastPreview);
+      const g = preview.keep.map(k => k[1]).find(b => b > view && b < view + span);
+      assert.ok(g, 'a cut start is visible in the detail view');
+      const x = box.x + ((g - view) / span) * box.width, y = box.y + 60;
+      await page.mouse.move(x, y); await page.mouse.down();
+      await page.mouse.move(x - box.width * 0.04, y, { steps: 4 }); await page.mouse.up();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(b - g) < 0.04 && b - a > 0.2, `dragged ${a}-${b} from edge ${g}`);
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => !(window.fixture.saves.at(-1)?.removed ?? []).length);
+    });
+    await step('listening to a join loops around it and never plays the struck word', async () => {
+      const w = await page.evaluate(id => window.fixture.project.transcript.utterances.flatMap(u => u.words)[id], egentligen);
+      await page.evaluate(t => { document.querySelector('video').currentTime = t - 0.6; }, w.start);
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: 'Lyssna på skarven' }).click();
+      const seen = await page.evaluate(() => new Promise(done => {
+        const v = document.querySelector('video'), times = []; const until = performance.now() + 4500;
+        (function tick() { times.push(v.currentTime); if (performance.now() < until) requestAnimationFrame(tick); else done(times); })();
+      }));
+      assert.ok(!seen.some(t => t > w.start + 0.05 && t < w.end - 0.05), 'struck word played while looping');
+      const jumpsBack = seen.filter((t, i) => i && t < seen[i - 1] - 0.5).length;
+      assert.ok(jumpsBack >= 1, 'the loop restarts');
+      await page.getByRole('button', { name: 'Sluta lyssna' }).click();
+      await page.screenshot({ path: `${shots}/editor-detail.png` });
+    });    await step('current word is highlighted while playing', async () => {
       assert.equal(await page.locator('.doc .current').count(), 1);
     });
     await step('hiding struck text and shortening pauses', async () => {

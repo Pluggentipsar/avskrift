@@ -11,6 +11,8 @@ pub struct Loudness {
     db: Vec<f32>,
     /// Level below which audio counts as pause: the 10th percentile plus 12 dB.
     pub quiet_db: f32,
+    /// Loudest millisecond, for scaling a waveform.
+    peak_db: f32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -62,7 +64,8 @@ impl Loudness {
         let mut sorted: Vec<f32> = db.iter().step_by(10).copied().collect();
         sorted.sort_by(f32::total_cmp);
         let floor = sorted.get(sorted.len() / 10).copied().unwrap_or(-90.0);
-        Self { db, quiet_db: floor + 12.0 }
+        let peak_db = db.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        Self { db, quiet_db: floor + 12.0, peak_db }
     }
 
     fn level(&self, t: f64) -> f32 {
@@ -84,6 +87,25 @@ impl Loudness {
             .min_by(|a, b| self.level(*a).total_cmp(&self.level(*b)))
             .unwrap_or(lo);
         (quietest * fps).round() / fps
+    }
+
+    /// Waveform for `[start, end)` seconds: `n` bars of the loudest millisecond in each, scaled
+    /// 0..1 from the noise floor to the file's peak (silence is 0, full loudness 1).
+    pub fn waveform(&self, start: f64, end: f64, n: usize) -> Vec<f32> {
+        let floor = self.quiet_db - 12.0;
+        let span = (self.peak_db - floor).max(1.0);
+        let (a, b) = ((start.max(0.0) * 1000.0) as usize, ((end * 1000.0) as usize).min(self.db.len()));
+        (0..n)
+            .map(|i| {
+                let lo = a + (b.saturating_sub(a)) * i / n.max(1);
+                let hi = (a + (b.saturating_sub(a)) * (i + 1) / n.max(1)).max(lo + 1).min(self.db.len());
+                if lo >= hi {
+                    return 0.0;
+                }
+                let max = self.db[lo..hi].iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                ((max - floor) / span).clamp(0.0, 1.0)
+            })
+            .collect()
     }
 
     /// Quiet stretches of at least 150 ms inside the gaps `(end of item, start of next item)`.
@@ -125,6 +147,15 @@ mod tests {
         let t = l.cut_point(25.0, 0.30, 0.70);
         assert!((0.44..=0.56).contains(&t), "{t}");
         assert!(((t * 25.0) - (t * 25.0).round()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn waveform_is_zero_in_silence_and_high_in_sound() {
+        let l = Loudness::new(&audio(), 16000);
+        let w = l.waveform(0.0, 1.0, 20);
+        assert_eq!(w.len(), 20);
+        assert!(w[9] < 0.1 && w[10] < 0.1, "{w:?}"); // 0.45-0.55 s is well inside the silence
+        assert!(w[2] > 0.8 && w[17] > 0.8, "{w:?}");
     }
 
     #[test]

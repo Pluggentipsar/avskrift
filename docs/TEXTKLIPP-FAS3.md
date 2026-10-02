@@ -48,10 +48,33 @@ $env:AVSKRIFT_PLAYWRIGHT='…\node_modules\playwright'; $env:AVSKRIFT_TK_FIXTURE
 node model-tools/ui-textklipp.cjs   # mot npm run dev
 ```
 
-## Återstår i fas 3
+## Tillägg: resten av fas 3
 
-1. Provning i den riktiga appen (inte bara mockad IPC) med import av egen film.
-2. Vågform i tidslinjen och dra i klippkanter / nudga ±1 bildruta.
-3. Sök i texten och "gå till tid".
-4. Hitta upprepade tagningar och föreslå att behålla den sista.
-5. Lyssna på ett klipp i loop (1 s före/efter).
+- **Detaljvy** (`Detail.svelte`): 8 s kring uppspelningsmarkören med verklig vågform
+  (`textklipp_waveform`, högsta nivå per stapel ur samma ljudnivåcache som
+  förhandsvisningen), ord, borttagna partier och klippkanter. **Dra en röd kant** för att
+  flytta ett klipp (snäpper till bildruta); klick utanför en kant hoppar dit.
+- **Finjustering ±1 bildruta** av början och slut på aktuellt klipp, **föregående/nästa
+  klipp**, och **Lyssna på skarven**: 1 s redigerad tid före och efter, i loop tills man
+  stoppar.
+- **Manuella justeringar** sparas som avsikt i klipplistan: `removed` (klipp som dragits
+  större) och nya `kept` (klipp som dragits mindre; går före alla borttagningar).
+  Ångra/gör om och *Återställ allt* omfattar dem.
+- **Sök** i texten (ord för ord, sista ordet som prefix), träffar markeras, Enter /
+  Shift+Enter bläddrar; **Gå till tid** ("1:30", "1:02:03", "83,5").
+- **Möjliga omtagningar** (`findRetakes`): mening som sägs igen inom 2 min – samma fyra
+  första ord, eller minst 60 % gemensamma ordpar räknat mot den längre meningen. Förslaget
+  tar bort från den tidigare tagningen fram till den senare; godtas alla behålls den sista.
+  Korta testfilmen: exakt de två tidigare tagningarna av presentationen. 32-minuters­
+  filmen: 17 förslag (med tre gemensamma ord och likhet mot den kortare meningen blev det
+  37, många retoriska upprepningar – därför de striktare reglerna). Förslag tillämpas
+  aldrig automatiskt.
+- UI-testet utökat till **19 steg**, bl.a. dra en kant med musen, nudge en bildruta,
+  sökning, gå till tid, ta bort omtagning, och loopa en skarv utan att det strukna ordet
+  någonsin spelas. Layoutfel hittat via skärmbild (detaljvyn sprängde spelarkolumnen)
+  och rättat.
+
+## Återstår
+
+1. Provning i den riktiga appen med import av egen film (användaren).
+2. Fas 4: export till färdig videofil.
