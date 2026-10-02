@@ -49,22 +49,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         let t1 = state.full_get_segment_t1(i)? as f64 / 100.0;
         let text = String::from_utf8_lossy(&state.full_get_segment_bytes(i)?).trim().to_owned();
         segments.push(serde_json::json!({"start": t0, "end": t1, "text": text}));
-        let mut first = true;
+        // Mirrors transcribe.rs group_words: a whitespace-only token (" ") also ends a word.
+        let mut boundary = true;
         for j in 0..state.full_n_tokens(i)? {
             let Ok(tok) = state.full_get_token_bytes(i, j) else { continue };
             if tok.starts_with(b"[_") {
                 continue;
             }
             let Ok(data) = state.full_get_token_data(i, j) else { continue };
+            if env::var_os("TEXTEDIT_TOKENS").is_some() {
+                eprintln!("tok seg={i} t0={} t1={} {:?}", data.t0, data.t1, String::from_utf8_lossy(&tok));
+            }
             let (s, e) = (data.t0 as f64 / 100.0, data.t1 as f64 / 100.0);
             let cont = tok.first().copied().is_some_and(is_continuation);
-            if (tok.first() == Some(&b' ') || first) && !cont {
+            if (boundary || tok.first().is_some_and(u8::is_ascii_whitespace)) && !cont {
                 let piece: Vec<u8> = tok.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect();
                 if piece.is_empty() {
+                    boundary = true;
                     continue;
                 }
                 words.push((s, e, piece));
-                first = false;
+                boundary = false;
             } else if let Some(last) = words.last_mut() {
                 last.2.extend_from_slice(&tok);
                 last.1 = e;

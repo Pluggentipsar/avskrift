@@ -215,43 +215,12 @@ fn transcribe_state(
             continue;
         }
         let words = if word_timestamps {
-            // Group whisper's sub-word tokens into words. A new word begins at a token whose
-            // text starts with a space; special/marker tokens ("[_…]") are skipped. A character
-            // can be split across tokens here too, so bytes are accumulated per word and only
-            // decoded once the word is complete.
-            let mut ws: Vec<(f64, f64, Vec<u8>)> = Vec::new();
             let n_tokens = state.full_n_tokens(i).unwrap_or(0);
-            for j in 0..n_tokens {
-                let tok = match state.full_get_token_bytes(i, j) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                if tok.starts_with(b"[_") {
-                    continue;
-                }
-                let data = match state.full_get_token_data(i, j) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                let (start, end) = (data.t0 as f64 / 100.0, data.t1 as f64 / 100.0);
-                // A continuation byte never starts a word: it completes a character whose
-                // lead byte sits in the previous token.
-                let continues_char = tok.first().copied().is_some_and(is_utf8_continuation);
-                let starts_word = (tok.first() == Some(&b' ') || ws.is_empty()) && !continues_char;
-                if starts_word {
-                    let piece: Vec<u8> = tok.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect();
-                    if piece.is_empty() {
-                        continue;
-                    }
-                    ws.push((start, end, piece));
-                } else if let Some(last) = ws.last_mut() {
-                    last.2.extend_from_slice(&tok);
-                    last.1 = end;
-                }
-            }
-            ws.into_iter()
-                .map(|(start, end, bytes)| Word { start, end, text: String::from_utf8_lossy(&bytes).into_owned() })
-                .collect()
+            group_words((0..n_tokens).filter_map(|j| {
+                let tok = state.full_get_token_bytes(i, j).ok()?;
+                let data = state.full_get_token_data(i, j).ok()?;
+                Some((tok, data.t0 as f64 / 100.0, data.t1 as f64 / 100.0))
+            }))
         } else {
             Vec::new()
         };
@@ -264,6 +233,39 @@ fn transcribe_state(
 unsafe extern "C" fn abort_requested(data: *mut std::ffi::c_void) -> bool {
     // Valid only during state.full; ownership stays with its local Arc.
     unsafe { &*(data as *const std::sync::atomic::AtomicBool) }.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Group whisper's sub-word tokens `(bytes, start s, end s)` of one segment into words. A new word
+/// begins at a token whose text starts with whitespace, or after a whitespace-only token (whisper
+/// sometimes emits " " followed by "AI"); special/marker tokens ("[_…]") are skipped. A character
+/// can be split across tokens, so bytes are accumulated per word and only decoded once complete.
+fn group_words(tokens: impl IntoIterator<Item = (Vec<u8>, f64, f64)>) -> Vec<Word> {
+    let mut ws: Vec<(f64, f64, Vec<u8>)> = Vec::new();
+    let mut boundary = true;
+    for (tok, start, end) in tokens {
+        if tok.starts_with(b"[_") {
+            continue;
+        }
+        // A continuation byte never starts a word: it completes a character whose
+        // lead byte sits in the previous token.
+        let continues_char = tok.first().copied().is_some_and(is_utf8_continuation);
+        let starts_word = (boundary || tok.first().is_some_and(u8::is_ascii_whitespace)) && !continues_char;
+        if starts_word {
+            let piece: Vec<u8> = tok.iter().copied().skip_while(|b| b.is_ascii_whitespace()).collect();
+            if piece.is_empty() {
+                boundary = true;
+                continue;
+            }
+            ws.push((start, end, piece));
+            boundary = false;
+        } else if let Some(last) = ws.last_mut() {
+            last.2.extend_from_slice(&tok);
+            last.1 = end;
+        }
+    }
+    ws.into_iter()
+        .map(|(start, end, bytes)| Word { start, end, text: String::from_utf8_lossy(&bytes).into_owned() })
+        .collect()
 }
 
 fn is_utf8_continuation(b: u8) -> bool {
@@ -372,6 +374,41 @@ mod tests {
         assert_eq!(utf8_missing_continuation(&[0xE2, 0x82]), 1);
         // "😀" (0xF0 0x9F 0x98 0x80) cut after three bytes.
         assert_eq!(utf8_missing_continuation(&[0xF0, 0x9F, 0x98]), 1);
+    }
+
+    fn words(tokens: &[(&[u8], f64, f64)]) -> Vec<(String, f64, f64)> {
+        super::group_words(tokens.iter().map(|(t, s, e)| (t.to_vec(), *s, *e)))
+            .into_iter()
+            .map(|w| (w.text, w.start, w.end))
+            .collect()
+    }
+
+    #[test]
+    fn whitespace_only_token_separates_words() {
+        // Seen with KB-Whisper large: " vad", " ", "AI" must not become "vadAI".
+        let got = words(&[(b" om", 34.0, 35.0), (b" vad", 35.0, 35.2), (b" ", 35.2, 35.2), (b"AI", 35.2, 35.33)]);
+        let texts: Vec<_> = got.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(texts, ["om", "vad", "AI"]);
+        assert_eq!((got[2].1, got[2].2), (35.2, 35.33));
+    }
+
+    #[test]
+    fn subword_tokens_join_and_markers_are_skipped() {
+        let got = words(&[
+            (b" var", 21.6, 22.3),
+            ("för".as_bytes(), 22.3, 23.25),
+            (b"[_TT_50]", 23.0, 23.0),
+            (b"?", 23.25, 23.3),
+        ]);
+        assert_eq!(got, [("varför?".to_string(), 21.6, 23.3)]);
+    }
+
+    #[test]
+    fn split_character_never_starts_a_word() {
+        // "hör" with ö (0xC3 0xB6) split across tokens.
+        let got = words(&[(&[b' ', b'h', 0xC3], 1.0, 1.1), (&[0xB6, b'r'], 1.1, 1.2), (b" ja", 1.2, 1.3)]);
+        let texts: Vec<_> = got.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(texts, ["hör", "ja"]);
     }
 
     #[test]
