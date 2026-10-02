@@ -487,7 +487,7 @@ pub fn export(
     let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
     let partial = output.with_extension(format!("avskrift-tmp.{ext}"));
     let result = (|| -> Result<Vec<String>> {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
         let groups: Vec<&[render::Piece]> = render::groups(&pieces, fps).into_iter().map(|r| &pieces[r]).collect();
         let parts: Vec<String> =
             (0..groups.len()).map(|i| tmp.join(format!("part{i:04}.mkv")).to_string_lossy().into_owned()).collect();
