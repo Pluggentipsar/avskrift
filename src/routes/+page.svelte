@@ -4244,7 +4244,9 @@
   .terms { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .terms li { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line-2); border-radius: 3px; padding: 3px 4px 3px 9px; font-size: 12.5px; }
 
-  .review { padding: 22px 30px; display: flex; flex-direction: column; overflow: hidden; }
+  /* Scrolls when its content is taller than the window (comparison view, summary with source draft);
+     views that scroll internally (flex:1 + min-height:0) are unaffected. Was overflow:hidden, which clipped text. */
+  .review { padding: 22px 30px; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; }
   .review-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
   .review-head.actions-only { justify-content: flex-end; }
   .tabs { display: flex; gap: 4px; }
@@ -4268,7 +4270,7 @@
   .seek { flex: 1; accent-color: var(--accent); cursor: pointer; }
 
   .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 82ch; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 26px; }
-  .summary-edit { flex: 1; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 24px; max-width: 84ch; }
+  .summary-edit { flex: 1; min-height: 260px; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 24px; max-width: 84ch; }
   .summary-edit:focus { outline: none; border-color: var(--accent); }
   .hit { border: none; background: color-mix(in srgb, var(--c) 14%, transparent); font: inherit; line-height: inherit; cursor: pointer; padding: 0 2px 1px; border-radius: 3px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
   .hit:hover { background: color-mix(in srgb, var(--c) 30%, transparent); }
