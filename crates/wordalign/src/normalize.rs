@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 
 pub struct Vocab {
     ids: HashMap<char, u32>,
+    chars: HashMap<u32, char>,
     pub blank: u32,
     pub size: usize,
 }
@@ -17,7 +18,7 @@ impl Vocab {
         let map: HashMap<String, u32> = serde_json::from_str(json)?;
         let blank = *map.get("<pad>").ok_or_else(|| anyhow!("vocab saknar <pad>"))?;
         let size = map.values().max().map_or(0, |m| *m as usize + 1);
-        let ids = map
+        let ids: HashMap<char, u32> = map
             .iter()
             .filter_map(|(k, v)| {
                 let mut chars = k.chars();
@@ -27,7 +28,13 @@ impl Vocab {
                 }
             })
             .collect();
-        Ok(Self { ids, blank, size })
+        let chars = ids.iter().map(|(c, id)| (*id, *c)).collect();
+        Ok(Self { ids, chars, blank, size })
+    }
+
+    /// The letter a label stands for (None for blank and special tokens).
+    pub fn char_of(&self, id: u32) -> Option<char> {
+        self.chars.get(&id).copied()
     }
 
     /// Label ids for one transcript word. Empty when nothing is pronounceable (e.g. "–").

@@ -3,7 +3,7 @@
 use std::{env, fs, path::Path, time::Instant};
 
 use anyhow::{bail, Result};
-use avskrift_wordalign::{align_words, Device, Emitter, InputWord, Vocab};
+use avskrift_wordalign::{align_words, unclaimed, Device, Emitter, InputWord, Loudness, Vocab};
 
 fn main() -> Result<()> {
     let a: Vec<String> = env::args().collect();
@@ -30,6 +30,14 @@ fn main() -> Result<()> {
     let t = Instant::now();
     let aligned = align_words(&em, &vocab, &words);
     let align_s = t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let sounds = unclaimed(&em, &vocab, &aligned);
+    let loudness = Loudness::new(&audio, 16000);
+    let mut items: Vec<(f64, f64)> = aligned.iter().filter(|w| w.aligned).map(|w| (w.start, w.end)).collect();
+    items.extend(sounds.iter().map(|s| (s.start, s.end)));
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let pauses = loudness.pauses(items.windows(2).map(|p| (p[0].1, p[1].0)));
+    let extra_s = t.elapsed().as_secs_f64();
     let out: Vec<_> = aligned
         .iter()
         .zip(&words)
@@ -40,14 +48,18 @@ fn main() -> Result<()> {
         .collect();
     let report = serde_json::json!({
         "device": a[6], "audio_seconds": audio.len() as f64 / 16000.0, "load_seconds": load_s,
-        "emission_seconds": emit_s, "align_seconds": align_s, "words": out,
+        "emission_seconds": emit_s, "align_seconds": align_s, "sounds_pauses_seconds": extra_s,
+        "words": out, "sounds": sounds, "pauses": pauses,
     });
     fs::write(&a[5], serde_json::to_string_pretty(&report)?)?;
     println!(
-        "{}: load {load_s:.1}s, emissions {emit_s:.1}s, align {align_s:.2}s, {} words, {} unaligned",
+        "{}: load {load_s:.1}s, emissions {emit_s:.1}s, align {align_s:.2}s, sounds+pauses {extra_s:.2}s, \
+         {} words, {} unaligned, {} sound blocks, {} pauses",
         a[6],
         aligned.len(),
-        aligned.iter().filter(|w| !w.aligned).count()
+        aligned.iter().filter(|w| !w.aligned).count(),
+        sounds.len(),
+        pauses.len()
     );
     Ok(())
 }

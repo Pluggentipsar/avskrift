@@ -6,13 +6,17 @@
 //! model. See docs/TEXTKLIPP-PROTOTYP.md and docs/TEXTKLIPP-PLAN.md.
 
 pub mod align;
+pub mod cuts;
 pub mod model;
 pub mod normalize;
+pub mod sounds;
 pub mod viterbi;
 
 pub use align::{align_words, AlignedWord, InputWord};
+pub use cuts::{Loudness, Pause};
 pub use model::{Device, Emissions, Emitter};
 pub use normalize::Vocab;
+pub use sounds::{unclaimed, SoundBlock};
 
 /// Model input rate.
 pub const RATE: usize = 16_000;
