@@ -39,8 +39,8 @@ Den största risken; allt annat bygger på den.
    block. KB-Whisper rensar ofta bort eh/öh – de blir då ändå strykbara.
 
 **Klart när:** median ≤ 30 ms fel för ordstarter och -slut mot 100 manuellt
-markerade gränser i minst tre egna inspelningar (även en med två talare och bakgrundsljud).
-Justering ≤ 10 s för 10 min video på GPU.
+markerade gränser i minst tre egna inspelningar (även en med två talare och bakgrundsljud,
+och en på 30–60 min). Justering ≤ 60 s för en timme video på GPU.
 
 ## Fas 2 – Videoprojekt och import
 
@@ -91,7 +91,7 @@ Byggs som egna komponenter under `src/lib/editor/` (inte i `+page.svelte`, som r
 
 **Licens:** gyan.dev `full_build` är GPL (libx264). Appen skickar med en **LGPL-byggd
 FFmpeg** utan x264 och använder hårdvarukodare/Media Foundation; licenstext i NOTICE.
-Ca 80–100 MB extra – alternativt hämtas vid behov som modellerna.
+Följer med paketet (beslut), ca 80–100 MB extra per ZIP.
 
 ## Fas 5 – Efter första versionen
 
@@ -116,8 +116,28 @@ Fas 1 → avstämning med provklipp → Fas 2 och 3 parallellt (motor/UI) → Fa
 förhandsrelease. Varje fas avslutas med tester, mätningar och ett dokument i
 `docs/` som för Pianissimo.
 
-## Öppna frågor
+## Beslut (2026-10-02)
 
-1. Ska editorn vara en egen flik i Avskrift eller ett eget läge när man öppnar en video?
-2. Ska FFmpeg följa med paketet eller hämtas vid första videoimport?
-3. Typisk längd på egna inspelningar? Påverkar proxy, minne och exportstrategi.
+1. **Egen flik** i appens navigering: *Textklipp*.
+2. **FFmpeg följer med paketet** (LGPL-bygge), ingen hämtning vid första import.
+3. **Längd: 30–60 minuter** är normalfallet, ibland korta filmer på några minuter.
+
+Konsekvenser av 30–60 minuter:
+
+- **Bakgrundsarbete.** Import, transkribering, justering och proxy körs som avbrytbara
+  bakgrundsjobb via `work.rs`, med förlopp per steg. Editorn går att öppna när
+  transkriptet finns; justeringen fyller på ordtider löpande.
+- **Justering per segment** (redan i Fas 1) är nödvändig – en Viterbi över 60 min
+  (180 000 bildrutor) är onödigt stor och känslig för otranskriberade partier.
+  Mål: ≤ 60 s för en timme på GPU.
+- **Proxy alltid för långa filer.** 60 min 1080p från kamera/mobil är ofta 5–15 GB med
+  glesa nyckelbilder; sökning i originalet blir trög. Proxy: 720p H.264 med tät
+  nyckelbild (var 0,5 s) så att hopp över klipp blir omedelbara.
+- **Transkriptet virtualiseras** i editorn (8 000–10 000 ord per timme): bara synliga
+  stycken renderas, sökning och "gå till tid" ersätter skrollning.
+- **Export i segment.** Hundratals klipp per timme: rendera sammanhängande bitar parallellt
+  och konkatenera, i stället för en enda filtergraf. Kopiera oförändrade långa partier
+  utan omkodning där nyckelbilder tillåter (smart render) – senare optimering.
+- **Diskplats.** Proxy + 16 kHz-ljud ≈ 10–15 % av originalet; visas före import och
+  rensas när projektet tas bort.
+- **Testmaterial för Fas 1** ska inkludera minst en inspelning på 30–60 min.
