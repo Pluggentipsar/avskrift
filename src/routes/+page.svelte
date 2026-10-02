@@ -7,6 +7,7 @@
   import ModelSettings from '$lib/ModelSettings.svelte';
   import Dictation from "$lib/Dictation.svelte";
   import Textklipp from "$lib/textklipp/Textklipp.svelte";
+  import { ICONS, jobIcon } from "$lib/icons";
   import AppNavigation from "$lib/AppNavigation.svelte";
   import VersionsDialog from "$lib/VersionsDialog.svelte";
   import GroundedDraft from '$lib/GroundedDraft.svelte';
@@ -1446,6 +1447,24 @@
     go("transcribe");
   }
 
+  // ---- Home ----
+  const HOME_TILES = [
+    { title: "Möte", text: "Spela in eller importera ett möte och få anteckningar och beslut.", icon: ICONS.meeting, open: () => go("meeting") },
+    { title: "Transkribera", text: "Gör om en ljud- eller videofil till text, med talare och tider.", icon: ICONS.transcribe, open: () => void startTranscription() },
+    { title: "Diktera", text: "Tala där du skriver. Hitta texten igen när du behöver den.", icon: ICONS.dictation, open: () => go("dictation") },
+    { title: "Avidentifiera", text: "Granska uppgifter i text och dokument och skapa en maskerad kopia.", icon: ICONS.deidentify, open: () => go("deidentify") },
+    { title: "Klipp video", text: "Redigera texten – strukna ord försvinner ur filmen.", icon: ICONS.textklipp, open: () => go("textklipp") },
+  ];
+  const homeDate = (() => { const d = new Date().toLocaleDateString("sv-SE", { weekday: "long", day: "numeric", month: "long" }); return d.charAt(0).toUpperCase() + d.slice(1); })();
+  let homeSearch = $state("");
+  /** The home search box opens Biblioteket with the query filled in. */
+  function searchFromHome() {
+    const q = homeSearch.trim();
+    go("history");
+    if (q) { jobSearch = q; void searchJobs(); }
+    homeSearch = "";
+  }
+
   // ---- Standalone source for de-identify / summarize (no transcript needed) ----
   // "paste" = use srcText · "file" = a loaded .txt/.md/.docx · "transcript" = the in-app transcript.
   let srcMode = $state<"paste" | "file" | "transcript">("paste");
@@ -2854,10 +2873,10 @@
       </div>
     </div>
   {/snippet}
-  <AppNavigation active={screen === "transcribe" ? (currentJobType === "meeting" ? "meeting" : "transcribe") : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion}
+  <AppNavigation active={screen === "transcribe" ? (currentJobType === "meeting" ? "meeting" : "transcribe") : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion} speechModel={models.find(m => m.id === selectedModel)?.label ?? ""}
     onmodels={openModels} onnavigate={(page) => page === "transcribe" ? void startTranscription() : go(page as Screen)} onnew={() => void newProject()} />
   <div class="app-content">
-  <header class="workspace-header">
+  {#if screen !== "home" || bgMeetings.length}<header class="workspace-header">
     <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : screen === "textklipp" ? "Textklipp" : currentJobType === "meeting" ? "Möten" : "Transkribera"}</span>
       {#if currentJobTitle && !["home", "history", "tasks", "dictation", "textklipp"].includes(screen)}<strong>{currentJobTitle}</strong><button class="link" onclick={()=>editTitle()}>Byt namn</button>{/if}
     </div>
@@ -2876,7 +2895,7 @@
         {#if folderPickerFor === "header"}{@render folderPicker(currentCategory, (p) => { folderPickerFor = null; newFolderName = ""; void setCurrentCategory(p); })}{/if}
       </div>
     {/if}
-  </header>
+  </header>{/if}
   {#if titleEditing}<form class="title-editor" onsubmit={(e)=>{e.preventDefault();void saveTitle();}}>
     <label>Namn<input bind:this={titleInput} aria-label="Namn på arbetet" bind:value={titleDraft} onkeydown={e=>{if(e.key==='Escape')titleEditing=false;}} /></label>
     <button class="btn primary" disabled={renameBusy||!titleDraft.trim()}>Spara namn</button><button class="btn" type="button" onclick={()=>titleEditing=false}>Avbryt</button>
@@ -2972,42 +2991,58 @@
   </div>
   {#if screen === "home"}
     <div class="home">
-      <h2 class="big-title">Ditt arbete</h2>
-      <p class="home-intro">Fortsätt där du slutade, eller börja något nytt.</p>
+      <header class="h-head">
+        <div><div class="h-date">{homeDate}</div><h2 class="big-title">Ditt arbete</h2></div>
+        <form class="h-search" role="search" onsubmit={(e) => { e.preventDefault(); searchFromHome(); }}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d={ICONS.search} /></svg>
+          <input type="search" aria-label="Sök i allt arbete" placeholder="Sök i möten, transkript och dokument" bind:value={homeSearch} />
+        </form>
+      </header>
       {#if meetingActive||bgMeetings.length}<section class="home-current"><h2>Pågår nu</h2>{#if meetingActive}<button class="btn" onclick={()=>go('meeting')}>Till inspelningen: {currentJobTitle}</button>{/if}{#each bgMeetings as m}<button class="btn" onclick={()=>openJobById(m.id)}>{m.title} — {m.msg}</button>{/each}</section>{/if}
-      <div class="entrypoints">
-        <button onclick={() => go("meeting")}><h3>Möten</h3><p>Från samtal och ljudfiler till anteckningar och beslut.</p><span>Öppna möten</span></button>
-        <button onclick={() => void startTranscription()}><h3>Transkribera</h3><p>Gör om en ljud- eller videofil till text, med talare och tider.</p><span>Transkribera en fil</span></button>
-        <button onclick={() => go("dictation")}><h3>Diktering</h3><p>Tala där du skriver. Hitta texten igen när du behöver den.</p><span>Öppna diktering</span></button>
-        <button onclick={() => go("deidentify")}><h3>Avidentifiering</h3><p>Granska uppgifter i text och dokument och skapa en maskerad kopia.</p><span>Öppna avidentifiering</span></button>
-        <button onclick={() => go("textklipp")}><h3>Textklipp</h3><p>Klipp video genom att redigera texten. Strukna ord försvinner ur filmen.</p><span>Öppna textklipp</span></button>
-      </div>
-      <div class="home-tools"><button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button><button class="link" onclick={() => go("history")}>Öppna biblioteket</button></div>
-      {#if recentJobs.length}
-        <div class="recent">
-          <h2>Fortsätt arbeta</h2>
-          <ul class="job-strip">
-            {#each continuedJobs as j (j.id)}
-              <li>
-                <button class="job-row" onclick={() => openJobById(j.id)}>
-                  <span class="job-badge {j.jobType}">{JOB_LABELS[j.jobType] ?? j.jobType}</span>
-                  <span class="job-title">{j.pinned?"★ ":""}{j.title}<small class="job-path">{j.category}{j.actionsTotal?` · ${j.actionsTotal-j.actionsDone} öppna åtgärder`:""}</small></span>
-                  <span class="job-date">{fmtJobDate(j.updatedAt)}</span>
-                </button>
-                {@render workMenu(j)}
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
-
-      <section class="home-followups"><h2>Att följa upp</h2>
-        {#each allActions.filter(a=>!a.done&&a.due).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,5) as a}<button class="followup-row" onclick={()=>{if(a.jobId)void openJobById(a.jobId);else go('tasks');}}><span>{a.text}</span><span>{a.assignee} · {a.due}</span></button>{/each}
-        {#each followupJobs as j}<button class="followup-row" onclick={()=>openJobById(j.id)}><span>{j.title}</span><span>Uppföljning {j.followup}</span></button>{/each}
-        <button class="link" onclick={()=>go('tasks')}>Visa alla åtaganden</button>
+      <section class="h-tiles" aria-label="Börja något nytt">
+        {#each HOME_TILES as tile}
+          <button onclick={tile.open}>
+            <span class="h-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={tile.icon} /></svg></span>
+            <h3>{tile.title}</h3><p>{tile.text}</p>
+          </button>
+        {/each}
       </section>
-      {@render savedDictations()}
-      <button class="link home-open" onclick={openProject}>Öppna sparat projekt (.avskrift)…</button>
+      <div class="h-cols">
+        <section class="h-recent" aria-labelledby="h-recent-title">
+          <div class="h-sechead"><h2 id="h-recent-title">Fortsätt där du slutade</h2><button class="link" onclick={() => go("history")}>Hela biblioteket</button></div>
+          {#if continuedJobs.length}
+            <ul class="h-list">
+              {#each continuedJobs as j (j.id)}
+                {@const open = j.actionsTotal - j.actionsDone}
+                <li>
+                  <button class="h-row" onclick={() => openJobById(j.id)}>
+                    <span class="h-ricon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={jobIcon(j.jobType)} /></svg></span>
+                    <span class="h-rtext"><span class="h-rtitle">{j.pinned ? "★ " : ""}{j.title}</span><span class="h-rmeta">{JOB_LABELS[j.jobType] ?? j.jobType}{j.category ? ` · ${j.category}` : ""}</span></span>
+                    <span class="h-chips">{#if j.transcriptionPending}<span class="chip warn">Ej färdigtranskriberad</span>{/if}{#if open > 0}<span class="chip warn">{open} {open === 1 ? "öppen åtgärd" : "öppna åtgärder"}</span>{/if}{#if j.followup}<span class="chip">Uppföljning {j.followup}</span>{/if}</span>
+                    <span class="h-when">{fmtJobDate(j.updatedAt)}</span>
+                  </button>
+                  {@render workMenu(j)}
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="h-empty">Här visas det du arbetat med senast. Börja med något av valen ovan.</p>
+          {/if}
+        </section>
+        <aside class="h-side">
+          <section class="h-card" aria-labelledby="h-follow-title">
+            <div class="h-sechead"><h2 id="h-follow-title">Att följa upp</h2><button class="link" onclick={() => go("tasks")}>Alla</button></div>
+            {#each allActions.filter(a=>!a.done&&a.due).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,5) as a}<button class="followup-row" onclick={()=>{if(a.jobId)void openJobById(a.jobId);else go('tasks');}}><span>{a.text}</span><span>{a.assignee ? `${a.assignee} · ` : ""}{a.due}</span></button>{/each}
+            {#each followupJobs as j}<button class="followup-row" onclick={()=>openJobById(j.id)}><span>{j.title}</span><span>Uppföljning {j.followup}</span></button>{/each}
+            {#if !allActions.some(a=>!a.done&&a.due) && !followupJobs.length}<p class="h-empty">Inga åtgärder med datum just nu.</p>{/if}
+          </section>
+          {@render savedDictations()}
+          <section class="h-card h-more" aria-label="Fler sätt att börja">
+            <button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button>
+            <button class="link" onclick={openProject}>Öppna sparat projekt (.avskrift)…</button>
+          </section>
+        </aside>
+      </div>
     </div>
 
   {:else if screen === "history"}
@@ -4191,7 +4226,7 @@
     --shadow-sm: none; --shadow-md: none; --shadow-lg: none; /* editorial: depth from hairlines + space, not shadows */
   }
   :global(body) { margin: 0; font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--canvas); -webkit-font-smoothing: antialiased; }
-  .app { height:100dvh; display:grid; grid-template-columns:204px minmax(0,1fr); }
+  .app { height:100dvh; display:grid; grid-template-columns:248px minmax(0,1fr); }
   .app-content { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:auto; }
 
   .workspace-header { display: flex; align-items: flex-end; gap: 15px; padding: 20px 30px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
@@ -4329,11 +4364,47 @@
   :global(::-webkit-scrollbar-track) { background: transparent; }
 
   /* ---- home / history ---- */
-  .home { flex: 1; overflow: auto; padding: 46px 40px 60px; max-width: 920px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+  .home { flex: 1; overflow: auto; padding: 34px 44px 48px; max-width: 1200px; width: 100%; margin: 0 auto; box-sizing: border-box; display: flex; flex-direction: column; gap: 26px; }
+  .h-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+  .h-head .big-title { margin: 4px 0 0; font-size: 50px; line-height: 1; }
+  .h-date { font-size: 13px; color: var(--muted); }
+  .h-search { display: flex; align-items: center; gap: 10px; width: min(380px, 100%); height: 42px; padding: 0 14px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--bg); color: var(--muted); box-sizing: border-box; }
+  .h-search:focus-within { border-color: var(--accent); }
+  .h-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: 14px; color: var(--ink); }
+  .home svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .h-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+  .h-tiles button { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; text-align: left; padding: 16px; min-height: 140px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; cursor: pointer; }
+  .h-tiles button:hover { border-color: var(--line-2); background: #fdfdfb; }
+  .h-icon { width: 38px; height: 38px; border-radius: 6px; background: var(--accent-soft); color: var(--ink); display: grid; place-items: center; }
+  .h-icon svg { width: 21px; height: 21px; }
+  .h-tiles h3 { margin: 2px 0 0; font: 24px/1.05 'Instrument Serif', serif; font-weight: 400; }
+  .h-tiles p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
+  .h-cols { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; align-items: start; }
+  .h-sechead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  .h-sechead h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink); }
+  .h-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow: hidden; }
+  .h-list li { display: flex; align-items: center; gap: 6px; padding-right: 10px; border-bottom: 1px solid var(--line); }
+  .h-list li:last-child { border-bottom: 0; }
+  .h-row { flex: 1; min-width: 0; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto 104px; align-items: center; gap: 14px; padding: 12px 8px 12px 16px; border: 0; background: none; font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+  .h-row:hover { background: #fbfbf9; }
+  .h-ricon { width: 34px; height: 34px; border-radius: 6px; background: var(--nav-bg); color: #3b3c38; display: grid; place-items: center; }
+  .h-rtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .h-rtitle { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .h-rmeta { font-size: 12px; color: var(--muted); }
+  .h-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; background: var(--accent-soft); color: #3b3c38; white-space: nowrap; }
+  .chip.warn { background: #f6e2d3; color: #8a3b0c; }
+  .h-when { font-size: 12px; color: var(--muted); text-align: right; }
+  .h-empty { margin: 0; color: var(--muted); font-size: 13px; }
+  .h-side { display: flex; flex-direction: column; gap: 14px; }
+  .h-card, .h-side .saved-dictations { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 14px 16px; margin: 0; }
+  .h-side .saved-dictations h2 { font-size: 15px; margin: 0 0 8px; }
+  .h-card .followup-row { width: 100%; }
+  .h-more { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  @media(max-width:1180px) { .h-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .h-cols { grid-template-columns: 1fr; } }
+  @media(max-width:700px) { .home { padding: 24px 16px 40px; } .h-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .h-row { grid-template-columns: 36px minmax(0, 1fr); } .h-chips, .h-when { grid-column: 2; justify-content: flex-start; text-align: left; } }
   .big-title { font-family: "Instrument Serif", serif; font-weight: 400; font-size: 42px; line-height: 1.06; color: var(--ink); margin: 0 0 30px; letter-spacing: -.01em; text-transform: none; }
 
-  .recent { margin-top: 34px; }
-  .recent h2 { font-size: 14px; letter-spacing: 0; text-transform: none; color: var(--ink); margin: 0 0 11px; font-weight: 600; }
   .job-strip, .job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .job-item { display: flex; align-items: center; gap: 6px; }
   .job-row { flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 12px 15px; cursor: pointer; font: inherit; color: var(--ink); box-shadow: var(--shadow-sm); transition: border-color .14s, box-shadow .14s, transform .14s; min-width: 0; }
@@ -4554,7 +4625,6 @@
   .job-chip svg { width: 13px; height: 13px; }
   .job-chip.done { color: #0d9488; background: #e7f6f3; }
   .job-chip.pending { color: #b45309; background: #fef3c7; }
-  .home-open { display: inline-block; margin-top: 30px; }
   .big-hint { font-size: 14px; line-height: 1.6; max-width: 520px; }
 
   /* ---- standalone source picker ---- */
@@ -4627,12 +4697,7 @@
   .workspace-tabs { display:flex; flex-wrap:wrap; gap:6px; padding:14px 28px; border-bottom:1px solid var(--line); }
   .workspace-tabs button { font:inherit; font-size:14px; color:var(--muted); background:transparent; border:0; border-radius:7px; padding:8px 11px; cursor:pointer; } .workspace-tabs button[aria-pressed=true] { background:var(--accent-soft); color:var(--accent); }
   .panel-control { padding:10px 28px; border-bottom:1px solid var(--line); }
-  .home-intro { margin:12px 0 0; color:var(--muted); font-size:16px; }
-  .entrypoints { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); border-block:1px solid var(--line-2); margin:30px 0 20px; }
-  .entrypoints button { font:inherit; color:var(--ink); background:none; border:0; text-align:left; padding:24px 22px; cursor:pointer; display:flex; flex-direction:column; }
-  .entrypoints button:first-child { padding-left:0; } .entrypoints button + button { border-left:1px solid var(--line-2); } .entrypoints button:hover { background:var(--nav-bg); }
-  .entrypoints h3 { font:28px/1.2 'Instrument Serif',serif; margin:0 0 12px; } .entrypoints p { font-size:14px; line-height:1.7; color:var(--muted); margin:0 0 18px; } .entrypoints span { font-size:13px; color:var(--accent); margin-top:auto; }
-  .home-tools { display:flex; flex-wrap:wrap; gap:22px; margin-bottom:32px; } .meeting-heading { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:24px; } .meeting-heading .big-title { margin:0 auto 0 0; }
+  .meeting-heading { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:24px; } .meeting-heading .big-title { margin:0 auto 0 0; }
   .job-strip .job-row { width:100%; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:18px 0; }
   .job-strip .job-badge { color:var(--accent); background:var(--accent-soft); text-transform:none; font-size:12px; letter-spacing:0; }
   @media(max-width:550px) { .job-strip .job-row { flex-wrap:wrap; gap:8px; } .job-strip .job-title { white-space:normal; overflow-wrap:anywhere; } .job-strip .job-date { flex-basis:100%; } }
@@ -4641,7 +4706,7 @@
   .layout { min-height:440px; } .summary-edit { font-size:16px; } .ts { font-size:12px; }
   :global(button:focus-visible),:global(input:focus-visible),:global(textarea:focus-visible),:global(select:focus-visible),:global(summary:focus-visible) { outline:3px solid var(--accent); outline-offset:3px; }
   @media(max-width:1050px) { .app { height:auto; min-height:100dvh; grid-template-columns:1fr; } .app-content { overflow:visible; } .layout { overflow:visible; } .review { overflow:visible; } }
-  @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .entrypoints { grid-template-columns:1fr; } .entrypoints button,.entrypoints button:first-child { padding:20px 0; } .entrypoints button + button { border-left:0; border-top:1px solid var(--line); } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }
+  @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }
   @media(prefers-reduced-motion:reduce) { :global(*),:global(*::before),:global(*::after) { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
 
   .dictation-container { min-width:0; overflow:auto; }

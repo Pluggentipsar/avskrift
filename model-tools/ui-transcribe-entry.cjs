@@ -40,7 +40,7 @@ const mocks = fs.readFileSync('node_modules/@tauri-apps/api/mocks.js', 'utf8').r
       assert.equal(items[items.indexOf('Möten') + 1], 'Transkribera');
     });
     await step('home card opens a fresh transcription view, marked Transkribera', async () => {
-      await page.locator('.entrypoints').getByRole('button', { name: /Transkribera/ }).click();
+      await page.locator('.h-tiles').getByRole('button', { name: /Transkribera/ }).click();
       await page.getByRole('button', { name: 'Välj ljudfil…' }).waitFor();
       assert.equal(await current(), 'Transkribera');
       assert.equal(await page.locator('.workspace-location').innerText(), 'Transkribera');
