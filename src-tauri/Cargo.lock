@@ -240,6 +240,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "avskrift-pianissimo",
+ "avskrift-textklipp",
  "avskrift-wordalign",
  "base64 0.22.1",
  "docx-rs",
@@ -279,6 +280,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "avskrift-textklipp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

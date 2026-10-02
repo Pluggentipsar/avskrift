@@ -27,6 +27,7 @@ mod text_budget;
 mod storage;
 mod work;
 mod transcribe;
+mod textklipp;
 mod transcript;
 mod wordalign;
 
@@ -241,6 +242,87 @@ async fn download_wordalign_model(app: AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---- Textklipp: video projects ----
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextklippProbe {
+    media: avskrift_textklipp::MediaInfo,
+    /// Extra disk the project needs next to the original (audio + proxy).
+    working_bytes: u64,
+}
+
+#[tauri::command]
+async fn textklipp_probe(app: AppHandle, path: String) -> Result<TextklippProbe, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let media = textklipp::probe(&app.state::<Backend>().paths.ffmpeg_tools(), Path::new(&path))?;
+        Ok::<_, anyhow::Error>(TextklippProbe { working_bytes: media.working_bytes(), media })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+fn emit_percent(app: &AppHandle) -> textklipp::Pct {
+    let app = app.clone();
+    std::sync::Arc::new(move |p: i32| {
+        let _ = app.emit("avskrift:percent", p);
+    })
+}
+
+#[tauri::command]
+async fn textklipp_import(app: AppHandle, args: textklipp::ImportArgs, work_id: Option<String>) -> Result<textklipp::Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        work::run(work_id, || {
+            let paths = &app.state::<Backend>().paths;
+            textklipp::import(paths, &args, &|m| emit(&app, m), &emit_percent(&app))
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn textklipp_make_proxy(app: AppHandle, id: String, work_id: Option<String>) -> Result<textklipp::Project, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        work::run(work_id, || {
+            let paths = &app.state::<Backend>().paths;
+            let mut p = textklipp::load(&paths.textklipp_dir, &id)?;
+            let pct = emit_percent(&app);
+            textklipp::build_proxy(paths, &mut p, &|m| emit(&app, m), &*pct)?;
+            Ok(p)
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn textklipp_list(backend: State<Backend>) -> Vec<textklipp::ProjectMeta> {
+    textklipp::list(&backend.paths.textklipp_dir)
+}
+
+#[tauri::command]
+fn textklipp_open(backend: State<Backend>, id: String) -> Result<textklipp::Project, String> {
+    textklipp::load(&backend.paths.textklipp_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn textklipp_save_edits(backend: State<Backend>, id: String, edits: avskrift_textklipp::EditList) -> Result<String, String> {
+    let root = &backend.paths.textklipp_dir;
+    let mut p = textklipp::load(root, &id).map_err(|e| e.to_string())?;
+    p.edits = edits;
+    p.updated_at = textklipp::now();
+    textklipp::save(root, &p).map_err(|e| e.to_string())?;
+    Ok(p.updated_at)
+}
+
+#[tauri::command]
+fn textklipp_delete(backend: State<Backend>, id: String) -> Result<(), String> {
+    textklipp::delete(&backend.paths.textklipp_dir, &id).map_err(|e| e.to_string())
 }
 
 // ---- Summarisation models & templates ----
@@ -1681,6 +1763,13 @@ pub fn run() {
             download_whisper_model,
             wordalign_status,
             download_wordalign_model,
+            textklipp_probe,
+            textklipp_import,
+            textklipp_make_proxy,
+            textklipp_list,
+            textklipp_open,
+            textklipp_save_edits,
+            textklipp_delete,
             list_summary_models,
             list_summary_templates,
             download_summary_model,

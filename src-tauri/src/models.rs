@@ -142,9 +142,18 @@ pub struct ModelPaths {
     pub meetings_dir: PathBuf,
     /// Single JSON file holding free-standing åtaganden (cross-project tasks not tied to a job).
     pub tasks_file: PathBuf,
+    /// Textklipp projects, one folder each (app data dir, writable).
+    pub textklipp_dir: PathBuf,
+    /// Bundled LGPL FFmpeg (`ffmpeg/` next to the resources), else the dev tree, else PATH.
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
 }
 
 impl ModelPaths {
+    pub fn ffmpeg_tools(&self) -> crate::textklipp::Tools {
+        crate::textklipp::Tools { ffmpeg: self.ffmpeg.clone(), ffprobe: self.ffprobe.clone() }
+    }
+
     /// Full path to a Whisper model file by id.
     pub fn whisper_file(&self, id: &str) -> PathBuf {
         self.whisper_dir.join(format!("{id}.bin"))
@@ -234,6 +243,13 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     let _ = std::fs::create_dir_all(&summary_dir);
     let _ = std::fs::create_dir_all(&jobs_dir);
     let _ = std::fs::create_dir_all(&meetings_dir);
+    let textklipp_dir = writable("textklipp");
+    let _ = std::fs::create_dir_all(&textklipp_dir);
+    let tool = |exe: &str| -> PathBuf {
+        let candidates =
+            resource_dir.iter().map(|rd| rd.join("ffmpeg").join(exe)).chain([manifest.join("ffmpeg").join(exe)]);
+        candidates.into_iter().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(exe))
+    };
 
     ModelPaths {
         whisper_dir,
@@ -250,5 +266,8 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
         jobs_dir,
         meetings_dir,
         tasks_file,
+        textklipp_dir,
+        ffmpeg: tool("ffmpeg.exe"),
+        ffprobe: tool("ffprobe.exe"),
     }
 }
