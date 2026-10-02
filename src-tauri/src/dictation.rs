@@ -233,7 +233,7 @@ pub fn dictation_snapshot(state: State<Dictation>) -> Snapshot {
 
 #[tauri::command]
 pub fn configure_dictation(app: AppHandle, settings: Settings) -> Result<(), String> {
-    if crate::models::whisper_url(&settings.model).is_none() {
+    if settings.model != avskrift_pianissimo::ID && crate::models::whisper_url(&settings.model).is_none() {
         return Err("Okänd talmodell".into());
     }
     let state = app.state::<Dictation>();
@@ -262,8 +262,8 @@ fn warm_model(app: &AppHandle, model: String) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let backend = app.state::<crate::Backend>();
-        let path = backend.paths.whisper_file(&model);
-        if path.is_file() {
+        let path = backend.paths.speech_file(&model);
+        if backend.paths.speech_ready(&model) {
             // Do not enqueue behind an existing job or compete with its model selection.
             {
                 let mut transcriber = crate::transcribe::Transcriber::new();
@@ -400,7 +400,7 @@ fn request_recording(app: &AppHandle, mode: InputMode) -> Result<Option<Arc<Atom
     }
     let backend = app.state::<crate::Backend>();
     let settings = inner.snapshot.settings.clone();
-    if !backend.paths.whisper_file(&settings.model).is_file() {
+    if !backend.paths.speech_ready(&settings.model) {
         return Err("Hämta den valda talmodellen i Transkribera ljud först.".into());
     }
     if backend.meeting.lock().unwrap().is_some() {
@@ -479,7 +479,7 @@ fn session(
     // Queue above normal jobs once the active native pass releases its allocation.
     let _priority = crate::work::Scope::dictation(cancel.clone());
     let mut transcriber = crate::transcribe::Transcriber::new();
-    let path = backend.paths.whisper_file(&settings.model);
+    let path = backend.paths.speech_file(&settings.model);
     let segments = transcriber
         .transcribe(&settings.model, &path, &samples, "sv", false, false, &|_| {}, |_| {})
         .map_err(|e| e.to_string())?;

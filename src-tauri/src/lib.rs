@@ -18,6 +18,7 @@ mod jobs;
 mod llm;
 mod memory;
 mod models;
+mod pianissimo;
 mod pii;
 mod summarize;
 mod templates;
@@ -135,7 +136,7 @@ async fn runtime_memory_status() -> Result<RuntimeMemoryStatus,String> {
         let Ok(_work)=memory::WORK.try_lock() else {
             return RuntimeMemoryStatus{busy:true,memory:None,text:None,speech:None};
         };
-        RuntimeMemoryStatus{busy:false,memory:Some(memory::sample()),text:llm::cache_status(),speech:transcribe::cache_status()}
+        RuntimeMemoryStatus{busy:false,memory:Some(memory::sample()),text:llm::cache_status(),speech:pianissimo::cache_status().or_else(transcribe::cache_status)}
     }).await.map_err(|e|e.to_string())
 }
 
@@ -148,6 +149,7 @@ fn start_model_maintenance(app:AppHandle) {
             let now=std::time::Instant::now();
             llm::sweep(now,pressure);
             transcribe::sweep(now,pressure);
+            pianissimo::sweep(now,pressure);
             app.state::<Backend>().engine.sweep(now,pressure);
         }
     });
@@ -163,10 +165,21 @@ fn list_whisper_models(backend: State<Backend>) -> Vec<WhisperModelInfo> {
 /// progress events with `{ id, downloaded, total }`.
 #[tauri::command]
 async fn download_whisper_model(app: AppHandle, id: String) -> Result<(), String> {
+    if id == avskrift_pianissimo::ID {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let dir=app.state::<Backend>().paths.pianissimo_dir.clone();
+            pianissimo::install(&dir,&|message| {
+                let _=app.emit("avskrift:model-stage",serde_json::json!({"id":id,"message":message}));
+            },&|downloaded,total| {
+                let _=app.emit("avskrift:download",serde_json::json!({"id":id,"downloaded":downloaded,"total":total}));
+            }).map_err(|e|e.to_string())
+        }).await.map_err(|e|e.to_string())?;
+    }
+
     let (url, dest) = {
         let backend = app.state::<Backend>();
         let url = models::whisper_url(&id).ok_or_else(|| format!("okänd modell: {id}"))?.to_string();
-        (url, backend.paths.whisper_file(&id))
+        (url, backend.paths.speech_file(&id))
     };
 
     let app_for_cb = app.clone();
@@ -382,7 +395,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     progress("Läser ljudfil…");
     let audio = audio::load(Path::new(&args.path))?;
 
-    let model_path = backend.paths.whisper_file(&args.model);
+    let model_path = backend.paths.speech_file(&args.model);
     let app_pct = app.clone();
     let raw = {
         let mut tr = Transcriber::new();
@@ -414,7 +427,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     };
 
     let transcript =
-        Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: args.diarize };
+        Transcript { utterances, language: if args.model == avskrift_pianissimo::ID { "sv".into() } else { args.language.clone() }, model: args.model.clone(), diarized: args.diarize };
     work::commit(|| *backend.transcript.lock().unwrap() = Some(transcript.clone()))?;
     progress("Klar");
     Ok(transcript)
@@ -460,9 +473,9 @@ fn run_start_meeting_idle(app: &AppHandle, args: StartMeetingArgs) -> Result<Sto
     if slot.is_some() {
         return Err("En mötesinspelning pågår redan.".to_string());
     }
-    let model_path = backend.paths.whisper_file(&args.model);
-    if !model_path.exists() {
-        return Err(format!("Whisper-modellen '{}' är inte nedladdad. Hämta den först.", args.model));
+    if args.model == avskrift_pianissimo::ID { pianissimo::validate(&args.language,false).map_err(|e|e.to_string())?; }
+    if !backend.paths.speech_ready(&args.model) {
+        return Err(format!("Talmodellen '{}' är inte nedladdad. Hämta den först.", args.model));
     }
 
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
@@ -511,7 +524,7 @@ fn meeting_worker(
     abort: Arc<AtomicBool>,
 ) -> meeting::LiveResult {
     let backend = app.state::<Backend>();
-    let model_path = backend.paths.whisper_file(&model);
+    let model_path = backend.paths.speech_file(&model);
     let noop = |_: &str| {};
     let mut warned_lag = false;
     let mut result = meeting::LiveResult::default();
@@ -847,7 +860,7 @@ fn transcribe_meeting_wavs(
     echo_cancel: bool,
 ) -> anyhow::Result<(Vec<transcript::Utterance>, Option<String>)> {
     let backend = app.state::<Backend>();
-    let model_path = backend.paths.whisper_file(model);
+    let model_path = backend.paths.speech_file(model);
     let progress = |m: &str| emit(app, m);
 
     let mut mic_samples = meeting::load_channel(mic_wav, "mikrofonspåret")?;
@@ -1520,6 +1533,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // Set before any ORT session, including NER. Encoder partitions share one pool.
+            let pool=ort::environment::GlobalThreadPoolOptions::default()
+                .with_intra_threads(num_cpus::get_physical().clamp(1,8))?
+                .with_inter_threads(1)?.with_spin_control(true)?;
+            if !ort::init().with_global_thread_pool(pool).commit() {
+                return Err("ONNX-miljön har redan skapats".into());
+            }
             let paths = models::resolve(app.handle());
             // PII "Övrigt (AI)" reuses the 1.5B Qwen — the bundled copy if present, otherwise the
             // downloadable summary 1.5B, so the lean installer can enable it via one download.

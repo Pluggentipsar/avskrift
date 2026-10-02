@@ -121,6 +121,7 @@ pub fn summary_urls(id: &str) -> Option<(&'static str, &'static str)> {
 pub struct ModelPaths {
     /// Directory holding `<id>.bin` Whisper models (app data dir, writable).
     pub whisper_dir: PathBuf,
+    pub pianissimo_dir: PathBuf,
     /// pyannote segmentation ONNX (bundled resource).
     pub diar_segmentation: PathBuf,
     /// Speaker-embedding ONNX (bundled resource).
@@ -147,9 +148,17 @@ impl ModelPaths {
         self.whisper_dir.join(format!("{id}.bin"))
     }
 
+    pub fn speech_file(&self, id: &str) -> PathBuf {
+        if id == avskrift_pianissimo::ID { self.pianissimo_dir.clone() } else { self.whisper_file(id) }
+    }
+    pub fn speech_ready(&self, id: &str) -> bool {
+        if id == avskrift_pianissimo::ID { avskrift_pianissimo::prepare::ready(&self.pianissimo_dir) }
+        else { whisper_url(id).is_some() && self.whisper_file(id).is_file() }
+    }
+
     /// The catalogue with live `downloaded` flags.
     pub fn whisper_catalogue(&self) -> Vec<WhisperModelInfo> {
-        WHISPER_MODELS
+        let mut catalogue: Vec<_> = WHISPER_MODELS
             .iter()
             .map(|(id, label, size_mb, _url)| WhisperModelInfo {
                 id: (*id).to_string(),
@@ -157,7 +166,9 @@ impl ModelPaths {
                 size_mb: *size_mb,
                 downloaded: self.whisper_file(id).exists(),
             })
-            .collect()
+            .collect();
+        catalogue.push(WhisperModelInfo { id: avskrift_pianissimo::ID.into(), label: "Pianissimo svenska — CPU (experimentell)".into(), size_mb: 923, downloaded: self.speech_ready(avskrift_pianissimo::ID) });
+        catalogue
     }
 
     /// GGUF + tokenizer paths for a summary model id. The 1.5B id reuses the bundled PII LLM (so
@@ -224,6 +235,7 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
 
     ModelPaths {
         whisper_dir,
+        pianissimo_dir: writable("pianissimo-sv"),
         diar_segmentation: res("diarization/segmentation.onnx"),
         diar_embedding: res("diarization/embedding.onnx"),
         ner_model: res("model/model.onnx"),

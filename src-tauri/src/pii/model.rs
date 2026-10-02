@@ -39,6 +39,7 @@ impl NerModel {
         spin: bool,
     ) -> Result<Self> {
         let mut builder = Session::builder()?
+            .with_independent_thread_pool().map_err(|e| anyhow!("{e}"))?
             .with_intra_op_spinning(spin)
             .map_err(|e| anyhow!("{e}"))?
             .with_inter_op_spinning(spin)

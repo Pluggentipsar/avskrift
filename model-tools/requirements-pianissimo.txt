@@ -1,0 +1,9 @@
+# Development probe only; not dependencies of the desktop application.
+onnx-asr==0.12.0
+onnxruntime==1.30.0
+numpy==2.5.3
+psutil==7.2.2
+# Graph inspection/partitioning only; not needed by the Rust executable.
+onnx==1.23.0
+# Required only when building the Whisper comparison executable on Windows.
+libclang==18.1.1

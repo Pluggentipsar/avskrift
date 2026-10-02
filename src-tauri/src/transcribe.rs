@@ -47,6 +47,7 @@ impl Transcriber {
     fn ensure(cache: &mut Cache<LoadedSpeech>, path: &Path, allow_gpu: bool) -> Result<()> {
         if cache.value.as_ref().is_none_or(|m| m.path != path || m.allow_gpu != allow_gpu) {
             cache.clear();
+            crate::pianissimo::release_cached();
             cache.value = Some(LoadedSpeech::load(path, allow_gpu, false)?);
         }
         Ok(())
@@ -64,6 +65,7 @@ impl Transcriber {
     }
 
     pub fn try_prepare(&mut self, path: &Path) -> Result<bool> {
+        if path.is_dir() { return crate::pianissimo::try_prepare(path); }
         let Ok(_work) = memory::WORK.try_lock() else { return Ok(false); };
         let path = std::fs::canonicalize(path)?;
         let mut cache = SPEECH.lock().map_err(|_| anyhow!("Talmodellens cache behöver startas om."))?;
@@ -99,6 +101,10 @@ impl Transcriber {
         progress: &dyn Fn(&str),
         pct: impl Fn(i32) + Send + Sync + 'static,
     ) -> Result<Vec<RawSegment>> {
+        if id == avskrift_pianissimo::ID {
+            crate::pianissimo::validate(language, translate)?;
+            return crate::pianissimo::transcribe(path, samples, progress, pct);
+        }
         let path = std::fs::canonicalize(path).with_context(|| {
             format!("Whisper-modellen '{id}' är inte tillgänglig. Hämta den under Modeller på datorn.")
         })?;
@@ -386,6 +392,7 @@ struct LoadedSpeech {
 }
 static SPEECH: Lazy<Mutex<Cache<LoadedSpeech>>> = Lazy::new(|| Mutex::new(Cache::new()));
 pub(crate) fn release_cached() {
+    crate::pianissimo::release_cached();
     if let Ok(mut c) = SPEECH.try_lock() {
         c.clear();
     }

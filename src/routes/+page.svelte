@@ -305,6 +305,9 @@
   let progressMsg = $state("");
   let downloading = $state<string | null>(null);
   let downloadPct = $state(0);
+  let modelStage = $state('');
+  const isPianissimo = $derived(selectedModel === 'pianissimo-sv');
+  $effect(() => { if (isPianissimo) { language = 'sv'; translate = false; wordTimestamps = false; } });
   let error = $state("");
   let toast = $state("");
   let appVersion = $state(""); // shown in the header so it's clear which version is running
@@ -349,9 +352,10 @@
   $effect(() => {
     const p = listen<string>("avskrift:progress", (e) => (progressMsg = e.payload));
     const d = listen<{ id: string; downloaded: number; total: number }>("avskrift:download", (e) => {
-      downloading = e.payload.id;
+      if (downloading !== e.payload.id) return;
       downloadPct = e.payload.total > 0 ? Math.round((e.payload.downloaded / e.payload.total) * 100) : 0;
     });
+    const ms = listen<{id:string;message:string}>("avskrift:model-stage", e => { if (e.payload.id === downloading) modelStage=e.payload.message; });
     const pc = listen<number>("avskrift:percent", (e) => (transcribePct = e.payload));
     const mu = listen<{ source: string; start: number; end: number; text: string }>(
       "avskrift:meeting-utterance",
@@ -376,6 +380,7 @@
     return () => {
       p.then((f) => f());
       d.then((f) => f());
+      ms.then((f) => f());
       pc.then((f) => f());
       mu.then((f) => f());
       mw.then((f)=>f());
@@ -427,10 +432,11 @@
     error = "";
     downloading = id;
     downloadPct = 0;
+    modelStage = '';
     try {
       await invoke("download_whisper_model", { id });
       await refreshModels();
-      showToast("Modellen hämtades");
+      showToast("Modellen är klar att använda");
     } catch (e) {
       error = String(e);
     } finally {
@@ -450,10 +456,11 @@
     error = "";
     downloading = id;
     downloadPct = 0;
+    modelStage = '';
     try {
       await invoke("download_summary_model", { id });
       await refreshSummaryModels();
-      showToast("Modellen hämtades");
+      showToast("Modellen är klar att använda");
     } catch (e) {
       error = String(e);
     } finally {
@@ -2942,7 +2949,7 @@
   {/snippet}
   {#if modelsOpen}
     <ModelSettings {models} textModels={summaryModels} bind:speech={selectedModel} bind:text={selectedSummaryModel} dictationModel={dictation?.settings.model}
-      locked={busy || recording || recSaving || meetingActive || meetingBusy || bgMeetings.length>0 || qaBusy || actionsBusy || !!dictation && dictation.phase!=='idle'} {downloading} percent={downloadPct} {error}
+      locked={busy || recording || recSaving || meetingActive || meetingBusy || bgMeetings.length>0 || qaBusy || actionsBusy || !!dictation && dictation.phase!=='idle'} {downloading} percent={downloadPct} stage={modelStage} {error}
       ondownload={(kind,id)=>kind==='speech'?downloadModel(id):downloadSummaryModel(id)} ondictation={setDictationModel} onchange={()=>{if(currentJobId)saveWorkspace();}} onclose={()=>modelsOpen=false} />
   {/if}
 
@@ -3441,9 +3448,10 @@
             <span><strong>Använd hörlurar</strong> för att hålla <em>Jag</em> och <em>Mötet</em> åtskilda. Utan hörlurar fångar mikrofonen även mötesljudet från högtalarna, så den andra personen kan dyka upp under ”Jag”.</span>
           </div>
           <div class="m-fields">
-            <div class="m-field">{@render modelReference('speech')}</div>
+            <div class="m-field">{@render modelReference('speech')}
+          {#if isPianissimo}<p class="hint">Pianissimo (experimentell): svenska, CPU och ungefärliga segmenttider. Saknar översättning och ordtider. Kontrollera särskilt talarbyten och text mellan ljudavsnitt i längre inspelningar.</p>{/if}</div>
             <label class="m-field"><span>Språk</span>
-              <select class="profile" bind:value={language}>
+              <select class="profile" bind:value={language} disabled={isPianissimo}>
                 {#each LANGUAGES as l (l.code)}<option value={l.code}>{l.label}</option>{/each}
               </select>
             </label>
@@ -3554,12 +3562,13 @@
         <section>
           <h2>Modell</h2>
           {@render modelReference('speech')}
+          {#if isPianissimo}<p class="hint">Pianissimo (experimentell): svenska, CPU och ungefärliga segmenttider. Saknar översättning och ordtider. Kontrollera särskilt talarbyten och text mellan ljudavsnitt i längre inspelningar.</p>{/if}
 
         </section>
 
         <section>
           <h2>Språk</h2>
-          <select class="profile" bind:value={language}>
+          <select class="profile" bind:value={language} disabled={isPianissimo}>
             {#each LANGUAGES as l (l.code)}<option value={l.code}>{l.label}</option>{/each}
           </select>
         </section>
@@ -3582,11 +3591,11 @@
             {/if}
           {/if}
           <label class="ai-toggle">
-            <input type="checkbox" bind:checked={wordTimestamps} />
+            <input type="checkbox" bind:checked={wordTimestamps} disabled={isPianissimo} />
             <span>Ordnivå-tidsstämplar<em>tid per ord — för exakta undertexter (.vtt)</em></span>
           </label>
           <label class="ai-toggle">
-            <input type="checkbox" bind:checked={translate} />
+            <input type="checkbox" bind:checked={translate} disabled={isPianissimo} />
             <span>Översätt till engelska<em>transkriberar och översätter i samma steg</em></span>
           </label>
         </section>
@@ -3700,10 +3709,11 @@
           <section class="anon-block">
             <h2>Transkribera om</h2>
             {@render modelReference('speech')}
+          {#if isPianissimo}<p class="hint">Pianissimo (experimentell): svenska, CPU och ungefärliga segmenttider. Saknar översättning och ordtider. Kontrollera särskilt talarbyten och text mellan ljudavsnitt i längre inspelningar.</p>{/if}
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeDiarize} /><span>Separera mötesröster automatiskt efteråt</span></label>
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeEchoCancel} /><span>Ta bort eko ur min mik<em>tar bort mötesljudet som läckt in i mikrofonen (om du kört på högtalare)</em></span></label>
             <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy || !selectedDownloaded}>Kör om med vald modell</button>
-            <p class="hint">Kör Whisper igen på hela inspelningen — oftast bättre än live, särskilt med en större modell. Talaruppdelningen återställs (kör ”Separera mötesröster” igen efteråt).</p>
+            <p class="hint">Transkribera hela inspelningen igen — oftast bättre än live, särskilt med en större modell. Talaruppdelningen återställs (kör ”Separera mötesröster” igen efteråt).</p>
           </section>
         {/if}
         {#if meetingSysWav}

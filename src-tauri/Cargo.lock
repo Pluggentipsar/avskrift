@@ -239,6 +239,7 @@ version = "0.7.0-beta.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
+ "avskrift-pianissimo",
  "base64 0.22.1",
  "docx-rs",
  "hound",
@@ -264,6 +265,19 @@ dependencies = [
  "wasapi",
  "whisper-rs",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "avskrift-pianissimo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ort",
+ "regex",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -39,7 +39,11 @@ __pycache__/
 Thumbs.db
 *.log
 /.build-tools/
+/model-tools/whisper-probe/target/
+/model-tools/pianissimo-rust-probe/target/
 /dist/
 
 # Diagnostic screenshots from failed local UI test runs
 /docs/**/failure.png
+
+/crates/pianissimo/target/

@@ -43,6 +43,65 @@ impl Drop for Permit<'_> {
 }
 pub fn enter() -> Result<Permit<'static>> { WORK.enter() }
 
+/// Admission for pageable CPU-only ONNX allocations. Windows commit headroom
+/// already includes available backing from RAM/pagefile; never add RAM to it.
+/// Keep the existing GPU/LLM policies separate from this opt-in CPU policy.
+pub(crate) struct PageableCpuBudget {
+    pub ram_free: Option<u64>,
+    pub commit_free: Option<u64>,
+}
+impl PageableCpuBudget {
+    pub fn fits(&self, bytes: u64) -> bool {
+        let required = bytes.saturating_add(512 * MIB);
+        match self.commit_free {
+            Some(commit) => commit >= required && self.ram_free.is_none_or(|ram| ram >= 256 * MIB),
+            None => self.ram_free.is_none_or(|ram| ram >= required),
+        }
+    }
+    pub fn may_page(&self, bytes: u64) -> bool {
+        self.commit_free.is_some() && self.ram_free.is_some_and(|ram| ram < bytes.saturating_add(512 * MIB))
+    }
+}
+pub(crate) fn pageable_cpu_budget() -> PageableCpuBudget {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+        if unsafe { GlobalMemoryStatusEx(&mut status) }.is_ok() {
+            return PageableCpuBudget { ram_free: Some(status.ullAvailPhys), commit_free: Some(status.ullAvailPageFile) };
+        }
+    }
+    PageableCpuBudget { ram_free: sample().ram_free, commit_free: None }
+}
+
+#[cfg(test)]
+mod pageable_cpu_tests {
+    use super::*;
+    #[test]
+    fn permits_low_ram_with_commit_backing_but_preserves_reserves() {
+        let mut budget = PageableCpuBudget { ram_free: Some(900 * MIB), commit_free: Some(8 * 1024 * MIB) };
+        assert!(budget.fits(4 * 1024 * MIB));
+        assert!(budget.may_page(4 * 1024 * MIB));
+        budget.commit_free = Some(4 * 1024 * MIB);
+        assert!(!budget.fits(4 * 1024 * MIB));
+        budget.commit_free = Some(8 * 1024 * MIB);
+        budget.ram_free = Some(128 * MIB);
+        assert!(!budget.fits(4 * 1024 * MIB));
+    }
+    #[test]
+    fn unknown_commit_uses_ram_and_never_double_counts_memory() {
+        let mut budget = PageableCpuBudget { ram_free: Some(3 * 1024 * MIB), commit_free: None };
+        assert!(!budget.fits(4 * 1024 * MIB));
+        budget.commit_free = Some(3 * 1024 * MIB);
+        assert!(!budget.fits(4 * 1024 * MIB));
+        assert!(!budget.fits(u64::MAX));
+        budget.ram_free = Some(6 * 1024 * MIB);
+        budget.commit_free = None;
+        assert!(budget.fits(4 * 1024 * MIB));
+        assert!(!budget.may_page(4 * 1024 * MIB));
+    }
+}
+
 #[cfg(test)]
 mod queue_tests {
     use super::*;
