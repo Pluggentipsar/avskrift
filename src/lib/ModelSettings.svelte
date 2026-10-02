@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   type Model = { id:string;label:string;sizeMb:number;downloaded:boolean };
   let { models, textModels, speech = $bindable(), text = $bindable(), dictationModel, locked, downloading, percent, stage, error,
     ondownload, ondictation, onchange, onclose }: {
@@ -24,6 +25,21 @@
     return ()=>{alive=false;clearInterval(timer);};
   });
   async function changeDictation(id:string){pending=true;localError='';try{await ondictation(id);}catch(e){localError=String(e);}finally{pending=false;}}
+  // Exact word times (Textklipp): own status and download, independent of the speech/text model flow.
+  type AlignStatus={ready:boolean;available:boolean;sizeMb:number};
+  let align=$state<AlignStatus|null>(null), alignBusy=$state(false), alignPercent=$state(0), alignStage=$state(''), alignError=$state('');
+  onMount(()=>{
+    let alive=true;const stops:(()=>void)[]=[];
+    invoke<AlignStatus>('wordalign_status').then(s=>{if(alive)align=s;}).catch(()=>{});
+    listen<{id:string;downloaded:number;total:number}>('avskrift:download',e=>{if(e.payload.id==='wordalign'&&e.payload.total>0)alignPercent=Math.round(e.payload.downloaded/e.payload.total*100);}).then(u=>alive?stops.push(u):u());
+    listen<{id:string;message:string}>('avskrift:model-stage',e=>{if(e.payload.id==='wordalign')alignStage=e.payload.message;}).then(u=>alive?stops.push(u):u());
+    return ()=>{alive=false;stops.forEach(u=>u());};
+  });
+  async function downloadAlign(){
+    alignBusy=true;alignError='';alignStage='';alignPercent=0;
+    try{await invoke('download_wordalign_model');align=await invoke<AlignStatus>('wordalign_status');}
+    catch(e){alignError=String(e);}finally{alignBusy=false;}
+  }
 </script>
 <dialog bind:this={dialog} aria-labelledby="models-title" onclose={onclose} oncancel={e=>{if(pending)e.preventDefault();}}>
   <header><div><h2 id="models-title">Modeller på datorn</h2><p>Välj och hämta modeller för ditt arbete.</p></div><button aria-label="Stäng modellinställningar" onclick={()=>dialog.close()} disabled={pending}>×</button></header>
@@ -54,6 +70,17 @@
     <label for="text-model">Textmodell</label><select id="text-model" bind:value={text} onchange={()=>queueMicrotask(onchange)} disabled={locked||pending}>
       {#if !textModels.some(m=>m.id===text)}<option value={text}>{text} – inte tillgänglig</option>{/if}
       {#each textModels as m}<option value={m.id}>{m.label}</option>{/each}</select>{@render selector('text',text,textModels)}
+  </div></section>
+  <section><div><h3>Exakta ordtider</h3><p>Används när ordtider är påslagna vid transkribering av ljudfiler. Varje ord får sin tid från ljudet i stället för talmodellens uppskattning – grunden för textklippning av video. Svenska. Körs på grafikkortet när det går, annars på CPU.</p></div><div>
+    <div class="model-status">
+      {#if !align}<span>Läser status…</span>
+      {:else if alignBusy}<span role="status">{alignStage || `Hämtar ${alignPercent}%`}</span><progress value={alignPercent} max="100" aria-label="Hämtning av modell för exakta ordtider"></progress>
+      {:else if align.ready}<span class="ready">Finns på datorn</span><button onclick={downloadAlign} disabled={locked||pending}>Kontrollera modell</button>
+      {:else if !align.available}<span>Inte tillgänglig i den här versionen ännu</span>
+      {:else}<span>Behöver hämtas · {align.sizeMb} MB</span><button onclick={downloadAlign} disabled={locked||pending||!!downloading}>Hämta modell</button>{/if}
+    </div>
+    {#if alignError}<p role="alert" class="error">{alignError}</p>{/if}
+    <p>Modell: <a href="https://huggingface.co/KBLab/wav2vec2-large-voxrex-swedish" target="_blank" rel="noreferrer">KBLab VoxRex</a>, <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0</a>. Avskrift använder en ONNX-export i halv precision.</p>
   </div></section>
   <details class="memory"><summary>Minne och bearbetning</summary>
     <p>AVskrift anpassar modellernas GPU-användning efter tillgängligt minne. Inaktiva modeller frigörs efter ungefär två minuter och laddas igen när de behövs. Dina texter och modellfiler finns kvar.</p>

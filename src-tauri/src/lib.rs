@@ -28,6 +28,7 @@ mod storage;
 mod work;
 mod transcribe;
 mod transcript;
+mod wordalign;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,7 @@ fn start_model_maintenance(app:AppHandle) {
             llm::sweep(now,pressure);
             transcribe::sweep(now,pressure);
             pianissimo::sweep(now,pressure);
+            wordalign::sweep(now,pressure);
             app.state::<Backend>().engine.sweep(now,pressure);
         }
     });
@@ -195,6 +197,50 @@ async fn download_whisper_model(app: AppHandle, id: String) -> Result<(), String
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+// ---- Exact word times (Textklipp) ----
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WordAlignStatus {
+    /// Model files are installed.
+    ready: bool,
+    /// A download source is configured in this build.
+    available: bool,
+    size_mb: u32,
+}
+
+#[tauri::command]
+fn wordalign_status(backend: State<Backend>) -> WordAlignStatus {
+    WordAlignStatus {
+        ready: wordalign::ready(&backend.paths.wordalign_dir),
+        available: wordalign::SOURCE.is_some(),
+        size_mb: avskrift_wordalign::SIZE_MB,
+    }
+}
+
+/// Download and verify the word-alignment model, emitting `avskrift:download` with id "wordalign".
+#[tauri::command]
+async fn download_wordalign_model(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = app.state::<Backend>().paths.wordalign_dir.clone();
+        wordalign::install(
+            &dir,
+            &|message| {
+                let _ = app.emit("avskrift:model-stage", serde_json::json!({"id": "wordalign", "message": message}));
+            },
+            &|downloaded, total| {
+                let _ = app.emit(
+                    "avskrift:download",
+                    serde_json::json!({"id": "wordalign", "downloaded": downloaded, "total": total}),
+                );
+            },
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- Summarisation models & templates ----
@@ -413,7 +459,7 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
         )?
     };
 
-    let utterances = if args.diarize {
+    let mut utterances = if args.diarize {
         let turns = diarize::diarize(
             &backend.paths.diar_segmentation,
             &backend.paths.diar_embedding,
@@ -425,6 +471,33 @@ fn run_transcription(app: &AppHandle, args: TranscribeArgs) -> anyhow::Result<Tr
     } else {
         align::without_speakers(raw)
     };
+
+    // Exact word times (Textklipp) when the Swedish alignment model is installed. Whisper's word
+    // times are kept if alignment fails; only a cancel stops the transcription.
+    let wordalign_dir = &backend.paths.wordalign_dir;
+    if args.word_timestamps
+        && !args.translate
+        && matches!(args.language.as_str(), "sv" | "auto")
+        && utterances.iter().any(|u| !u.words.is_empty())
+        && wordalign::ready(wordalign_dir)
+    {
+        let app_pct = app.clone();
+        let pct = move |p: i32| {
+            let _ = app_pct.emit("avskrift:percent", p);
+        };
+        match wordalign::refine(wordalign_dir, &audio.samples, &mut utterances, &progress, pct) {
+            Ok(r) => eprintln!(
+                "AVskrift ordjustering: {}, {} ljudblock, {} pauser",
+                r.device,
+                r.sounds.len(),
+                r.pauses.len()
+            ),
+            Err(e) => {
+                work::check()?;
+                progress(&format!("Exakta ordtider kunde inte beräknas ({e}). Whispers ordtider används."));
+            }
+        }
+    }
 
     let transcript =
         Transcript { utterances, language: if args.model == avskrift_pianissimo::ID { "sv".into() } else { args.language.clone() }, model: args.model.clone(), diarized: args.diarize };
@@ -1606,6 +1679,8 @@ pub fn run() {
             runtime_memory_status,
             list_whisper_models,
             download_whisper_model,
+            wordalign_status,
+            download_wordalign_model,
             list_summary_models,
             list_summary_templates,
             download_summary_model,

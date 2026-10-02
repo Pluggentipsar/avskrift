@@ -122,6 +122,8 @@ pub struct ModelPaths {
     /// Directory holding `<id>.bin` Whisper models (app data dir, writable).
     pub whisper_dir: PathBuf,
     pub pianissimo_dir: PathBuf,
+    /// Swedish wav2vec2 model for exact word times (Textklipp), downloaded on demand.
+    pub wordalign_dir: PathBuf,
     /// pyannote segmentation ONNX (bundled resource).
     pub diar_segmentation: PathBuf,
     /// Speaker-embedding ONNX (bundled resource).
@@ -236,6 +238,7 @@ pub fn resolve(app: &AppHandle) -> ModelPaths {
     ModelPaths {
         whisper_dir,
         pianissimo_dir: writable("pianissimo-sv"),
+        wordalign_dir: writable("wordalign-sv"),
         diar_segmentation: res("diarization/segmentation.onnx"),
         diar_embedding: res("diarization/embedding.onnx"),
         ner_model: res("model/model.onnx"),

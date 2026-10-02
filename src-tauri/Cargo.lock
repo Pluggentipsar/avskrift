@@ -240,6 +240,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "avskrift-pianissimo",
+ "avskrift-wordalign",
  "base64 0.22.1",
  "docx-rs",
  "hound",
@@ -275,6 +276,17 @@ dependencies = [
  "ort",
  "regex",
  "rustfft",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "avskrift-wordalign"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ort",
  "serde",
  "serde_json",
  "sha2",

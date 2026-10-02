@@ -430,6 +430,7 @@ struct LoadedSpeech {
 static SPEECH: Lazy<Mutex<Cache<LoadedSpeech>>> = Lazy::new(|| Mutex::new(Cache::new()));
 pub(crate) fn release_cached() {
     crate::pianissimo::release_cached();
+    crate::wordalign::release_cached();
     if let Ok(mut c) = SPEECH.try_lock() {
         c.clear();
     }

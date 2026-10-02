@@ -49,13 +49,30 @@ Egen inspelning, 1 945,8 s (32,4 min), 1080p50:
 - Mellanrum ≥ 150 ms mellan justerade ord: 953; 65 % innehåller minst 30 ms tystnad.
   Övriga klipps vid lägsta ljudnivå (se planen).
 
+- **Ljudblock** (`sounds.rs`): bokstäver som CTC-modellen hör utanför alla justerade ord.
+  Korta filmen 10 block, 32-minutersfilmen 55 block (7,8 s). Det är främst **ord som
+  KB-Whisper rensat bort**: "och" (12), "liksom", "faktiskt", "och så där", "amen".
+  Inga "eh/öh" hittades – VoxRex skriver inte ut dem heller. Ljudnivå ensam dög inte:
+  ljud ligger kvar i median 276 ms (p90 1 s) efter justerat ordslut.
+- **Pauser och klippunkter** (`cuts.rs`): nivå i dB per ms, pauser ≥ 150 ms under
+  brusgolv + 12 dB mellan ord/ljudblock, klippunkt på tystaste bildrutegräns.
+  32-minutersfilmen: 541 pauser (68 över 1 s, totalt 283 s). 0,16 s beräkning.
+- **I appen** (`src-tauri/src/wordalign.rs`): körs efter transkribering av ljudfil när
+  *Ordtider* är påslaget, språket är svenska/automatiskt och modellen finns. Whisper-ordens
+  tider ersätts, yttranden stramas åt till sina ord. Fel → Whispers tider behålls med
+  meddelande; avbrytning stoppar. DirectML först, CPU som reserv med minneskontroll.
+  Modellen frigörs som övriga modeller (`sweep`, `release_cached`). Mötesflödet orört.
+  Modellinställningar: avsnittet *Exakta ordtider* med hämtning och kontroll (SHA-256).
+- **Apptest** (ignorerat, opt-in) på 28 s riktigt ljud med medvetet dåliga
+  uppskattningar (ord jämnt utspridda): DirectML, alla 48 ord identiska med referensen.
+  Ordinarie svit: 110 passerade.
+
 ## Återstår i fas 1
 
-1. Pausdetektering och klippunkter (tystaste bildrutegräns) i `crates/wordalign`.
-2. `[ljud]`-block för tal utan ord (bortrensade eh/öh, otranskriberat).
-3. Integrering i appen: modellhämtning (fp16, SHA-256) i modellinställningarna,
-   justering efter transkribering, minnesregler i `memory.rs`, avbrytning via `work.rs`.
-4. Manuell kontroll: 100 markerade ordgränser i tre inspelningar (mål median ≤ 30 ms).
+1. **Var modellen publiceras.** `wordalign::SOURCE` är `None`; modellinställningarna visar
+   "Inte tillgänglig i den här versionen ännu" tills en källa är vald.
+2. Manuell kontroll: 100 markerade ordgränser i tre inspelningar (mål median ≤ 30 ms).
+3. Spara ljudblock och pauser med transkriptet när Textklipp-projektet finns (fas 2).
 
 ```powershell
 python model-tools/export-voxrex.py VOXREX_DIR OUT_DIR
