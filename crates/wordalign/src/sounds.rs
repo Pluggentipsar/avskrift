@@ -42,10 +42,16 @@ pub fn unclaimed(em: &Emissions, vocab: &Vocab, words: &[AlignedWord]) -> Vec<So
         let mut prev = None;
         for &(id, _) in &letters {
             if prev != Some(id) {
-                heard.extend(vocab.char_of(id));
+                if Some(id) == vocab.delimiter {
+                    heard.push(' ');
+                } else {
+                    heard.extend(vocab.char_of(id));
+                }
             }
             prev = Some(id);
         }
+        let heard = heard.split_whitespace().collect::<Vec<_>>().join(" ");
+        let letters: Vec<_> = letters.into_iter().filter(|l| Some(l.0) != vocab.delimiter).collect();
         // A single stray letter frame is noise, not a filler.
         if letters.len() >= 2 && !heard.is_empty() {
             let score = letters.iter().map(|l| l.1).sum::<f32>() / letters.len() as f32;
@@ -55,6 +61,13 @@ pub fn unclaimed(em: &Emissions, vocab: &Vocab, words: &[AlignedWord]) -> Vec<So
     };
     for t in 0..frames {
         let (id, p) = best(t);
+        // Word delimiters inside a block are kept as spaces ("OCH SÅ DÄR"), never start one.
+        if Some(id) == vocab.delimiter && !claimed[t] {
+            if let Some(b) = current.as_mut().filter(|b| t - b.1 <= JOIN_FRAMES) {
+                b.2.push((id, p));
+            }
+            continue;
+        }
         let letter = id != vocab.blank && vocab.char_of(id).is_some();
         if claimed[t] {
             if let Some(b) = current.take() {
@@ -105,5 +118,19 @@ mod tests {
         let got = unclaimed(&em, &vocab, &words);
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].start, got[0].end, got[0].heard.as_str()), (0.6, 0.66, "EH"));
+    }
+
+    #[test]
+    fn word_delimiters_become_spaces() {
+        let vocab = Vocab::from_json(r#"{"<pad>":0,"E":1,"H":2,"|":3}"#).unwrap();
+        // "E | H" inside one block, plus a delimiter after it that must not leave a trailing space.
+        let ids = [0u32, 1, 1, 3, 2, 2, 3, 0, 0];
+        let lp = ids
+            .iter()
+            .flat_map(|&id| (0..4u32).map(move |v| if v == id { 0.9f32.ln() } else { 0.03f32.ln() }))
+            .collect();
+        let got = unclaimed(&Emissions { lp, vocab: 4 }, &vocab, &[]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].heard, "E H");
     }
 }

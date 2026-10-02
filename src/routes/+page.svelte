@@ -6,6 +6,7 @@
   import TranscriptView from '$lib/TranscriptView.svelte';
   import ModelSettings from '$lib/ModelSettings.svelte';
   import Dictation from "$lib/Dictation.svelte";
+  import Textklipp from "$lib/textklipp/Textklipp.svelte";
   import AppNavigation from "$lib/AppNavigation.svelte";
   import VersionsDialog from "$lib/VersionsDialog.svelte";
   import GroundedDraft from '$lib/GroundedDraft.svelte';
@@ -1344,7 +1345,7 @@
   // ============================================================================
   // Task-oriented screens, standalone de-identify/summarize, and jobs history
   // ============================================================================
-  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history" | "tasks" | "dictation";
+  type Screen = "home" | "transcribe" | "meeting" | "deidentify" | "summarize" | "history" | "tasks" | "dictation" | "textklipp";
   let dictation = $state<DictationSnapshot | null>(null);
   function updateDictation(next: DictationSnapshot) {
     if (!dictation || next.revision >= dictation.revision) dictation = next;
@@ -2848,15 +2849,15 @@
     onmodels={openModels} onnavigate={(page) => go(page as Screen)} onnew={() => void newProject()} />
   <div class="app-content">
   <header class="workspace-header">
-    <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : "Möten och transkribering"}</span>
-      {#if currentJobTitle && !["home", "history", "tasks", "dictation"].includes(screen)}<strong>{currentJobTitle}</strong><button class="link" onclick={()=>editTitle()}>Byt namn</button>{/if}
+    <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : screen === "textklipp" ? "Textklipp" : "Möten och transkribering"}</span>
+      {#if currentJobTitle && !["home", "history", "tasks", "dictation", "textklipp"].includes(screen)}<strong>{currentJobTitle}</strong><button class="link" onclick={()=>editTitle()}>Byt namn</button>{/if}
     </div>
     <div class="spacer"></div>
     {#if bgMeetings.length}<div class="working" role="status"><span class="working-dot"></span>{bgMeetings.length} {bgMeetings.length === 1 ? "möte bearbetas" : "möten bearbetas"}</div>{/if}
     {#if saveState !== "idle"}<div class="save-status" class:failed={saveState === "error"} role="status">{saveState === "saving" ? "Sparar på datorn…" : saveState === "pending" ? "Ändringar väntar på att sparas" : saveState === "error" ? "Kunde inte spara" : "Sparat på datorn"}{#if saveState === "saved" && savedAt}<span>{new Date(savedAt).toLocaleTimeString("sv-SE", {hour:"2-digit", minute:"2-digit"})}</span>{/if}</div>{/if}
-    {#if currentJobId && !["home","history","tasks","dictation"].includes(screen)}<button class="btn" onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>{/if}
-    {#if currentJobId && !["home","history","tasks","dictation"].includes(screen)}{@const meta=allJobs.find(j=>j.id===currentJobId)}{#if meta}{@render workMenu(meta)}{/if}{/if}
-    {#if hasActiveJob && !["home","history","tasks","dictation"].includes(screen)}
+    {#if currentJobId && !["home","history","tasks","dictation","textklipp"].includes(screen)}<button class="btn" onclick={openVersions} disabled={busy || qaBusy || actionsBusy || meetingActive || meetingBusy}>Original och versioner</button>{/if}
+    {#if currentJobId && !["home","history","tasks","dictation","textklipp"].includes(screen)}{@const meta=allJobs.find(j=>j.id===currentJobId)}{#if meta}{@render workMenu(meta)}{/if}{/if}
+    {#if hasActiveJob && !["home","history","tasks","dictation","textklipp"].includes(screen)}
       <div class="hdr-folder">
         <button class="hdr-folder-btn" onclick={() => (folderPickerFor = folderPickerFor === "header" ? null : "header")} title="Mapp för det här projektet">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h7A1.5 1.5 0 0 1 19 9.5v7A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z"/></svg>
@@ -2957,6 +2958,9 @@
     <Dictation bind:this={dictationPanel} bind:dirty={dictationDirty} snapshot={dictation} {models} textModel={selectedSummaryModel} textReady={summaryDownloaded} onmodels={openModels}
       ontext={async(text) => { if(await newDocumentFromDictation(text)) go("deidentify"); }} />
   </div>
+  <div class="textklipp-container" hidden={screen !== "textklipp"}>
+    <Textklipp visible={screen === "textklipp"} {models} speechModel={selectedModel} progress={progressMsg} percent={transcribePct ?? 0} onmodels={openModels} />
+  </div>
   {#if screen === "home"}
     <div class="home">
       <h2 class="big-title">Ditt arbete</h2>
@@ -2966,6 +2970,7 @@
         <button onclick={() => go("meeting")}><h3>Möten</h3><p>Från samtal och ljudfiler till anteckningar och beslut.</p><span>Öppna möten</span></button>
         <button onclick={() => go("dictation")}><h3>Diktering</h3><p>Tala där du skriver. Hitta texten igen när du behöver den.</p><span>Öppna diktering</span></button>
         <button onclick={() => go("deidentify")}><h3>Avidentifiering</h3><p>Granska uppgifter i text och dokument och skapa en maskerad kopia.</p><span>Öppna avidentifiering</span></button>
+        <button onclick={() => go("textklipp")}><h3>Textklipp</h3><p>Klipp video genom att redigera texten. Strukna ord försvinner ur filmen.</p><span>Öppna textklipp</span></button>
       </div>
       <div class="home-tools"><button class="link" onclick={() => go("transcribe")}>Transkribera en ljudfil</button><button class="link" onclick={() => go("summarize")}>Sammanfatta en text</button><button class="link" onclick={() => go("history")}>Öppna biblioteket</button></div>
       {#if recentJobs.length}
@@ -4629,6 +4634,8 @@
 
   .dictation-container { min-width:0; overflow:auto; }
   .dictation-container[hidden] { display:none; }
+  .textklipp-container { flex:1; min-width:0; overflow:auto; padding:28px 40px 48px; box-sizing:border-box; }
+  .textklipp-container[hidden] { display:none; }
   .saved-dictations { margin-top:28px; }
   @media(max-width:800px) {
     .hist { flex-direction:column; padding:16px; }

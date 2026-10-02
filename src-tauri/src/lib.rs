@@ -320,6 +320,40 @@ fn textklipp_save_edits(backend: State<Backend>, id: String, edits: avskrift_tex
     Ok(p.updated_at)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TextklippMedia {
+    /// Playable file: the proxy for video, else the extracted audio.
+    playback: Option<String>,
+    is_video: bool,
+}
+
+#[tauri::command]
+fn textklipp_media(backend: State<Backend>, id: String) -> Result<TextklippMedia, String> {
+    let root = &backend.paths.textklipp_dir;
+    let p = textklipp::load(root, &id).map_err(|e| e.to_string())?;
+    let dir = textklipp::project_dir(root, &id).map_err(|e| e.to_string())?;
+    let file = match &p.proxy {
+        Some(proxy) => Some(dir.join(proxy)),
+        None if p.media.video.is_none() => Some(dir.join(textklipp::AUDIO_FILE)),
+        None => None,
+    };
+    Ok(TextklippMedia {
+        playback: file.filter(|f| f.is_file()).map(|f| f.to_string_lossy().into_owned()),
+        is_video: p.proxy.is_some(),
+    })
+}
+
+#[tauri::command]
+async fn textklipp_preview(app: AppHandle, id: String, edits: avskrift_textklipp::EditList) -> Result<textklipp::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        textklipp::preview(&app.state::<Backend>().paths.textklipp_dir, &id, &edits)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn textklipp_delete(backend: State<Backend>, id: String) -> Result<(), String> {
     textklipp::delete(&backend.paths.textklipp_dir, &id).map_err(|e| e.to_string())
@@ -1769,6 +1803,8 @@ pub fn run() {
             textklipp_list,
             textklipp_open,
             textklipp_save_edits,
+            textklipp_preview,
+            textklipp_media,
             textklipp_delete,
             list_summary_models,
             list_summary_templates,

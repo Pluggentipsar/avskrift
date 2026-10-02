@@ -36,6 +36,9 @@ pub struct Sound {
     pub start: f64,
     pub end: f64,
     pub heard: String,
+    /// Model confidence of `heard`; the editor shows the reading only when it is high.
+    #[serde(default)]
+    pub score: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +318,53 @@ pub fn build_proxy(paths: &ModelPaths, p: &mut Project, progress: &dyn Fn(&str),
     save(&paths.textklipp_dir, p)
 }
 
+// ---------------------------------------------------------------- Edit preview
+
+/// Loudness of the most recently previewed project (1 f32 per ms; ~14 MB per hour of audio).
+static LOUDNESS: once_cell::sync::Lazy<std::sync::Mutex<Option<(String, avskrift_wordalign::Loudness)>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    /// Source ranges that remain, in order; playback skips everything else.
+    pub keep: Vec<(f64, f64)>,
+    pub edited_duration: f64,
+}
+
+/// Words (id = index over all words in order) and sound blocks, sorted by start.
+pub fn items(p: &Project) -> Vec<avskrift_textklipp::Item> {
+    let mut out: Vec<avskrift_textklipp::Item> = p
+        .transcript
+        .iter()
+        .flat_map(|t| t.utterances.iter().flat_map(|u| &u.words))
+        .enumerate()
+        .map(|(i, w)| avskrift_textklipp::Item { id: i as u32, start: w.start, end: w.end })
+        .collect();
+    out.extend(p.sounds.iter().map(|s| avskrift_textklipp::Item { id: s.id, start: s.start, end: s.end }));
+    out.sort_by(|a, b| a.start.total_cmp(&b.start));
+    out
+}
+
+/// The same keep ranges an export will use: cuts at the quietest frame boundary between items.
+pub fn preview(root: &Path, id: &str, edits: &EditList) -> Result<Preview> {
+    let p = load(root, id)?;
+    let mut cache = LOUDNESS.lock().map_err(|_| anyhow!("förhandsvisningen behöver startas om"))?;
+    if cache.as_ref().is_none_or(|(cached, _)| cached != id) {
+        let mut reader = hound::WavReader::open(project_dir(root, id)?.join(AUDIO_FILE))?;
+        let rate = reader.spec().sample_rate as usize;
+        let samples = reader.samples::<i16>().map_while(|s| s.ok()).map(|s| s as f32 / 32768.0);
+        *cache = Some((id.to_string(), avskrift_wordalign::Loudness::from_samples(samples, rate)));
+    }
+    let loudness = &cache.as_ref().unwrap().1;
+    // Video cuts snap to frames; audio-only projects to milliseconds.
+    let fps = p.media.video.as_ref().map_or(1000.0, |v| if v.fps > 0.0 { v.fps } else { 25.0 });
+    let keep = avskrift_textklipp::keep_ranges(&items(&p), edits, &p.pauses, p.media.duration, |lo, hi| {
+        loudness.cut_point(fps, lo, hi)
+    });
+    Ok(Preview { edited_duration: keep.iter().map(|(a, b)| b - a).sum(), keep })
+}
+
 // ---------------------------------------------------------------- Projects
 
 pub fn project_dir(root: &Path, id: &str) -> Result<PathBuf> {
@@ -367,7 +417,13 @@ pub fn set_alignment(p: &mut Project, refined: &crate::wordalign::Refined) {
         .sounds
         .iter()
         .enumerate()
-        .map(|(i, s)| Sound { id: SOUND_ID_BASE + i as u32, start: s.start, end: s.end, heard: s.heard.clone() })
+        .map(|(i, s)| Sound {
+            id: SOUND_ID_BASE + i as u32,
+            start: s.start,
+            end: s.end,
+            heard: s.heard.clone(),
+            score: s.score,
+        })
         .collect();
     p.pauses = refined.pauses.iter().map(|q| (q.start, q.end)).collect();
     p.word_times = "exakta".into();

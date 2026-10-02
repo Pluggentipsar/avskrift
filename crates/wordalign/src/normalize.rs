@@ -9,6 +9,8 @@ pub struct Vocab {
     ids: HashMap<char, u32>,
     chars: HashMap<u32, char>,
     pub blank: u32,
+    /// Word delimiter label ("|"), if the vocabulary has one.
+    pub delimiter: Option<u32>,
     pub size: usize,
 }
 
@@ -29,7 +31,8 @@ impl Vocab {
             })
             .collect();
         let chars = ids.iter().map(|(c, id)| (*id, *c)).collect();
-        Ok(Self { ids, chars, blank, size })
+        let delimiter = map.get("|").copied();
+        Ok(Self { ids, chars, blank, delimiter, size })
     }
 
     /// The letter a label stands for (None for blank and special tokens).

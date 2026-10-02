@@ -6,6 +6,7 @@
   const destinations = [
     { id: 'home', label: 'Ditt arbete' }, { id: 'meeting', label: 'Möten' },
     { id: 'dictation', label: 'Diktering' }, { id: 'deidentify', label: 'Avidentifiering' },
+    { id: 'textklipp', label: 'Textklipp' },
   ];
 </script>
 

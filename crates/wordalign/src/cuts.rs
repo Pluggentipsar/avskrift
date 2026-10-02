@@ -26,21 +26,39 @@ const JUDGE_MS: usize = 15;
 
 impl Loudness {
     pub fn new(audio: &[f32], rate: usize) -> Self {
-        let step = rate / 1000;
-        let win = rate / 100;
-        let mut prefix = Vec::with_capacity(audio.len() + 1);
-        prefix.push(0f64);
-        for &x in audio {
-            prefix.push(prefix.last().unwrap() + (x as f64) * (x as f64));
+        Self::from_samples(audio.iter().copied(), rate)
+    }
+
+    /// Streaming variant: memory is one f32 per millisecond (~14 MB per hour), never the audio.
+    pub fn from_samples(samples: impl IntoIterator<Item = f32>, rate: usize) -> Self {
+        let step = (rate / 1000).max(1);
+        // Energy per 1 ms block, then a 10 ms window (5 blocks each side of the block start).
+        let mut blocks: Vec<f32> = Vec::new();
+        let (mut acc, mut n) = (0f32, 0usize);
+        for x in samples {
+            acc += x * x;
+            n += 1;
+            if n == step {
+                blocks.push(acc);
+                (acc, n) = (0.0, 0);
+            }
         }
-        let db: Vec<f32> = (0..audio.len() / step)
-            .map(|i| {
-                let c = i * step;
-                let (lo, hi) = (c.saturating_sub(win / 2), (c + win / 2).min(audio.len()));
-                let mean = (prefix[hi] - prefix[lo]) / (hi - lo).max(1) as f64;
-                (10.0 * (mean + 1e-10).log10()) as f32
-            })
-            .collect();
+        let mut db = Vec::with_capacity(blocks.len());
+        let mut window = 0f64;
+        let (mut lo, mut hi) = (0usize, 0usize);
+        for i in 0..blocks.len() {
+            let (want_lo, want_hi) = (i.saturating_sub(5), (i + 5).min(blocks.len()));
+            while hi < want_hi {
+                window += blocks[hi] as f64;
+                hi += 1;
+            }
+            while lo < want_lo {
+                window -= blocks[lo] as f64;
+                lo += 1;
+            }
+            let mean = window.max(0.0) / ((hi - lo) * step).max(1) as f64;
+            db.push((10.0 * (mean + 1e-10).log10()) as f32);
+        }
         let mut sorted: Vec<f32> = db.iter().step_by(10).copied().collect();
         sorted.sort_by(f32::total_cmp);
         let floor = sorted.get(sorted.len() / 10).copied().unwrap_or(-90.0);
