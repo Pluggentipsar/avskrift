@@ -1,8 +1,8 @@
 <script lang="ts">
   import { ICONS } from '$lib/icons';
-  let { active, meetingActive, dictationActive, overdue, version, speechModel = '', onnavigate, onnew, onmodels }: {
+  let { active, meetingActive, dictationActive, overdue, version, speechModel = '', onnavigate, onnew, onmodels, onupdates }: {
     active: string; meetingActive: boolean; dictationActive: boolean; overdue: number; version: string; speechModel?: string;
-    onnavigate: (page: string) => void; onnew: () => void; onmodels: () => void;
+    onnavigate: (page: string) => void; onnew: () => void; onmodels: () => void; onupdates: () => void;
   } = $props();
   type Item = { id: string; label: string; icon: string };
   // Grouped by what you do: make something, work on text, find it again.
@@ -50,6 +50,7 @@
     <div class="local"><span class="dot"></span>Allt körs lokalt</div>
     {#if speechModel}<div class="model">Talmodell: {speechModel}</div>{/if}
     <button class="link" onclick={onmodels}>Modeller på datorn</button>
+    <button class="link" onclick={onupdates}>Sök efter uppdatering</button>
   </div>
   {#if version}<p class="version">Version {version}</p>{/if}
 </aside>

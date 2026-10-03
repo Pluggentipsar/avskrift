@@ -29,6 +29,7 @@ mod work;
 mod transcribe;
 mod textklipp;
 mod transcript;
+mod updates;
 mod wordalign;
 
 use std::collections::BTreeMap;
@@ -1812,6 +1813,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Set before any ORT session, including NER. Pianissimo and NER share one pool.
             let pool=ort::environment::GlobalThreadPoolOptions::default()
@@ -1875,7 +1877,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![refresh_library, begin_work, cancel_work, forget_work,
+        .invoke_handler(tauri::generate_handler![updates::check_update, updates::install_update, refresh_library, begin_work, cancel_work, forget_work,
             create_template_draft, template_package, list_document_templates, save_document_template, import_document_template, export_document_template,
             dictation::dictation_snapshot,
             dictation::configure_dictation,

@@ -1,6 +1,6 @@
 [package]
 name = "avskrift"
-version = "0.8.0-beta.2"
+version = "0.8.0-beta.3"
 description = "Lokal transkribering, diarisering och avidentifiering av svenskt tal"
 authors = ["Pluggentipsar"]
 edition = "2021"
@@ -33,6 +33,7 @@ avskrift-textklipp = { path = "../crates/textklipp" }
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Rebuildable local library/search cache; SQLite is compiled into the program.

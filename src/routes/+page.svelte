@@ -5,6 +5,7 @@
   import { tick, onMount } from "svelte";
   import TranscriptView from '$lib/TranscriptView.svelte';
   import ModelSettings from '$lib/ModelSettings.svelte';
+  import UpdateDialog from '$lib/UpdateDialog.svelte';
   import Dictation from "$lib/Dictation.svelte";
   import Textklipp from "$lib/textklipp/Textklipp.svelte";
   import { ICONS, jobIcon } from "$lib/icons";
@@ -107,6 +108,7 @@
   let speakerLabels = $state<Record<string, string>>({});
   let view = $state<"transcript" | "review" | "summary" | "qa" | "notes" | "overview" | "actions" | "templates">("transcript");
   let modelsOpen = $state(false);
+  let updatesOpen = $state(false);
   let transcriptToolsOpen = $state(false);
   let transcriptView = $state<TranscriptView>();
   function openModels() { modelsOpen = true; }
@@ -2897,7 +2899,7 @@
     </div>
   {/snippet}
   <AppNavigation active={screen === "transcribe" ? (currentJobType === "meeting" ? "meeting" : "transcribe") : screen} meetingActive={meetingActive || meetingBusy || bgMeetings.length > 0} dictationActive={!!dictation && dictation.phase !== "idle"} overdue={taskCounts.overdue} version={appVersion} speechModel={models.find(m => m.id === selectedModel)?.label ?? ""}
-    onmodels={openModels} onnavigate={(page) => page === "transcribe" ? void startTranscription() : go(page as Screen)} onnew={() => void newProject()} />
+    onmodels={openModels} onupdates={() => (updatesOpen = true)} onnavigate={(page) => page === "transcribe" ? void startTranscription() : go(page as Screen)} onnew={() => void newProject()} />
   <div class="app-content">
   {#if screen !== "home" || bgMeetings.length}<header class="workspace-header">
     <div class="workspace-heading"><span class="workspace-location">{screen === "home" ? "Ditt arbete" : screen === "history" ? "Bibliotek" : screen === "dictation" ? "Diktering" : screen === "deidentify" ? "Avidentifiering" : screen === "summarize" ? "Sammanfatta text" : screen === "tasks" ? "Åtaganden" : screen === "textklipp" ? "Textklipp" : currentJobType === "meeting" ? "Möten" : "Transkribera"}</span>
@@ -3030,6 +3032,11 @@
       {#if !model?.downloaded}<small>Behöver hämtas före bearbetning.</small>{/if}
     </div>
   {/snippet}
+  {#if updatesOpen}
+    <UpdateDialog version={appVersion}
+      blocked={meetingActive || meetingBusy ? "Avsluta mötesinspelningen innan du uppdaterar." : bgMeetings.length ? "Vänta tills mötet är färdigbearbetat." : busy || qaBusy || actionsBusy || recording ? "Vänta tills pågående arbete är klart." : dictation && dictation.phase !== "idle" ? "Avsluta dikteringen innan du uppdaterar." : ""}
+      beforeInstall={() => flushCurrentSave()} onclose={() => (updatesOpen = false)} />
+  {/if}
   {#if modelsOpen}
     <ModelSettings {models} textModels={summaryModels} bind:speech={selectedModel} bind:text={selectedSummaryModel} dictationModel={dictation?.settings.model}
       locked={busy || recording || recSaving || meetingActive || meetingBusy || bgMeetings.length>0 || qaBusy || actionsBusy || !!dictation && dictation.phase!=='idle'} {downloading} percent={downloadPct} stage={modelStage} {error}

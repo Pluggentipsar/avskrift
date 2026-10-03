@@ -12,6 +12,12 @@ Ingen Python eller molntjänst behövs för att använda appen.
 
 ## Funktioner
 
+- **Uppdateringar i appen och möten direkt efter stopp (0.8.0-beta.3, förhandsrelease)** — välj
+  *Sök efter uppdatering* i menyn så hämtas och installeras nya versioner med ett klick (signerade,
+  bara när du ber om det). Efter ett möte visas texten direkt, och bara det som realtidsdelen
+  missade transkriberas efteråt. Se [release-anteckningarna](docs/RELEASE-0.8.0-beta.3.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.3).
+
 - **Pianissimo från Klangs egen export (0.8.0-beta.2, förhandsrelease)** — färre fel på långa
   inspelningar, 45–50 gånger snabbare än realtid och ingen lokal förberedelse. Se
   [release-anteckningarna](docs/RELEASE-0.8.0-beta.2.md).
