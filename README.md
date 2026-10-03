@@ -1,168 +1,107 @@
 # Avskrift
 
-Ett skrivbordsprogram som **transkriberar svenskt tal till text, skiljer talare åt (diarisering)
-och avidentifierar** känsliga personuppgifter — allt **lokalt** på datorn. Inget ljud och ingen
-text lämnar maskinen.
-
-Programmet distribueras som färdiga Windows-paket med nödvändiga bibliotek och resurser.
-Ingen Python eller molntjänst behövs för att använda appen.
+Ett skrivbordsprogram för Windows som gör svenskt tal till text du kan arbeta vidare med:
+möten, intervjuer, diktat och egna videoinspelningar. Allt körs **lokalt** på datorn. Inget ljud
+och ingen text lämnar maskinen, och ingen Python eller molntjänst behövs.
 
 > Syskonprojekt till [TystText/transav](https://github.com/Pluggentipsar/transav), men paketerat
 > som en enbinärs Tauri/Rust-app i stället för Next.js + Python-backend.
 
-## Funktioner
+## Vad Avskrift gör
 
-- **Uppdateringar i appen och möten direkt efter stopp (0.8.0-beta.3, förhandsrelease)** — välj
-  *Sök efter uppdatering* i menyn så hämtas och installeras nya versioner med ett klick (signerade,
-  bara när du ber om det). Efter ett möte visas texten direkt, och bara det som realtidsdelen
-  missade transkriberas efteråt. Se [release-anteckningarna](docs/RELEASE-0.8.0-beta.3.md).
-  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.3).
+- **Möten** – spela in digitala möten med din mikrofon och mötesljudet som två spår, med text
+  i realtid om du vill. Efter mötet finns texten direkt; det som saknas kompletteras i
+  bakgrunden. Anteckningar och tidsmarkeringar under mötet, beslut och åtgärder med ansvarig och
+  datum, uppföljning och ett samlat mötesunderlag att exportera.
+- **Transkribera** – ljud- och videofiler med KB-Whisper (tiny till large) eller den snabbare
+  Pianissimo (experimentell, svenska). Talare skiljs åt, uppspelningen följer texten ord för
+  ord, och texten går att rätta direkt. Även översättning till engelsk text.
+- **Diktering** – håll Ctrl+Shift+Space (eller växla med Ctrl+Alt+Space) i vilket program som
+  helst; texten skrivs in där markören står. Se [Diktering](docs/DIKTERING.md).
+- **Textklipp** – klipp en egen videoinspelning genom att stryka text i transkriptet och
+  exportera en färdig film med exakt synk och undertexter. Se [Textklipp](docs/TEXTKLIPP.md).
+- **Avidentifiering** – namn, platser, personnummer, telefonnummer med mera hittas med en
+  svensk NER-modell, regler och ordlistor, och granskas träff för träff innan en maskerad kopia
+  delas.
+- **Sammanfatta och skapa från mall** – en lokal språkmodell gör redigerbara utkast:
+  sammanfattningar, protokoll och egna dokumentmallar. Du kan också ställa frågor om källan.
+  Utkasten markeras som AI-genererade och ska granskas.
+- **Bibliotek och åtaganden** – allt sparas och söks lokalt, med mappar, fästa och arkiverade
+  arbeten och en samlad lista över åtaganden.
+- **Export** – text, Word (.docx) och undertexter (.srt, .vtt), i original eller avidentifierat.
 
-- **Pianissimo från Klangs egen export (0.8.0-beta.2, förhandsrelease)** — färre fel på långa
-  inspelningar, 45–50 gånger snabbare än realtid och ingen lokal förberedelse. Se
-  [release-anteckningarna](docs/RELEASE-0.8.0-beta.2.md).
-  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.2).
+> Ingen automatik fångar allt. Granska transkript, maskningar och utkast innan du delar dem.
 
-- **Textklipp (0.8.0-beta.1, förhandsrelease)** — klipp en egen videoinspelning genom att stryka
-  text i transkriptet och exportera en färdig film med exakt synk. Releasen har också en ny
-  arbetsyta, egen ingång för Transkribera och installationsprogram för CPU och Vulkan. Se
-  [Textklipp](docs/TEXTKLIPP.md) och [release-anteckningarna](docs/RELEASE-0.8.0-beta.1.md).
-  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.1).
+## Hämta
 
-- **Pianissimo (0.7.0-beta.2, förhandsrelease)** — experimentell, valbar CPU-motor för svensk
-  transkribering av ljudfiler, möten och diktering, med minneskontroll.
-  KB-Whisper är fortfarande standard. Se [Pianissimo i Avskrift](docs/PIANISSIMO.md).
-  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.7.0-beta.2).
+Ladda ner från [releaserna](https://github.com/Pluggentipsar/avskrift/releases). Senaste
+förhandsversion är [0.8.0-beta.3](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.3);
+senaste stabila är [0.6.0](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.6.0).
 
-- **Mallflöde (0.7.0-beta.1, förhandsrelease)** — stöd för Supportärende och egna dokumentmallar,
-  separata redigerbara utkast, källkopior och manuell AI-överlämning. Se
-  [demoguide och avgränsningar](docs/MALLFLODE-MVP.md). Lokal modellkvalitet är ännu inte
-  godkänd i de nya supportfallen; [testprotokollet](docs/demo-support/VERIFIERING.md) skiljer
-  fungerande programflöde från återstående kvalitetsarbete. [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.7.0-beta.1).
+| Fil | För |
+| --- | --- |
+| `Avskrift_<version>_x64-setup-vulkan.exe` | Datorer med grafikkort (NVIDIA, AMD, Intel med Vulkan). Snabbast. |
+| `Avskrift_<version>_x64-setup-cpu.exe` | Datorer utan lämpligt grafikkort. |
+| `Avskrift-<version>-Windows-*.zip` | Samma sak utan installation (portabel mapp). |
 
-- **Version 0.6.0 / arbetsyta 9** — ett sammanhängande mötesflöde med ljudtest, kanalval,
-  anteckningar, beslut, åtgärder och uppföljning. Byt namn direkt i mötet, fäst eller arkivera
-  arbeten och exportera ett samlat mötesunderlag. Svagt mikrofonljud hanteras bättre.
-  Se [releasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.6.0)
-  och [mötesguiden](docs/ARBETSYTA-STEG-9.md).
+Välj installationsprogrammet om du kan: från 0.8.0-beta.3 uppdaterar sig appen själv via
+**Sök efter uppdatering** i menyn (signerade uppdateringar, bara när du ber om det; se
+[Uppdateringar](docs/UPPDATERINGAR.md)). Talmodeller och språkmodeller hämtas i appen under
+**Modeller på datorn** när du behöver dem.
 
-- **Arbetsyta 8** — lokalt sökindex, snabbare projektlistor och åtaganden, tydlig sökstatus
-  och återuppbyggnad av biblioteket. Se [nyheter, tester och mätningar](docs/ARBETSYTA-STEG-8.md).
-
-- **Arbetsyta 7** — strömmande ljudomvandling, avbrytbara förgrundsarbeten och företräde för
-  diktering mellan modellsteg. Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-7.md).
-
-- **Arbetsyta 6** — gemensam modellcache, automatisk GPU-budget, frigöring av inaktiva modeller
-  och CPU-reservväg vid återhämtningsbara GPU-fel.
-  Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-6.md).
-
-- **Arbetsyta 5** — tokenbaserad uppdelning av långa AI-underlag, sammanställning i flera
-  omgångar och tydligt förlopp med bevarade tidigare resultat vid fel.
-  Se [nyheter, tester och gränser](docs/ARBETSYTA-STEG-5.md).
-
-- **Arbetsyta 4** — samlad modellhantering, lugnare transkriptvy, sökning i hela underlaget,
-  justerbar textstorlek och rendering av avsnitt nära läsytan för långa möten.
-  Se [nyheter, tester och paket](docs/ARBETSYTA-STEG-4.md).
-
-- **Arbetsyta 3** — källutkast för möten, diktatbearbetning med godkännande, original och
-  maskerad text bredvid varandra samt egna mallar och granskningsprofiler.
-  Se [nyheter och användning](docs/ARBETSYTA-STEG-3.md).
-
-- **Arbetsyta 2** — original och återställbara versioner, sparade manuella maskningar,
-  autosparad källtext, sparade diktat i biblioteket och import av Word-tabelltext.
-  Se [nyheter, paket och begränsningar](docs/ARBETSYTA-STEG-2.md).
-
-- **Diktera i andra program (Windows)** — håll Ctrl+Shift+Space och släpp för att transkribera,
-  eller växla start/stopp med Ctrl+Alt+Space. Med lokal
-  KB-Whisper och infogning i det fokuserade textfältet. Med indikator, sökbara diktat,
-  kopiering och valfri sparad historik. Ljudet hålls i minnet. Se [Diktering](docs/DIKTERING.md).
-- **Transkribering** med **KB-Whisper** (KBLab) — välj modellstorlek (tiny → large) efter dator och
-  noggrannhetsbehov. Modeller hämtas vid behov; den minsta kan bäddas in i installern.
-  Med **valbar GPU-acceleration** (CUDA / Metal / Vulkan) och **ordnivå-tidsstämplar**.
-- **Inspelning** direkt i appen (mikrofon) — eller öppna en befintlig ljudfil.
-- **Synkad uppspelning** — spela upp ljudet och följ med i transkriptet; klicka på ett ord eller
-  yttrande för att hoppa dit. Med ordnivå-tidsstämplar markeras ordet som spelas.
-- **Redigerbart transkript** — dubbelklicka på ett segment för att rätta ASR-fel; allt nedströms
-  (avidentifiering, sammanfattning, export) använder den rättade texten. Plus **rättningsordlista**
-  (fel⇒rätt på hela transkriptet) och **översättningsläge** (svenskt tal → engelsk text).
-- **Spara/öppna projekt** — spara transkript, rättningar och talarnamn till en `.avskrift`-fil och
-  återuppta senare, så långsam transkribering inte går förlorad.
-- **Egen mall** — vid sammanfattning kan du klistra in din egen dagordning/rubriker.
-- **Procent-progress** vid transkribering.
-- **Diarisering** med **pyannote**-segmentering + talar-embeddings (via sherpa-onnx) — varje
-  yttrande märks "Talare 1/2…", som du kan döpa om.
-- **Avidentifiering** av transkriptet med samma motor som Avidentifierare:
-  - **KB-BERT NER** — namn, platser, organisationer, tider
-  - **Regler** — personnummer (Luhn), telefon, e-post, IP, ICD-10
-  - **Ordlistor** — svenska diagnoser/mediciner + egen ordlista
-  - **Valfritt AI-lager** — lokal Qwen2.5-1.5B (candle) för kontextuella ledtrådar
-  - **Granskning** — varje träff godkänns/avvisas innan export; konsekvent pseudonymisering
-- **Mötessammanfattning** — en valbar, nedladdningsbar lokal språkmodell (Qwen2.5 1,5B/3B/7B)
-  sammanfattar transkriptet strukturerat enligt en **mall** (mötesprotokoll, kort sammanfattning,
-  beslut & åtgärder). Långa möten hanteras via **map-reduce**. Resultatet är ett **redigerbart
-  utkast** med "AI-genererat — granska"-varning; kan sammanfatta råtext eller den avidentifierade.
-- **Export**: ren text, Word (.docx), och undertexter **.srt / .vtt** med tidsstämplar — i råform
-  eller avidentifierad. Med ordnivå-tidsstämplar även **ord-VTT** (en undertext per ord).
-
-> Ingen automatik fångar 100 %. Granska alltid transkriptet och träffarna innan du delar.
+Programmen är inte kodsignerade, så Windows SmartScreen kan varna. Välj *Mer information* och
+*Kör ändå*. Vad som kommit i varje version: [Versioner](docs/VERSIONER.md).
 
 ## Teknik
 
-Tauri 2 (Rust-backend) + SvelteKit (gränssnitt).
+Tauri 2 (Rust-backend) och SvelteKit (gränssnitt). Allt körs i appens egen process på datorn.
 
 | Steg | Bibliotek | Modell |
-|------|-----------|--------|
-| Ljudavkodning → 16 kHz mono | `symphonia` + `rubato` | — |
-| Tal → text | `whisper-rs` (whisper.cpp) | KB-Whisper (GGML) |
-| Diarisering | `sherpa-rs` (sherpa-onnx) | pyannote-segmentering + talar-embedding (ONNX) |
-| NER | `ort` (ONNX Runtime) | KB-BERT (int8 ONNX) |
-| AI-lager (PII) | `llama-cpp-2` (llama.cpp) | Qwen2.5-1.5B (GGUF) |
-| Sammanfattning | `llama-cpp-2` (llama.cpp) | Qwen2.5 1,5B/3B/7B (GGUF, valbar) |
-| Word-I/O | `docx-rs` | — |
+| --- | --- | --- |
+| Ljudavkodning → 16 kHz mono | `symphonia`, `rubato` | – |
+| Tal → text | `whisper-rs` (whisper.cpp, Vulkan) | KB-Whisper (GGML) |
+| Tal → text, alternativ | `ort` (ONNX Runtime, CPU) | Pianissimo (Klangs ONNX-export, int8) |
+| Talarseparering | `sherpa-rs` (sherpa-onnx) | pyannote-segmentering och talarembedding (ONNX) |
+| Exakta ordtider (Textklipp) | `ort` (DirectML) | KBLab wav2vec2 VoxRex (ONNX, fp16) |
+| Video (Textklipp) | FFmpeg 8.1 (LGPL, medföljer) | – |
+| Personuppgifter, NER | `ort` (ONNX Runtime) | KB-BERT (int8 ONNX) |
+| Personuppgifter, AI-lager | `llama-cpp-2` (llama.cpp) | Qwen2.5-1.5B (GGUF) |
+| Sammanfattning, mallar, frågor | `llama-cpp-2` (llama.cpp) | Qwen2.5 1,5B, 3B eller 7B (GGUF, valbar) |
+| Word | `docx-rs` | – |
+| Uppdateringar | `tauri-plugin-updater` | – |
 
 ## Bygga från källkod
 
-> **Börja i [START.md](START.md)** — en steg-för-steg-guide som tar dig från klon till körande app
-> i rätt ordning, och fångar fel tidigt. `model-tools/preflight.ps1` kollar verktygen åt dig och
-> `model-tools/API-FIXES.md` är fusklappen om kompileringen klagar. (`FINISH.md` = djupare risklista.)
-
-Kortversion:
+> **Börja i [START.md](START.md)**: en steg-för-steg-guide från klon till körande app.
+> `model-tools/preflight.ps1` kollar verktygen och `model-tools/API-FIXES.md` hjälper om
+> kompileringen klagar.
 
 ```powershell
 npm install
 
-# Hämta/bygg modeller en gång (kräver öppet nät; Python bara för KB-BERT-konvertering):
-model-tools\fetch-whisper.ps1 -Size small      # KB-Whisper (GGML)
-model-tools\fetch-diarization.ps1              # pyannote + embedding (ONNX)
+# Modeller som följer med appen (en gång; Python behövs bara för KB-BERT-konverteringen):
+model-tools\fetch-diarization.ps1              # pyannote + talarembedding (ONNX)
 model-tools\build-pii-ner.ps1                  # KB-BERT -> int8 ONNX
-model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF, PII-lager)
-model-tools\fetch-summary.ps1 -Size 3b         # Qwen2.5-3B (GGUF, sammanfattning) – valfritt
+model-tools\fetch-llm.ps1                      # Qwen2.5-1.5B (GGUF, AI-lagret)
+model-tools\fetch-ffmpeg.ps1                   # LGPL-FFmpeg för Textklipp
 
-npm run tauri dev      # utveckling
-
-# Optimerade portabla Windows-byggen (se verktygskrav i docs/PRESTANDA.md):
-npm run desktop:gpu -- -TargetDir C:\avb -LibClangPath C:\LLVM\bin
-npm run desktop:cpu -- -TargetDir C:\avc -LibClangPath C:\LLVM\bin
-
-# GPU-byggen — accelererar både Whisper (tal->text) och Qwen (AI-lagret):
-npm run tauri build -- --features cuda     # NVIDIA  (Whisper + Qwen)
-npm run tauri build -- --features metal    # Apple Silicon (Whisper + Qwen)
-npm run tauri build -- --features vulkan   # plattformsoberoende GPU (Whisper + Qwen)
+npm run tauri dev                              # utveckling
+npm run tauri build -- --features vulkan       # GPU-bygge (Whisper och Qwen via Vulkan)
 ```
 
-Windows-paketen hamnar i `dist/Avskrift-Vulkan` respektive `dist/Avskrift-CPU`.
-Behåll hela paketmappen tillsammans. Se [prestanda och Windows-byggen](docs/PRESTANDA.md)
-för bygginställningar, mätningar och skillnaden mellan första start och fortsatt diktering.
+En hel Windows-release (båda varianterna, signerade installationsprogram, ZIP-filer och
+uppdateringsfiler) byggs med `model-tools\release\release.ps1`; se
+[Uppdateringar](docs/UPPDATERINGAR.md). Bygginställningar och mätningar finns i
+[Prestanda](docs/PRESTANDA.md). KB-BERT och Pianissimo körs alltid på processorn.
 
-> GPU-byggena gäller **KB-Whisper** (via whisper.cpp) och **Qwen** (via llama.cpp). KB-BERT (NER via
-> ONNX Runtime) kör alltid på CPU — det är redan snabbt och använder ett annat GPU-API.
+## Modeller och licenser
 
-## Modeller & licenser
-
-- **KB-Whisper:** [KBLab](https://huggingface.co/KBLab) — se respektive modellkort
-- **Diarisering:** pyannote segmentation 3.0 + talar-embedding (sherpa-onnx-konverteringar)
+- **KB-Whisper:** [KBLab](https://huggingface.co/KBLab), se respektive modellkort
+- **Pianissimo:** [Klang AI](https://huggingface.co/KlangAI/pianissimo-sv), CC BY 4.0
+- **Ordtider:** [KBLab/wav2vec2-large-voxrex-swedish](https://huggingface.co/KBLab/wav2vec2-large-voxrex-swedish), CC0 1.0
 - **NER:** [KBLab/bert-base-swedish-cased-ner](https://huggingface.co/KBLab/bert-base-swedish-cased-ner)
-- **AI-lager:** [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) (Apache-2.0)
+- **Språkmodeller:** [Qwen2.5-Instruct](https://huggingface.co/Qwen) 1,5B/3B/7B, Apache-2.0
+- **Talarseparering:** pyannote segmentation 3.0 och talarembedding (sherpa-onnx-konverteringar)
+- **FFmpeg:** LGPL version 3 eller senare, medföljer som separata bibliotek
 
-Kontrollera licensvillkoren för varje modell (särskilt pyannote, som kan kräva villkorsgodkännande
-på Hugging Face) innan distribution.
+Se [NOTICE](NOTICE.md). Kontrollera licensvillkoren för varje modell innan vidare distribution.
