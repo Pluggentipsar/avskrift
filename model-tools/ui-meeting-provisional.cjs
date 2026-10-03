@@ -48,6 +48,10 @@ const emit=(page,event,payload)=>page.evaluate(([event,payload])=>window.__TAURI
      {start:1,end:3,speaker:'Jag',text:'Live ett från mig.',words:[]},{start:4,end:7,speaker:'Mötet',text:'Live två från mötet.',words:[]},{start:8,end:9,speaker:'Mötet',text:'Live tre i kön.',words:[]}]}});
    await page.getByText('Live tre i kön.').waitFor();
   });
+  await step('re-transcribing waits until the background run is done',async()=>{
+   await page.getByRole('button',{name:'Visa verktyg för transkriptet',exact:true}).click();
+   assert.ok(await page.getByRole('button',{name:'Kör om med vald modell',exact:true}).isDisabled());
+  });
   await step('the provisional text is never saved as the original',async()=>{
    await page.evaluate(()=>window.dispatchEvent(new Event('blur')));
    await page.waitForTimeout(1500);
@@ -63,6 +67,7 @@ const emit=(page,event,payload)=>page.evaluate(([event,payload])=>window.__TAURI
    await page.getByText('Slutet av mötet, transkriberat efteråt.').waitFor();
    assert.equal(await page.getByText('Preliminär text från mötet.').count(),0);
    await page.getByRole('button',{name:'Redigera',exact:true}).waitFor();
+   assert.ok(await page.getByRole('button',{name:'Kör om med vald modell',exact:true}).isEnabled(),'re-transcribe with another model stays available');
    await tabs().getByRole('button',{name:'Anteckningar',exact:true}).click();
    await page.locator('textarea.ws-notes').fill('Efter mötet.');
    await page.waitForFunction(()=>fixture.jobs[0].notes==='Efter mötet.');

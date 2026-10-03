@@ -1245,7 +1245,7 @@
   /** Re-run Whisper on the saved meeting WAVs with the chosen model — a full batch pass, usually
    *  better than the live result (pick a larger model for best quality). Resets to Jag/Mötet. */
   async function retranscribeMeeting() {
-    if (!meetingMicWav || !meetingSysWav || busy || !selectedDownloaded) return;
+    if (!meetingMicWav || !meetingSysWav || busy || !selectedDownloaded || bgMeetings.some((m) => m.id === currentJobId)) return;
     if (!(await checkpointWork())) return;
     // Capture which meeting we're working on. This is a multi-minute async job; if the user opens a
     // different project meanwhile, the result must NOT be saved onto that other project (which would
@@ -3816,7 +3816,7 @@
           {#if isPianissimo}<p class="hint">Pianissimo (experimentell): svenska, CPU och ungefärliga segmenttider. Saknar översättning och ordtider. Kontrollera särskilt talarbyten och text mellan ljudavsnitt i längre inspelningar.</p>{/if}
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeDiarize} /><span>Separera mötesröster automatiskt efteråt</span></label>
             <label class="ai-toggle"><input type="checkbox" bind:checked={retranscribeEchoCancel} /><span>Ta bort eko ur min mik<em>tar bort mötesljudet som läckt in i mikrofonen (om du kört på högtalare)</em></span></label>
-            <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy || !selectedDownloaded}>Kör om med vald modell</button>
+            <button class="btn block mt" onclick={retranscribeMeeting} disabled={busy || !selectedDownloaded || bgMeetings.some((m) => m.id === currentJobId)}>Kör om med vald modell</button>{#if bgMeetings.some((m) => m.id === currentJobId)}<p class="hint">Går att välja när mötet är färdigbearbetat.</p>{/if}
             <p class="hint">Transkribera hela inspelningen igen — oftast bättre än live, särskilt med en större modell. Talaruppdelningen återställs (kör ”Separera mötesröster” igen efteråt).</p>
           </section>
         {/if}
