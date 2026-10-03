@@ -761,10 +761,12 @@ fn meeting_worker(
         }
         let mic = chunk.source == capture::Source::Mic;
         if mic { result.mic_blocks += 1; } else { result.system_blocks += 1; }
+        let chunk_end = chunk.start_s + chunk.samples.len() as f64 / chunk.src_rate.max(1) as f64;
+        result.done[if mic { 0 } else { 1 }] = chunk_end;
         let mut samples = audio::resample_to_16k(&chunk.samples, chunk.src_rate);
         if mic { meeting::prepare_mic(&mut samples); }
         if samples.is_empty() {
-            result.failed = true; continue;
+            result.failed = true; result.gaps.push((mic, chunk.start_s, chunk_end)); continue;
         }
         let raw = {
             let mut tr = Transcriber::new();
@@ -772,6 +774,7 @@ fn meeting_worker(
                 Ok(r) => r,
                 Err(e) => {
                     result.failed = true;
+                    result.gaps.push((mic, chunk.start_s, chunk_end));
                     let _ = app.emit("avskrift:meeting-warning", format!("{} kunde inte transkriberas live: {e}. Ett nytt försök görs efter stopp.", if mic {"Mikrofonljudet"} else {"Mötesljudet"}));
                     continue;
                 },
@@ -781,7 +784,7 @@ fn meeting_worker(
             capture::Source::Mic => "Jag",
             capture::Source::Meeting => "Mötet",
         };
-        if raw.is_empty() { result.failed = true; }
+        if raw.is_empty() { result.failed = true; result.gaps.push((mic, chunk.start_s, chunk_end)); }
         if mic { result.mic_text += raw.len(); } else { result.system_text += raw.len(); }
         for utterance in meeting::utterances(raw,samples.len(),label,chunk.start_s) {
             let _=app.emit("avskrift:meeting-utterance",serde_json::json!({"source":label,"start":utterance.start,"end":utterance.end,"text":utterance.text}));
@@ -934,6 +937,7 @@ fn build_meeting(
             abort.store(true, Ordering::Relaxed); // stop the slow per-chunk drain; we'll batch instead
         }
         let live = handle.join().map_err(|_| anyhow::anyhow!("transkriberingstråden kraschade"))?;
+        save_provisional(app, args, &live.utterances);
         if caught_up && live.complete() {
             progress("Skapar uppspelningsmix…");
             (
@@ -941,8 +945,8 @@ fn build_meeting(
                 write_meeting_mix(&files.mic_wav, &files.sys_wav, false),
             )
         } else {
-            progress("Transkriberar mötet (samlad körning)…");
-            transcribe_meeting_wavs(app, &files.mic_wav, &files.sys_wav, &args.model, &args.language, false, false)?
+            // Keep what was transcribed live; only the parts it missed are transcribed now.
+            complete_meeting(app, live, files, args)?
         }
     } else {
         // "Efter mötet"-läge: nothing was transcribed live — transcribe both source WAVs now.
@@ -954,6 +958,69 @@ fn build_meeting(
         Transcript { utterances, language: args.language.clone(), model: args.model.clone(), diarized: true };
 
     Ok((transcript, mix_wav_path))
+}
+
+/// Store and announce the live result as a provisional transcript while the rest is completed, so the
+/// meeting can be read right after stop and survives an app restart. Never touches a finalised job.
+fn save_provisional(app: &AppHandle, args: &StopMeetingArgs, utterances: &[transcript::Utterance]) {
+    if utterances.is_empty() { return; }
+    let transcript = Transcript {
+        utterances: align::from_labeled(utterances.to_vec()),
+        language: args.language.clone(),
+        model: args.model.clone(),
+        diarized: true,
+    };
+    let backend = app.state::<Backend>();
+    let saved = jobs::edit(&backend.paths.jobs_dir, &args.token, |job| {
+        if job.transcription_pending { job.transcript = Some(transcript.clone()); }
+        Ok(())
+    });
+    if saved.is_ok_and(|job| job.transcription_pending) {
+        let _ = app.emit("avskrift:meeting-provisional", serde_json::json!({ "token": args.token, "transcript": transcript }));
+    }
+}
+
+/// Finish a meeting whose live run lagged or missed chunks: transcribe only the ranges it did not
+/// cover (see [`meeting::missing`]) and merge them with the live utterances.
+fn complete_meeting(
+    app: &AppHandle,
+    live: meeting::LiveResult,
+    files: &capture::MeetingFiles,
+    args: &StopMeetingArgs,
+) -> anyhow::Result<(Vec<transcript::Utterance>, Option<String>)> {
+    let backend = app.state::<Backend>();
+    let model_path = backend.paths.speech_file(&args.model);
+    let progress = |msg: &str| {
+        let _ = app.emit("avskrift:meeting-progress", serde_json::json!({ "token": args.token, "msg": msg }));
+    };
+    let mic = meeting::load_channel(&files.mic_wav, "mikrofonspåret")?;
+    let sys = meeting::load_channel(&files.sys_wav, "mötesljudet")?;
+    let utterances = meeting::fill_missing(
+        live,
+        mic.as_deref(),
+        sys.as_deref(),
+        |part, base, span| {
+            let app_pct = app.clone();
+            Transcriber::new().transcribe(&args.model, &model_path, part, &args.language, false, false, &|_: &str| {}, move |p| {
+                let _ = app_pct.emit("avskrift:percent", base + span * p / 100);
+            })
+        },
+        |is_mic, from| {
+            let at = from as u64;
+            progress(&format!(
+                "Transkriberar det som saknas: {} från {}:{:02}…",
+                if is_mic { "din röst" } else { "mötet" },
+                at / 60,
+                at % 60
+            ));
+        },
+    )?;
+    progress("Skapar uppspelningsmix…");
+    let mix = match (mic.as_deref(), sys.as_deref()) {
+        (Some(m), Some(s)) => write_meeting_mix_samples(m, s, &files.sys_wav),
+        _ => None,
+    };
+    Ok((utterances, mix))
 }
 
 #[derive(serde::Deserialize)]

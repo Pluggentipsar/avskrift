@@ -9,12 +9,60 @@ pub struct LiveResult {
     pub mic_text: usize,
     pub system_blocks: usize,
     pub system_text: usize,
+    /// End (s) of the last chunk the live worker handled, per source: `[mic, meeting]`.
+    /// Chunks reach the worker in time order per source, so everything later was either silent,
+    /// dropped after the queue overflowed, or never reached before stop.
+    pub done: [f64; 2],
+    /// Chunks that failed or gave no text, to be redone: `(mic, start, end)`.
+    pub gaps: Vec<(bool, f64, f64)>,
 }
 impl LiveResult {
     pub fn complete(&self) -> bool {
         !self.failed && (self.mic_blocks == 0 || self.mic_text > 0)
             && (self.system_blocks == 0 || self.system_text > 0)
     }
+}
+
+/// What the live run did not cover, as `(mic, start, end)` ranges in seconds: its failed chunks plus
+/// each channel's tail after the last handled chunk. Tails shorter than half a second are skipped.
+pub fn missing(live: &LiveResult, mic_s: f64, system_s: f64) -> Vec<(bool, f64, f64)> {
+    let mut todo = live.gaps.clone();
+    for (mic, len) in [(true, mic_s), (false, system_s)] {
+        let from = live.done[if mic { 0 } else { 1 }];
+        if len - from >= 0.5 { todo.push((mic, from, len)); }
+    }
+    todo
+}
+
+/// Complete a live result from the source recordings (16 kHz): transcribe each [`missing`] range with
+/// `transcribe(samples, percent_base, percent_span)`, place the text at the range's offset and merge
+/// it with the live utterances. `progress(mic, from)` names the range being worked on.
+pub fn fill_missing(
+    live: LiveResult,
+    mic: Option<&[f32]>,
+    system: Option<&[f32]>,
+    mut transcribe: impl FnMut(&[f32], i32, i32) -> anyhow::Result<Vec<crate::transcribe::RawSegment>>,
+    progress: impl Fn(bool, f64),
+) -> anyhow::Result<Vec<Utterance>> {
+    let seconds = |s: Option<&[f32]>| s.map_or(0.0, |v| v.len() as f64 / 16000.0);
+    let todo = missing(&live, seconds(mic), seconds(system));
+    let total: f64 = todo.iter().map(|(_, a, b)| b - a).sum::<f64>().max(0.001);
+    let mut utterances = live.utterances;
+    let mut handled = 0.0;
+    for (is_mic, from, to) in todo {
+        let Some(samples) = (if is_mic { mic } else { system }) else { continue };
+        let (a, b) = (((from * 16000.0) as usize).min(samples.len()), ((to * 16000.0) as usize).min(samples.len()));
+        let mut part = samples[a..b].to_vec();
+        let base = (handled / total * 100.0) as i32;
+        let span = ((to - from) / total * 100.0) as i32;
+        handled += to - from;
+        if !has_audio(&part, 16000) { continue; }
+        if is_mic { prepare_mic(&mut part); }
+        progress(is_mic, from);
+        let raw = transcribe(&part, base, span)?;
+        utterances.extend(self::utterances(raw, part.len(), if is_mic { "Jag" } else { "Mötet" }, from));
+    }
+    Ok(crate::align::from_labeled(utterances))
 }
 
 /// Activity gate using sustained frame energy, rather than a high peak threshold.
@@ -57,6 +105,29 @@ pub fn utterances(raw:Vec<crate::transcribe::RawSegment>, samples:usize, label:&
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn fill_missing_keeps_live_text_and_places_new_text_at_its_offset() {
+        let speech=|n:usize|(0..n).map(|i|((i as f32)*0.05).sin()*0.3).collect::<Vec<f32>>();
+        let (mic,system)=(speech(16000*20),speech(16000*30));
+        let live=LiveResult{
+            utterances:vec![Utterance{start:1.0,end:3.0,speaker:Some("Mötet".into()),text:"live".into(),words:vec![]}],
+            done:[20.0,12.0],gaps:vec![(false,4.0,8.0)],..Default::default()
+        };
+        let mut calls=Vec::new();
+        let out=fill_missing(live,Some(&mic),Some(&system),|part,_,_|{
+            calls.push(part.len());
+            Ok(vec![crate::transcribe::RawSegment{start:0.5,end:1.5,text:"ny".into(),words:vec![]}])
+        },|_,_|{}).unwrap();
+        // The gap (4 s) and the meeting tail (18 s) are transcribed; the mic was fully covered live.
+        assert_eq!(calls,vec![16000*4,16000*18]);
+        let found:Vec<_>=out.iter().map(|u|(u.start,u.text.as_str(),u.speaker.as_deref().unwrap())).collect();
+        assert_eq!(found,vec![(1.0,"live","Mötet"),(4.5,"ny","Mötet"),(12.5,"ny","Mötet")]);
+    }
+    #[test] fn missing_covers_failed_chunks_and_each_tail() {
+        let live=LiveResult{done:[600.0,42.5],gaps:vec![(false,10.0,16.0)],..Default::default()};
+        assert_eq!(missing(&live,600.2,1200.0),vec![(false,10.0,16.0),(false,42.5,1200.0)]);
+        let idle=LiveResult::default();
+        assert_eq!(missing(&idle,0.0,30.0),vec![(false,0.0,30.0)]);
+    }
     #[test] fn quiet_voice_survives_without_amplifying_silence_or_clicks() {
         let mut quiet:Vec<f32>=(0..16000).map(|i|0.004*(i as f32/12.0).sin()).collect();
         assert!(has_audio(&quiet,16000)); prepare_mic(&mut quiet);

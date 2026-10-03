@@ -371,6 +371,10 @@
     });
     // A background meeting finished transcribing → save it straight to Bibliotek.
     const md = listen<any>("avskrift:meeting-done", (e) => { void onMeetingDone(e.payload); });
+    // The live result, saved while the rest is completed: readable now, replaced when done.
+    const mpv = listen<{ token: string; transcript: Transcript }>("avskrift:meeting-provisional", (e) => {
+      if (currentJobId === e.payload.token && currentJobPending) showProvisional(e.payload.transcript);
+    });
     const mf = listen<{ token: string; error: string }>("avskrift:meeting-failed", (e) => {
 
       bgMeetings = bgMeetings.filter((m) => m.id !== e.payload.token);
@@ -389,6 +393,7 @@
       ml.then((f) => f());
       mp.then((f) => f());
       md.then((f) => f());
+      mpv.then((f) => f());
       mf.then((f) => f());
     };
   });
@@ -694,7 +699,7 @@
   // ---- Transcript editing ----
 
   function startEdit(idx: number) {
-    if (!transcript) return;
+    if (!transcript || currentJobPending) return;
     editingIdx = idx;
     editText = transcript.utterances[idx].text;
   }
@@ -745,7 +750,7 @@
 
   /** Remove an utterance (filler, cross-talk, mis-capture). */
   function deleteUtterance(idx: number) {
-    if (!transcript) return;
+    if (!transcript || currentJobPending) return;
     snapshotTranscript();
     editingIdx = null;
     transcript.utterances = transcript.utterances.filter((_, i) => i !== idx);
@@ -754,13 +759,14 @@
 
   /** Reassign a single utterance to another speaker (`""` clears it). */
   function setSpeaker(idx: number, id: string) {
-    if (!transcript) return;
+    if (!transcript || currentJobPending) return;
     snapshotTranscript();
     transcript.utterances[idx] = { ...transcript.utterances[idx], speaker: id || null };
     void pushTranscript();
   }
 
   async function renameSpeaker(id: string, name: string) {
+    if (currentJobPending) return;
     speakerLabels[id] = name;
     saveWorkspace();
     // Labels live in the UI; nothing to push to the transcript itself.
@@ -1161,10 +1167,18 @@
     try {
       await invoke('stop_meeting',{args:{model:selectedModel,language,token}});
       meetingActive=false;if(meetingTimer)clearInterval(meetingTimer);
-      view='overview';screen='transcribe';
-      showToast('Inspelningen är sparad. Du kan fortsätta anteckna medan transkriptet blir klart.');
+      const live=liveUtterances.map(u=>({start:u.start,end:u.end,speaker:u.source,text:u.text,words:[]})).sort((a,b)=>a.start-b.start);
+      if(live.length) showProvisional({utterances:live,language,model:selectedModel,diarized:true});
+      view=live.length?'transcript':'overview';screen='transcribe';
+      showToast(live.length?'Inspelningen är sparad. Texten från mötet visas direkt; resten blir klart i bakgrunden.':'Inspelningen är sparad. Du kan fortsätta anteckna medan transkriptet blir klart.');
     }catch(e){error=String(e);bgMeetings=bgMeetings.filter(m=>m.id!==token);}
     finally{meetingBusy=false;transcribePct=null;progressMsg='';void refreshJobs();}
+  }
+
+  /** Read-only live text of a meeting that is still being completed. Never kept as the original. */
+  function showProvisional(t: Transcript) {
+    transcript=t;editMode=false;editingIdx=null;
+    speakerLabels=Object.fromEntries(t.utterances.filter(u=>u.speaker).map(u=>[u.speaker!,u.speaker!]));
   }
 
   async function onMeetingDone(payload:any) {
@@ -2359,7 +2373,7 @@
     // Derive the title once and keep it stable — so re-transcribing or reopening a meeting doesn't
     // rename the project (which made it look like a brand-new/second project).
     if (!currentJobTitle) currentJobTitle = deriveTitle(type);
-    if (!originalTranscript?.utterances.length && transcript?.utterances.length) originalTranscript = JSON.parse(JSON.stringify(transcript));
+    if (!currentJobPending && !originalTranscript?.utterances.length && transcript?.utterances.length) originalTranscript = JSON.parse(JSON.stringify(transcript));
     const job = {
       version: 2,
       agenda, bookmarks, decisions, followupFrom, lastView:view, lastPosition:currentTime,
@@ -3922,11 +3936,23 @@
         {:else if view === "transcript"}
           {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
           <div class="t-with-rail"><div class="t-main">
+          {#if currentJobPending && transcript?.utterances?.length}
+            <div class="banner provisional" role="status">
+              {#if bgMeetings.some((m) => m.id === currentJobId)}
+                <span><strong>Preliminär text från mötet.</strong> {bgMeetings.find((m) => m.id === currentJobId)?.msg} Texten byts ut när transkriptet är klart; då går det att redigera.</span>
+              {:else}
+                <span><strong>Preliminär text från mötet.</strong> Bearbetningen avbröts innan transkriptet blev komplett.</span>
+                {#if meetingMicWav && meetingSysWav && selectedDownloaded}<button class="btn small" onclick={retranscribeMeeting} disabled={busy}>Transkribera om</button>{/if}
+              {/if}
+            </div>
+          {/if}
           <div class="t-toolbar">
+            {#if !currentJobPending}
             <button class="btn small" class:on={editMode} onclick={() => (editMode = !editMode)} title="Växla mellan att spela upp och att rätta text">
               {editMode ? "✓ Redigerar" : "Redigera"}
             </button>
             <button class="btn small" onclick={undoEdit} disabled={!undoStack.length}>Ångra</button>
+            {/if}
             <span class="meta">
               {transcript?.utterances.length??0} segment · modell {transcript?.model}{transcript?.diarized ? " · diariserad" : ""} ·
               {editMode ? "klicka en rad för att rätta · byt talare · ta bort" : "klicka tid för att spela · klicka/dubbelklicka text för att rätta"}
@@ -4574,6 +4600,7 @@
   .working-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: workpulse 1s ease-in-out infinite; }
   .rev-speaker { font-weight: 600; color: var(--muted); }
   .t-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .banner.provisional { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; } .banner.provisional span { flex: 1; min-width: 220px; }
   .t-toolbar .meta { margin: 0; }
   .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; margin-bottom: 18px; display: block; }
