@@ -41,10 +41,23 @@ Format (Tauris statiska JSON):
 
 ## Release
 
-1. Höj versionen (`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`).
-2. Bygg båda varianterna med `TAURI_SIGNING_PRIVATE_KEY` satt till sökvägen ovan
-   (`bundle.createUpdaterArtifacts` ger `…-setup.exe.sig` bredvid installationsprogrammet).
-3. Kontrollera signaturerna mot den publika nyckeln innan publicering.
-4. Publicera releasen `v<version>` med installationsprogram och ZIP-filer.
-5. Skriv `beta-vulkan.json` och `beta-cpu.json` (och vid stabil release även `stable-*.json`) och ladda
-   upp dem till releasen `updates` med `gh release upload updates … --clobber`.
+1. Höj versionen (`package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`)
+   och skriv `docs/RELEASE-<version>.md` (avsnittet `## Nytt` blir texten i uppdateringsdialogen).
+2. Bygg allt lokalt:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File model-tools\release\release.ps1 -LibClangPath <mapp med libclang.dll>
+   ```
+
+   Skriptet kör testerna, samlar rätt DLL-filer per variant, bygger signerade installationsprogram
+   och portabla mappar, packar ZIP-filer, skriver `SHA256SUMS.txt`, kontrollerar signaturerna mot
+   den publika nyckeln och skriver uppdateringsfilerna i `dist\release-<version>\updates\`.
+   Förhandsversioner (`-` i versionen) går till kanalen `beta`, stabila till både `stable` och `beta`.
+3. Publicera (utåtriktat, görs uttryckligen):
+
+   ```bash
+   gh release create v<version> --repo Pluggentipsar/avskrift [--prerelease] --title "…" --notes-file docs/RELEASE-<version>.md dist/release-<version>/Avskrift_* dist/release-<version>/SHA256SUMS.txt
+   gh release upload updates --repo Pluggentipsar/avskrift --clobber dist/release-<version>/updates/*.json
+   ```
+
+   Ladda upp uppdateringsfilerna först när installationsprogrammen ligger uppe; de pekar på dem.
