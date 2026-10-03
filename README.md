@@ -12,6 +12,11 @@ Ingen Python eller molntjänst behövs för att använda appen.
 
 ## Funktioner
 
+- **Pianissimo från Klangs egen export (0.8.0-beta.2, förhandsrelease)** — färre fel på långa
+  inspelningar, 45–50 gånger snabbare än realtid och ingen lokal förberedelse. Se
+  [release-anteckningarna](docs/RELEASE-0.8.0-beta.2.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.2).
+
 - **Textklipp (0.8.0-beta.1, förhandsrelease)** — klipp en egen videoinspelning genom att stryka
   text i transkriptet och exportera en färdig film med exakt synk. Releasen har också en ny
   arbetsyta, egen ingång för Transkribera och installationsprogram för CPU och Vulkan. Se
@@ -19,7 +24,7 @@ Ingen Python eller molntjänst behövs för att använda appen.
   [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.1).
 
 - **Pianissimo (0.7.0-beta.2, förhandsrelease)** — experimentell, valbar CPU-motor för svensk
-  transkribering av ljudfiler, möten och diktering, med lokal modellförberedelse och minneskontroll.
+  transkribering av ljudfiler, möten och diktering, med minneskontroll.
   KB-Whisper är fortfarande standard. Se [Pianissimo i Avskrift](docs/PIANISSIMO.md).
   [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.7.0-beta.2).
 
