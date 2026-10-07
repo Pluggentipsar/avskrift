@@ -6,6 +6,8 @@
   import TranscriptView from '$lib/TranscriptView.svelte';
   import ModelSettings from '$lib/ModelSettings.svelte';
   import UpdateDialog from '$lib/UpdateDialog.svelte';
+  import SummaryEditor from '$lib/SummaryEditor.svelte';
+  import { copyMarkdown, readClipboardMarkdown } from '$lib/markdown';
   import Dictation from "$lib/Dictation.svelte";
   import Textklipp from "$lib/textklipp/Textklipp.svelte";
   import { ICONS, jobIcon } from "$lib/icons";
@@ -207,6 +209,7 @@
   async function seekGrounded(source:SourceUnit){if(source.start===null)return;tab('transcript');await tick();const i=transcript?.utterances.findIndex(u=>u.start===source.start)??-1;await transcriptView?.reveal(i);seekTo(source.start);}
   function addGroundedAction(text:string, source?:{quote:string;start:number|null}){actions=[...actions,{id:crypto.randomUUID(),text,source:source?{...source,jobId:currentJobId??undefined}:undefined,done:false,assignee:'',due:''}];saveWorkspace();}
   let summaryBasis = $state<string | null>(null);
+  let summaryMode = $state<"edit" | "view">("edit"); // the summary editor: markdown or formatted
   let versionsOpen = $state(false);
   let restoringJob = false;
   let dictationPanel: Dictation;
@@ -640,8 +643,18 @@
 
   async function copySummary() {
     if (!summaryDraft) return;
-    await navigator.clipboard.writeText(summaryDraft);
+    await copyMarkdown(summaryDraft);
     showToast("Kopierat till urklipp");
+  }
+
+  /** Start from a summary made with an external AI: paste it with its tables and headings. */
+  async function pasteSummaryFromAi() {
+    let text = "";
+    try { text = (await readClipboardMarkdown()).trim(); } catch { /* no clipboard access */ }
+    if (!text) { error = "Urklippet är tomt eller kunde inte läsas. Kopiera sammanfattningen i AI-tjänsten och försök igen."; return; }
+    summaryDraft = text; summaryAnonymized = false; summaryBasis = null; summaryMode = "view";
+    saveWorkspace();
+    showToast("Sammanfattningen är inklistrad");
   }
 
   async function runTranscribe() {
@@ -2588,7 +2601,7 @@
     const path = await save({ defaultPath: `${stem}_${suffix[id]}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
     if (!path) return false;
     // Save only the displayed snapshot. Never re-read mutable engine state after review.
-    await invoke("save_summary", { args: { path, text, includeTranscript: false } });
+    await invoke("save_summary", { args: { path, text, includeTranscript: false, markdown: ["summary", "meeting", "notes"].includes(id) } });
     return true;
   }
 
@@ -3515,7 +3528,7 @@
             </div>
           </div>
           <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
-          <textarea disabled={busy || qaBusy || actionsBusy} class="summary-edit" bind:value={summaryDraft} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} aria-label="Sammanfattning – redigerbart utkast" spellcheck="true"></textarea>
+          <SummaryEditor bind:value={summaryDraft} bind:mode={summaryMode} disabled={busy || qaBusy || actionsBusy} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} />
         {:else}
           <div class="state">
             <svg class="state-icon" viewBox="0 0 24 24" fill="none">
@@ -4044,11 +4057,13 @@
           <GroundedDraft disabled={qaBusy || actionsBusy} value={groundedWork} sources={groundedSources} context={groundedContext} model={selectedSummaryModel} canListen={!!audioPath} bind:busy before={checkpointWork} onchange={saveGrounded} onseek={seekGrounded} onaction={addGroundedAction} ondecision={addGroundedDecision} onuse={useGrounded} />
           {#if summaryDraft}
           <div class="banner warn">AI-genererat utkast — kan innehålla fel eller utelämnanden. Granska och redigera innan du delar.</div>
-          <textarea disabled={busy || qaBusy || actionsBusy} class="summary-edit" bind:value={summaryDraft} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} aria-label="Sammanfattning – redigerbart utkast" spellcheck="true"></textarea>
+          <SummaryEditor bind:value={summaryDraft} bind:mode={summaryMode} disabled={busy || qaBusy || actionsBusy} oninput={()=>{summaryAnonymized=false;saveWorkspace();}} />
           {:else}
           <div class="empty-view">
             <h3>Skapa en sammanfattning</h3>
             <p class="hint">Välj mall och modell och klicka <strong>Skapa sammanfattning</strong> i panelen till vänster — utkastet dyker upp här för redigering.</p>
+            <p class="hint">Har du gjort en sammanfattning med en annan AI (till exempel efter <strong>Kopiera för AI</strong>)? Kopiera svaret där och klistra in det här; tabeller, rubriker och listor behålls.</p>
+            <button class="btn" onclick={pasteSummaryFromAi} disabled={busy || qaBusy || actionsBusy}>Klistra in från AI</button>
           </div>
           {/if}
         {:else if (view === "notes" || view === "actions")}
@@ -4388,8 +4403,6 @@
   .seek { flex: 1; accent-color: var(--accent); cursor: pointer; }
 
   .document { flex: 1; overflow: auto; white-space: pre-wrap; line-height: 2.1; font-size: 16px; max-width: 82ch; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 26px; }
-  .summary-edit { flex: 1; min-height: 260px; width: 100%; box-sizing: border-box; resize: none; font: inherit; font-size: 15px; line-height: 1.7; color: var(--ink); border: 1px solid var(--line); border-radius: 3px; box-shadow: var(--shadow-sm); padding: 20px 24px; max-width: 84ch; }
-  .summary-edit:focus { outline: none; border-color: var(--accent); }
   .hit { border: none; background: color-mix(in srgb, var(--c) 14%, transparent); font: inherit; line-height: inherit; cursor: pointer; padding: 0 2px 1px; border-radius: 3px; border-bottom: 2px solid var(--c); transition: background .14s; color: inherit; }
   .hit:hover { background: color-mix(in srgb, var(--c) 30%, transparent); }
   .hit.rejected { background: none; border-bottom: 2px dotted var(--faint); text-decoration: line-through; color: var(--faint); }
@@ -4806,9 +4819,9 @@
   .job-strip .job-row { width:100%; border:0; border-bottom:1px solid var(--line); border-radius:0; padding:18px 0; }
   .job-strip .job-badge { color:var(--accent); background:var(--accent-soft); text-transform:none; font-size:12px; letter-spacing:0; }
   @media(max-width:550px) { .job-strip .job-row { flex-wrap:wrap; gap:8px; } .job-strip .job-title { white-space:normal; overflow-wrap:anywhere; } .job-strip .job-date { flex-basis:100%; } }
-  .btn,textarea,select.profile,.document,.summary-edit { border-radius:7px; }
-  .review { min-width:0; min-height:0; } .review-head { flex-wrap:wrap; } .document,.summary-edit { min-height:200px; }
-  .layout { min-height:440px; } .summary-edit { font-size:16px; } .ts { font-size:12px; }
+  .btn,textarea,select.profile,.document { border-radius:7px; }
+  .review { min-width:0; min-height:0; } .review-head { flex-wrap:wrap; } .document { min-height:200px; }
+  .layout { min-height:440px; } .ts { font-size:12px; }
   :global(button:focus-visible),:global(input:focus-visible),:global(textarea:focus-visible),:global(select:focus-visible),:global(summary:focus-visible) { outline:3px solid var(--accent); outline-offset:3px; }
   @media(max-width:1050px) { .app { height:auto; min-height:100dvh; grid-template-columns:1fr; } .app-content { overflow:visible; } .layout { overflow:visible; } .review { overflow:visible; } }
   @media(max-width:760px) { .layout { grid-template-columns:1fr; } .layout.collapsed { grid-template-columns:1fr; } .layout.collapsed .sidebar { display:none; } .sidebar { border-right:0; border-bottom:1px solid var(--line); } .workspace-header { padding:14px 18px; } .workspace-tabs { padding:12px 18px; } .review { padding:20px 18px; } .review > .player { margin:auto -18px 0; padding:10px 18px; flex-wrap:wrap; } .home { padding:26px 20px; } .home .big-title { font-size:36px; } }

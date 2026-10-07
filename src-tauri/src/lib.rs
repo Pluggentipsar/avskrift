@@ -19,6 +19,7 @@ mod llm;
 mod memory;
 mod models;
 mod model_files;
+mod markdown_docx;
 mod pianissimo;
 mod pii;
 mod summarize;
@@ -1592,6 +1593,10 @@ struct SaveSummaryArgs {
     timestamps: bool,
     #[serde(default)]
     speaker_labels: BTreeMap<String, String>,
+    /// The text is markdown (summaries, meeting notes): Word gets real headings, lists and tables.
+    /// Transcripts are not, so each of their lines stays its own paragraph.
+    #[serde(default)]
+    markdown: bool,
 }
 
 /// Save an (edited) summary draft as plain text or .docx, optionally with the full transcript
@@ -1614,6 +1619,7 @@ fn save_summary(backend: State<Backend>, args: SaveSummaryArgs) -> Result<(), St
     }
     let out = PathBuf::from(&args.path);
     let res = match ext(&out).as_deref() {
+        Some("docx") if args.markdown => docio::save_built(&out, markdown_docx::build(&text)),
         Some("docx") => {
             let paragraphs: Vec<String> = text.lines().map(|l| l.to_string()).collect();
             docio::save_docx(&out, &paragraphs)

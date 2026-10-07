@@ -116,6 +116,13 @@ mod table_tests {
     }
 }
 
+/// Write a document built elsewhere (e.g. from markdown).
+pub fn save_built(path: &Path, docx: Docx) -> Result<()> {
+    let mut output = std::io::Cursor::new(Vec::new());
+    docx.build().pack(&mut output).map_err(|e| anyhow!("kunde inte skriva Word-filen: {e:?}"))?;
+    crate::storage::atomic_write(path, output.get_ref())
+}
+
 /// Write a .docx from anonymized paragraph texts. Rebuilds a clean document (paragraph structure
 /// preserved; original inline styling is not carried over in v1).
 pub fn save_docx(path: &Path, paragraphs: &[String]) -> Result<()> {

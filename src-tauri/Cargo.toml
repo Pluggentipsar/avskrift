@@ -51,6 +51,7 @@ base64 = "0.22"
 ort = "=2.0.0-rc.12"
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 docx-rs = "0.4"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 # --- Lokala LLM-lager (PII "Övrigt" + sammanfattning): Qwen GGUF via llama.cpp ---
 # Ersatte candle (likvärdig kvalitet, men långsammare på CPU). `dynamic-link` bygger llama.cpp + dess
