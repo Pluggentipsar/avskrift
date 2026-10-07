@@ -35,7 +35,7 @@ och ingen text lämnar maskinen, och ingen Python eller molntjänst behövs.
 ## Hämta
 
 Ladda ner från [releaserna](https://github.com/Pluggentipsar/avskrift/releases). Senaste
-förhandsversion är [0.8.0-beta.4](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.4);
+förhandsversion är [0.8.0-beta.5](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.5);
 senaste stabila är [0.6.0](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.6.0).
 
 | Fil | För |

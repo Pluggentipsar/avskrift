@@ -4,6 +4,12 @@ Vad som kommit i varje version, nyast först. Förhandsversioner (beta) är prov
 stabila version visas som *Latest* bland [releaserna](https://github.com/Pluggentipsar/avskrift/releases).
 Detaljer finns i release-anteckningarna (`docs/RELEASE-*.md`) och stegdokumenten (`docs/ARBETSYTA-STEG-*.md`).
 
+- **Sax i Textklipp och stabilare talarseparering (0.8.0-beta.5, förhandsrelease)** — dela med sax
+  och ta bort bitar på tidslinjen, långa tystnader och omstarter markerade i texten, och
+  talarsepareringen kraschar inte längre på långa inspelningar.
+  Se [release-anteckningarna](RELEASE-0.8.0-beta.5.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.5).
+
 - **Modellhämtning på fler nätverk och sammanfattningar från extern AI (0.8.0-beta.4, förhandsrelease)** —
   hämtning med Windows certifikat och proxy, fortsättning efter avbrott och hämtning via webbläsaren
   som nödutgång; sammanfattningar som markdown med Klistra in från AI, formaterad visning och riktig
