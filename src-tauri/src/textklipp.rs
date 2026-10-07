@@ -383,6 +383,12 @@ pub fn waveform(root: &Path, id: &str, start: f64, end: f64, bars: usize) -> Res
     with_loudness(root, id, |l| l.waveform(start, end, bars))
 }
 
+/// Long quiet stretches (at least `min` seconds) in the whole recording, from the audio alone.
+pub fn silences(root: &Path, id: &str, min: f64) -> Result<Vec<(f64, f64)>> {
+    ensure!(min > 0.0, "ogiltig längd för tystnader");
+    with_loudness(root, id, |l| l.silences(min, 0.15).into_iter().map(|p| (p.start, p.end)).collect())
+}
+
 pub fn preview(root: &Path, id: &str, edits: &EditList) -> Result<Preview> {
     let p = load(root, id)?;
     with_loudness(root, id, |loudness| preview_with(&p, edits, loudness))

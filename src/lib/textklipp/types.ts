@@ -140,8 +140,12 @@ export function parseTime(s: string): number | null {
 // --- repeated takes ---------------------------------------------------------------------------
 
 export type Retake = {
+  /** A whole sentence said again, or a phrase restarted within a sentence ("jag tänkte att, jag tänkte att vi"). */
+  kind: 'sentence' | 'restart';
   /** First and last token index (inclusive) of the earlier take(s) to remove. */
   from: number; to: number;
+  /** Last token index of the earlier take itself (what is marked in the text). */
+  earlierTo: number;
   /** Token index where the later take starts. */
   laterAt: number;
   earlier: string; later: string;
@@ -191,10 +195,86 @@ export function findRetakes(tokens: Token[]): Retake[] {
       const end = tokens[b.from - 1]?.end ?? b.start;
       if (end - a.start > RETAKE_MAX) break;
       if (!out.some(r => r.from <= a.from && a.from <= r.to)) {
-        out.push({ from: a.from, to: b.from - 1, laterAt: b.from, earlier: a.text, later: b.text, start: a.start, end });
+        out.push({ kind: 'sentence', from: a.from, to: b.from - 1, earlierTo: a.to, laterAt: b.from, earlier: a.text, later: b.text, start: a.start, end });
       }
       break;
     }
+  }
+  return out;
+}
+
+// --- restarts within a sentence ------------------------------------------------------------
+
+const RESTART_LONGEST = 6;   // words in a repeated phrase, longest first
+const RESTART_GAP = 3;       // words allowed between the two takes ("jag tänkte, eh, jag tänkte")
+const RESTART_SECONDS = 10;  // time between the end of the first take and the second
+const RESTART_WORDS = 12;    // a longer first take is a sentence of its own, not a false start
+/** Words that may stand between an abandoned take and the new one. */
+const FILLERS = new Set(['eh', 'öh', 'äh', 'ehm', 'öhm', 'hm', 'hmm', 'mm', 'alltså', 'asså', 'nej', 'förlåt', 'vänta', 'ja', 'okej']);
+
+/** Words compared loosely: case and punctuation ignored, and long words by their first five
+ *  letters, so "välkommen" and "välkomna" count as the same word. */
+const loose = (s: string) => { const w = norm(s); return w.length > 5 ? w.slice(0, 5) : w; };
+
+/** Phrases started again right away: the same 3–6 words (or 2 words back to back) repeated after at
+ *  most a few filler words. Only abandoned takes count: one that ends as a finished sentence is a
+ *  deliberate repetition ("Det här är min ingång. Det här är mitt patos."). The earlier take is
+ *  suggested for removal, keeping the later one. */
+export function findRestarts(tokens: Token[]): Retake[] {
+  const words = tokens.map((t, i) => ({ t, i })).filter(w => w.t.kind === 'word');
+  const keys = words.map(w => loose(w.t.text));
+  const out: Retake[] = [];
+  const same = (a: number, b: number, n: number) => {
+    for (let k = 0; k < n; k++) if (!keys[a + k] || keys[a + k] !== keys[b + k]) return false;
+    return true;
+  };
+  for (let i = 0; i < words.length; ) {
+    let found: Retake | null = null;
+    for (let n = RESTART_LONGEST; n >= 2 && !found; n--) {
+      for (let gap = 0; gap <= (n >= 3 ? RESTART_GAP : 0) && !found; gap++) {
+        const j = i + n + gap;
+        if (j + n > words.length || !same(i, j, n)) continue;
+        if (words[j].t.start - words[i + n - 1].t.end > RESTART_SECONDS) continue;
+        if (j - i > RESTART_WORDS) continue;
+        if (keys.slice(i + n, j).some(k => !FILLERS.has(k))) continue;
+        const last = words[j - 1].t.text.trim();
+        if (/[.!?]$/.test(last) && !/(\.\.\.|…)$/.test(last)) continue;
+        const from = words[i].i, laterAt = words[j].i;
+        found = {
+          kind: 'restart', from, to: laterAt - 1, earlierTo: laterAt - 1, laterAt,
+          earlier: tokens.slice(from, laterAt).map(t => t.text).join(' '),
+          later: words.slice(j, j + n).map(w => w.t.text).join(' '),
+          start: tokens[from].start, end: tokens[laterAt - 1].end,
+        };
+      }
+    }
+    if (found) { out.push(found); i = words.findIndex(w => w.i === found!.laterAt); }
+    else i++;
+  }
+  return out;
+}
+
+/** Sentence retakes and restarts together, in time order, without overlaps (sentences win). */
+export function findAllRetakes(tokens: Token[]): Retake[] {
+  const sentences = findRetakes(tokens);
+  const restarts = findRestarts(tokens).filter(r => !sentences.some(s => r.from <= s.to && s.from <= r.to));
+  return [...sentences, ...restarts].sort((a, b) => a.start - b.start);
+}
+
+// --- time ranges ------------------------------------------------------------------------------
+
+/** Whether source time `t` survives the edit. */
+export function inKeep(keep: [number, number][], t: number): boolean {
+  return keep.some(([a, b]) => t >= a && t <= b);
+}
+
+/** `ranges` with `[a, b]` taken out of each. */
+export function subtract(ranges: [number, number][], a: number, b: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [x, y] of ranges) {
+    if (y <= a || x >= b) { out.push([x, y]); continue; }
+    if (x < a) out.push([x, a]);
+    if (y > b) out.push([b, y]);
   }
   return out;
 }

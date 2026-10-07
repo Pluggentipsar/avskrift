@@ -1,10 +1,12 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { fmt, type Token, type Edge } from './types';
-  let { projectId, time, duration, keep, tokens, deleted, fps, active, onseek, onedge }: {
+  let { projectId, time, duration, keep, tokens, deleted, fps, active, mark = null, silences = [], onseek, onedge, onrange }: {
     projectId: string; time: number; duration: number; keep: [number, number][]; tokens: Token[];
     deleted: Set<number>; fps: number; active: [number, number] | null;
-    onseek: (t: number) => void; onedge: (edge: Edge, to: number) => void;
+    /** Range marked for a manual cut, and long silences still in the edit. */
+    mark?: [number, number] | null; silences?: [number, number][];
+    onseek: (t: number) => void; onedge: (edge: Edge, to: number) => void; onrange: (a: number, b: number) => void;
   } = $props();
 
   const SPAN = 8; // seconds shown
@@ -14,10 +16,12 @@
   let bars = $state<Float32Array | number[]>([]);
   let barsFor = '';
   let drag = $state<{ edge: Edge; x: number } | null>(null);
+  /** Dragging over the waveform away from a cut edge marks a range; a click (no movement) seeks. */
+  let sweep = $state<{ from: number; x: number; moved: boolean } | null>(null);
 
   $effect(() => {
     const t = time;
-    if (drag) return;
+    if (drag || sweep) return;
     if (t < view + SPAN * 0.2 || t > view + SPAN * 0.8) view = Math.max(0, Math.min(Math.max(0, duration - SPAN), t - SPAN * 0.35));
   });
   $effect(() => {
@@ -50,6 +54,10 @@
       if (a > prev) { g.fillStyle = '#9231152e'; g.fillRect(x(prev), 0, x(a) - x(prev), h); }
       prev = b;
     }
+    // Long silences still in the edit, then the marked range.
+    for (const [a, b] of silences) { if (b < view || a > view + SPAN) continue; g.fillStyle = '#85570024'; g.fillRect(x(a), 0, x(b) - x(a), h); }
+    const marked = sweep?.moved ? [Math.min(sweep.from, sweep.x), Math.max(sweep.from, sweep.x)] : mark ? [x(mark[0]), x(mark[1])] : null;
+    if (marked) { g.fillStyle = '#1f4e4633'; g.fillRect(marked[0], 0, marked[1] - marked[0], h); g.fillStyle = accent; g.fillRect(marked[0] - 1, 0, 2, h); g.fillRect(marked[1] - 1, 0, 2, h); }
     if (active) { g.strokeStyle = '#923115'; g.lineWidth = 1; g.strokeRect(x(active[0]) + 0.5, 0.5, x(active[1]) - x(active[0]) - 1, h - 1); }
     // Waveform, mirrored around the middle of the upper area.
     const mid = 46, amp = 40, bw = width / Math.max(1, bars.length);
@@ -83,15 +91,23 @@
   function local(e: PointerEvent) { return e.clientX - (e.currentTarget as HTMLElement).getBoundingClientRect().left; }
   function down(e: PointerEvent) {
     const px = local(e), edge = hit(px);
-    if (edge) { drag = { edge, x: px }; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }
-    else onseek(t(px));
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    if (edge) drag = { edge, x: px };
+    else sweep = { from: px, x: px, moved: false };
   }
   function move(e: PointerEvent) {
-    const px = local(e);
-    if (drag) drag = { ...drag, x: Math.max(0, Math.min(width, px)) };
+    const px = Math.max(0, Math.min(width, local(e)));
+    if (drag) drag = { ...drag, x: px };
+    else if (sweep) sweep = { ...sweep, x: px, moved: sweep.moved || Math.abs(px - sweep.from) > 4 };
     else (e.currentTarget as HTMLElement).style.cursor = hit(px) ? 'ew-resize' : 'pointer';
   }
   function up() {
+    if (sweep) {
+      const s = sweep; sweep = null;
+      if (s.moved) onrange(t(Math.min(s.from, s.x)), t(Math.max(s.from, s.x)));
+      else onseek(t(s.from));
+      return;
+    }
     if (!drag) return;
     const to = Math.round(t(drag.x) * fps) / fps;
     const edge = drag.edge; drag = null;
@@ -100,8 +116,8 @@
 </script>
 
 <div class="detail" bind:clientWidth={width}>
-  <canvas bind:this={canvas} data-view={view} data-span={SPAN} aria-label="Detaljvy med vågform, ord och klipp kring uppspelningsmarkören. Dra en röd kant för att flytta ett klipp."
-    onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={() => (drag = null)}></canvas>
+  <canvas bind:this={canvas} data-view={view} data-span={SPAN} aria-label="Detaljvy med vågform, ord och klipp kring uppspelningsmarkören. Dra en röd kant för att flytta ett klipp, eller dra över vågformen för att markera ett avsnitt."
+    onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={() => { drag = null; sweep = null; }}></canvas>
   <div class="scale"><span>{fmt(view)}</span>{#if drag}<span class="dragging">{fmt(t(drag.x))}.{String(Math.round((t(drag.x) % 1) * 100)).padStart(2, '0')}</span>{/if}<span>{fmt(view + SPAN)}</span></div>
 </div>
 

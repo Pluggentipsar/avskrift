@@ -4,8 +4,8 @@
   import { invokeWork, isWorkCancelled } from '$lib/work';
   import Detail from './Detail.svelte';
   import ExportDialog from './ExportDialog.svelte';
-  import { paragraphs, playable, toEdited, toSource, fmt, fmtPrecise, tokenAt, search, parseTime, findRetakes,
-    type Project, type Preview, type Token, type EditList, type Edge } from './types';
+  import { paragraphs, playable, toEdited, toSource, fmt, fmtPrecise, tokenAt, search, parseTime, findAllRetakes, inKeep, subtract,
+    type Project, type Preview, type Token, type EditList, type Edge, type Retake } from './types';
 
   let { project: initial, visible, progress = '', percent = 0, onclose, onmodels }: {
     project: Project; visible: boolean; progress?: string; percent?: number; onclose: () => void; onmodels: () => void;
@@ -132,7 +132,14 @@
   function onkey(e: KeyboardEvent) {
     if (!visible || (e.target as HTMLElement)?.closest('input,select,textarea')) return;
     const mod = e.ctrlKey || e.metaKey;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) { const ids = selectedIds(); if (ids.length) { e.preventDefault(); strike(ids); } }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) {
+      const ids = selectedIds();
+      if (ids.length) { e.preventDefault(); strike(ids); }
+      else if (markRange) { e.preventDefault(); removeMarked(); }
+    }
+    else if (!mod && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setMark('in'); }
+    else if (!mod && (e.key === 'o' || e.key === 'O')) { e.preventDefault(); setMark('out'); }
+    else if (e.key === 'Escape' && (markIn !== null || markOut !== null)) { markIn = markOut = null; }
     else if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
     else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); doRedo(); }
     else if (e.key === ' ' && !(e.target as HTMLElement)?.closest('button')) { e.preventDefault(); togglePlay(); }
@@ -195,6 +202,58 @@
     const g = list[0]; if (g) seek(Math.max(0, g[0] - 1));
   }
 
+  // --- manual ranges: mark in/out at the playhead (I/O) or drag in the detail view ---------------
+  const snap = (t: number) => Math.max(0, Math.min(duration, Math.round(t * fps) / fps));
+  let markIn = $state<number | null>(null), markOut = $state<number | null>(null);
+  const markRange = $derived<[number, number] | null>(markIn !== null && markOut !== null && Math.abs(markOut - markIn) >= 1 / fps
+    ? [Math.min(markIn, markOut), Math.max(markIn, markOut)] : null);
+  function setMark(side: 'in' | 'out') { const t = snap(heard); if (side === 'in') markIn = t; else markOut = t; }
+  function setRange(a: number, b: number) { markIn = snap(Math.min(a, b)); markOut = snap(Math.max(a, b)); }
+  const byId = $derived(new Map(tokens.map(t => [t.id, t])));
+  /** Remove a stretch of time, whatever words lie in it. */
+  function removeRange(a: number, b: number) {
+    change(() => { removed = [...subtract(removed, a, b), [a, b]]; kept = subtract(kept, a, b); });
+  }
+  /** Bring a stretch back: manual removals in it go, words wholly inside are restored. */
+  function keepRange(a: number, b: number) {
+    change(() => {
+      removed = subtract(removed, a, b);
+      deleted = new Set([...deleted].filter(id => { const t = byId.get(id); return !t || t.start < a || t.end > b; }));
+      kept = [...subtract(kept, a, b), [a, b]];
+    });
+  }
+  function removeMarked() { if (markRange) { removeRange(...markRange); markIn = markOut = null; } }
+  function keepMarked() { if (markRange) { keepRange(...markRange); markIn = markOut = null; } }
+  /** Words not struck but inside removed time (a cut silence or a manual range): shown as cut. */
+  const cutAway = (t: Token) => !deleted.has(t.id) && !inKeep(preview.keep, (t.start + t.end) / 2);
+
+  // --- long silences, found from the audio (words can lie across them) --------------------------
+  const SILENCE_KEEP = 0.25; // seconds of each silence kept on both sides, so joins breathe
+  let silenceMin = $state(2), silences = $state<[number, number][]>([]);
+  async function loadSilences() {
+    try { silences = (await invoke<[number, number][]>('textklipp_silences', { id: project.id, min: silenceMin })) ?? []; } catch { silences = []; }
+  }
+  const silenceCut = (s: [number, number]): [number, number] => [snap(s[0] + SILENCE_KEEP), snap(s[1] - SILENCE_KEEP)];
+  const silenceGone = (s: [number, number]) => { const [a, b] = silenceCut(s); return !inKeep(preview.keep, (a + b) / 2); };
+  function toggleSilence(s: [number, number]) { const [a, b] = silenceCut(s); if (silenceGone(s)) keepRange(a, b); else removeRange(a, b); }
+  const silencesLeft = $derived(silences.filter(s => !silenceGone(s)));
+  function removeSilences() {
+    const ranges = silencesLeft.map(silenceCut);
+    if (!ranges.length) return;
+    change(() => { for (const [a, b] of ranges) { removed = [...subtract(removed, a, b), [a, b]]; kept = subtract(kept, a, b); } });
+  }
+  /** Silence markers in the text, before the first token that starts inside or after each silence. */
+  const silenceBefore = $derived.by(() => {
+    const at = new Map<number, [number, number][]>();
+    for (const s of silences) {
+      const i = tokens.findIndex(t => t.start >= s[0] - 0.05);
+      const key = i >= 0 ? tokens[i].id : -1;
+      at.set(key, [...(at.get(key) ?? []), s]);
+    }
+    return at;
+  });
+  const secs = (s: [number, number]) => Math.round(s[1] - s[0]);
+
   // --- listen to a join in a loop: 1 s of edited time before and after ------------------------
   let loop = $state<{ from: number; until: number } | null>(null);
   function listen() {
@@ -223,14 +282,17 @@
   }
 
   // --- repeated takes ----------------------------------------------------------------------
-  const retakes = $derived(findRetakes(tokens));
+  const retakes = $derived(findAllRetakes(tokens));
+  /** Token id → the retake it starts (chip in the text) and the set of ids in earlier takes. */
+  const retakeAt = $derived(new Map<number, Retake>(retakes.map(r => [tokens[r.from].id, r])));
+  const retakeTokenIds = $derived(new Set(retakes.flatMap(r => tokens.slice(r.from, r.earlierTo + 1).map(t => t.id))));
   const retakeIds = (r: { from: number; to: number }) => tokens.slice(r.from, r.to + 1).map(t => t.id);
   const retakeDone = (r: { from: number; to: number }) => retakeIds(r).every(id => deleted.has(id));
   function removeRetake(r: { from: number; to: number }) { change(() => { deleted = new Set([...deleted, ...retakeIds(r)]); }); }
   function showRetake(r: { from: number; start: number }) { seek(r.start); docEl?.querySelector(`[data-id="${tokens[r.from].id}"]`)?.scrollIntoView({ block: 'center' }); }
 
   onMount(() => {
-    void loadMedia(); void refreshPreview(); loadLatency();
+    void loadMedia(); void refreshPreview(); void loadSilences(); loadLatency();
     window.addEventListener('keydown', onkey);
     return () => { window.removeEventListener('keydown', onkey); void flush(); };
   });
@@ -274,10 +336,27 @@
       </div>
       <div class="timeline" role="slider" tabindex="0" aria-label="Tidslinje" aria-valuemin={0} aria-valuemax={Math.round(duration)} aria-valuenow={Math.round(time)}
         onclick={timelineClick} onkeydown={e => { if (e.key === 'ArrowRight') seek(time + 5); if (e.key === 'ArrowLeft') seek(time - 5); }}>
+        {#each silencesLeft as [a, b]}<span class="quiet" style:left="{(a / duration) * 100}%" style:width="{Math.max(0.15, ((b - a) / duration) * 100)}%"></span>{/each}
         {#each gaps as [a, b]}<span class="cut" style:left="{(a / duration) * 100}%" style:width="{Math.max(0.15, ((b - a) / duration) * 100)}%"></span>{/each}
+        {#if markIn !== null}<span class="mark-edge" style:left="{(markIn / duration) * 100}%"></span>{/if}
+        {#if markOut !== null}<span class="mark-edge" style:left="{(markOut / duration) * 100}%"></span>{/if}
+        {#if markRange}<span class="mark" style:left="{(markRange[0] / duration) * 100}%" style:width="{Math.max(0.15, ((markRange[1] - markRange[0]) / duration) * 100)}%"></span>{/if}
         <span class="playhead" style:left="{(heard / duration) * 100}%"></span>
       </div>
-      <Detail projectId={project.id} time={heard} {duration} keep={preview.keep} {tokens} {deleted} {fps} active={activeCut} onseek={seek} onedge={moveEdge} />
+      <Detail projectId={project.id} time={heard} {duration} keep={preview.keep} {tokens} {deleted} {fps} active={activeCut} mark={markRange} silences={silencesLeft}
+        onseek={seek} onedge={moveEdge} onrange={setRange} />
+      <div class="markbar" role="group" aria-label="Klipp ett eget tidsavsnitt">
+        <button class="btn small" onclick={() => setMark('in')} title="Sätt början av avsnittet vid markören (tangent I)">Markera in <kbd>I</kbd></button>
+        <button class="btn small" onclick={() => setMark('out')} title="Sätt slutet av avsnittet vid markören (tangent O)">Markera ut <kbd>O</kbd></button>
+        {#if markRange}
+          <span class="markinfo">{fmtPrecise(markRange[0])}–{fmtPrecise(markRange[1])} ({(markRange[1] - markRange[0]).toLocaleString('sv-SE', { maximumFractionDigits: 1 })} s)</span>
+          <button class="btn small primary" onclick={removeMarked}>Ta bort markerat <kbd>Delete</kbd></button>
+          <button class="btn small" onclick={keepMarked}>Behåll markerat</button>
+          <button class="btn small" onclick={() => (markIn = markOut = null)} aria-label="Rensa markeringen">×</button>
+        {:else if markIn !== null || markOut !== null}
+          <span class="markinfo">{markIn !== null ? `In ${fmtPrecise(markIn)} – sätt ut med O` : `Ut ${fmtPrecise(markOut ?? 0)} – sätt in med I`}</span>
+        {:else}<span class="hint">eller dra över vågformen</span>{/if}
+      </div>
       <div class="cutbar" role="group" aria-label="Klipp">
         <button class="btn" onclick={() => gotoCut(-1)} disabled={!gaps.length}>◀ Föregående klipp</button>
         <button class="btn" onclick={() => gotoCut(1)} disabled={!gaps.length}>Nästa klipp ▶</button>
@@ -305,14 +384,25 @@
             <option value="">Behåll pauser som de är</option><option value="1.5">Längre än 1,5 s → 1,5 s</option>
             <option value="1">Längre än 1 s → 1 s</option><option value="0.7">Längre än 0,7 s → 0,7 s</option><option value="0.5">Längre än 0,5 s → 0,5 s</option>
           </select></label>
+        <div class="silences">
+          <label>Långa tystnader
+            <select value={String(silenceMin)} onchange={e => { silenceMin = Number(e.currentTarget.value); void loadSilences(); }}>
+              <option value="1">Minst 1 s</option><option value="2">Minst 2 s</option><option value="3">Minst 3 s</option><option value="5">Minst 5 s</option><option value="10">Minst 10 s</option>
+            </select></label>
+          {#if silences.length}
+            <p>{silences.length} tysta partier, {fmt(silences.reduce((n, q) => n + q[1] - q[0], 0))} sammanlagt ({silences.length - silencesLeft.length} borttagna).
+              <button class="link" onclick={removeSilences} disabled={!silencesLeft.length}>Ta bort alla tystnader</button></p>
+            <p class="hint">Hittas i ljudet, även där ord ligger utspridda över tystnaden. {SILENCE_KEEP.toLocaleString('sv-SE')} s behålls i varje kant. Markeras med ⏸ i texten.</p>
+          {:else}<p class="hint">Inga tysta partier så långa.</p>{/if}
+        </div>
         {#if soundIds.length}<p>{soundIds.length} ljud utan ord i texten ({struckSounds} borttagna). <button class="link" onclick={strikeSounds} disabled={struckSounds === soundIds.length}>Ta bort alla</button></p>{/if}
         {#if retakes.length}
           <details class="retakes" open={retakes.length <= 4}>
             <summary>{retakes.length} möjliga omtagningar</summary>
-            <p class="hint">Sådant som sägs igen strax efter. Ta bort den tidigare tagningen för att behålla den senare.</p>
+            <p class="hint">Sådant som sägs igen strax efter: hela meningar och omstarter mitt i en mening. Markeras med ↺ i texten. Ta bort den tidigare tagningen för att behålla den senare.</p>
             <ul>{#each retakes as r (r.from)}
               <li class:done={retakeDone(r)}>
-                <button class="link" onclick={() => showRetake(r)}>{fmt(r.start)}</button> ”{r.earlier.length > 60 ? r.earlier.slice(0, 60) + '…' : r.earlier}” → sägs igen
+                <button class="link" onclick={() => showRetake(r)}>{fmt(r.start)}</button> ”{r.earlier.length > 60 ? r.earlier.slice(0, 60) + '…' : r.earlier}” → {r.kind === 'restart' ? 'börjar om' : 'sägs igen'}
                 <span class="hint">({Math.round(r.end - r.start)} s)</span>
                 {#if retakeDone(r)}<span class="hint">borttagen</span>{:else}<button class="link" onclick={() => removeRetake(r)}>Ta bort tidigare tagning</button>{/if}
               </li>{/each}</ul>
@@ -326,7 +416,7 @@
             {#if latencyManual}<button class="link" onclick={() => setLatency(null)}>Mät automatiskt{latencyAuto !== null ? ` (${latencyAuto} ms)` : ''}</button>{/if}
             Öka om markören ligger före det du hör, till exempel med Bluetooth-hörlurar. Påverkar inte klippen.</span>
         </div>
-        <p class="hint">Markera text och tryck <kbd>Delete</kbd> för att ta bort. Markera borttagen text och tryck <kbd>Delete</kbd> igen för att återställa. <kbd>Ctrl</kbd>+<kbd>Z</kbd> ångrar, mellanslag spelar och pausar. Klicka på ett ord för att hoppa dit. Dra i en röd kant i detaljvyn för att flytta ett klipp.</p>
+        <p class="hint">Markera text och tryck <kbd>Delete</kbd> för att ta bort. Markera borttagen text och tryck <kbd>Delete</kbd> igen för att återställa. <kbd>Ctrl</kbd>+<kbd>Z</kbd> ångrar, mellanslag spelar och pausar. Klicka på ett ord för att hoppa dit. Dra i en röd kant i detaljvyn för att flytta ett klipp. Klipp ett eget avsnitt: <kbd>I</kbd> och <kbd>O</kbd> vid markören, eller dra över vågformen, och sedan <kbd>Delete</kbd>.</p>
       </section>
     </section>
 
@@ -344,11 +434,15 @@
       {#each doc as p (p.key)}
         <p class="para" class:hidden-deleted={!showDeleted && p.tokens.every(t => deleted.has(t.id))}>
           {#if p.speaker}<span class="speaker" contenteditable="false">{p.speaker}</span>{/if}
-          {#each p.tokens as t (t.id)}{#if showDeleted || !deleted.has(t.id)}<span data-id={t.id} class:sound={t.kind === 'sound'} class:struck={deleted.has(t.id)} class:current={t.id === currentId} class:hit={hitIds.has(t.id)}
+          {#each p.tokens as t (t.id)}{#each silenceBefore.get(t.id) ?? [] as q (q[0])}<button class="pause-mark" class:gone={silenceGone(q)} contenteditable="false"
+              title={silenceGone(q) ? 'Tystnaden är borttagen – klicka för att ta tillbaka den' : `Tyst i ${secs(q)} s – klicka för att ta bort`} onclick={() => toggleSilence(q)}>⏸ {secs(q)} s</button>{' '}{/each}{#if retakeAt.has(t.id)}{@const r = retakeAt.get(t.id)!}<button class="retake-mark" class:gone={retakeDone(r)} contenteditable="false"
+              title={retakeDone(r) ? 'Den tidigare tagningen är borttagen' : `${r.kind === 'restart' ? 'Börjar om' : 'Sägs igen'}: ”${r.later}”. Klicka för att ta bort den tidigare tagningen.`}
+              onclick={() => { if (!retakeDone(r)) removeRetake(r); }}>↺</button>{' '}{/if}{#if showDeleted || !deleted.has(t.id)}<span data-id={t.id} class:sound={t.kind === 'sound'} class:struck={deleted.has(t.id)} class:cutaway={cutAway(t)} class:retake={retakeTokenIds.has(t.id) && !deleted.has(t.id)} class:current={t.id === currentId} class:hit={hitIds.has(t.id)}
             role="button" tabindex="-1" title={t.kind === 'sound' ? (t.text === 'ljud' ? 'Tal eller ljud som inte finns i texten' : `Finns inte i texten – modellen hörde "${t.text}"`) : fmt(t.start)}
             onclick={e => clickToken(t, e)} onkeydown={() => {}}>{t.kind === 'sound' ? `[${t.text}]` : t.text}</span>{' '}{/if}{/each}
         </p>
       {/each}
+      {#each silenceBefore.get(-1) ?? [] as q (q[0])}<p class="para"><button class="pause-mark" class:gone={silenceGone(q)} onclick={() => toggleSilence(q)}>⏸ {secs(q)} s</button></p>{/each}
     </article>
     </div>
   </div>
@@ -370,6 +464,18 @@
   .timeline { position: relative; height: 26px; border-radius: 6px; background: var(--accent-soft); cursor: pointer; overflow: hidden; }
   .timeline:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, #92311566 0 4px, #9231152a 4px 8px); }
+  .quiet { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(90deg, #85570040 0 2px, transparent 2px 5px); }
+  .mark { position: absolute; top: 0; bottom: 0; background: #1f4e4633; border-left: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+  .mark-edge { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+  .markbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; } .markinfo { font-variant-numeric: tabular-nums; }
+  .markbar kbd { margin-left: 4px; }
+  .silences { display: grid; gap: 4px; }
+  .pause-mark, .retake-mark { font: 600 12px Archivo, sans-serif; border: 1px solid; border-radius: 10px; padding: 0 7px; cursor: pointer; user-select: none; vertical-align: 2px; }
+  .pause-mark { color: #855700; border-color: #85570066; background: #fff6df; }
+  .retake-mark { color: var(--accent); border-color: #1f4e4666; background: var(--accent-soft); }
+  .pause-mark.gone, .retake-mark.gone { opacity: .45; text-decoration: line-through; }
+  .retake { box-shadow: inset 0 -2px 0 #1f4e4655; }
+  .cutaway { text-decoration: line-through dotted; color: var(--muted); }
   .playhead { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); transform: translateX(-1px); }
   .stats { display: flex; gap: 24px; margin: 0; } .stats div { display: grid; } dt { font-size: 11px; color: var(--muted); } dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
   .tools { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 13px; }

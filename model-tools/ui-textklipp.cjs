@@ -65,6 +65,7 @@ fs.mkdirSync(shots, { recursive: true });
         case 'textklipp_open': return structuredClone(f.project);
         case 'textklipp_media': return { playback: 'C:/synthetic/textklipp/tk-fixture/proxy.mp4', isVideo: true };
         case 'textklipp_preview': { f.previews++; const keep = keepRanges(f.project, args.edits); window.__lastPreview = { keep }; return { keep, editedDuration: keep.reduce((s, [a, b]) => s + b - a, 0) }; }
+        case 'textklipp_silences': return (f.silences ?? []).filter(([a, b]) => b - a >= args.min);
         case 'textklipp_waveform': return Array.from({ length: args.bars }, (_, i) => 0.5 + 0.4 * Math.sin((args.start + (args.end - args.start) * i / args.bars) * 9));
         case 'plugin:dialog|save': f.saveDialog = args; return 'C:/synthetic/Testklipp (klippt).mp4';
         case 'plugin:opener|reveal_item_in_dir': f.revealed = args; return;
@@ -234,6 +235,75 @@ fs.mkdirSync(shots, { recursive: true });
       assert.ok(Math.abs(b - g) < 0.04 && b - a > 0.2, `dragged ${a}-${b} from edge ${g}`);
       await page.keyboard.press('Control+z');
       await page.waitForFunction(() => !(window.fixture.saves.at(-1)?.removed ?? []).length);
+    });
+    await step('marking in and out at the playhead and Delete removes that time', async () => {
+      const goto = async t => {
+        await page.getByLabel('Gå till tid (minuter:sekunder)').fill(t);
+        await page.getByLabel('Gå till tid (minuter:sekunder)').press('Enter');
+        await page.evaluate(() => { document.activeElement?.blur(); window.getSelection().removeAllRanges(); });
+      };
+      await page.evaluate(() => document.querySelector('video').pause());
+      await goto('40');
+      await page.keyboard.press('i');
+      await goto('43,5');
+      await page.keyboard.press('o');
+      await page.locator('.markinfo').filter({ hasText: /\(3,5 s\)/ }).waitFor();
+      await page.keyboard.press('Delete');
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(a - 40) < 0.05 && Math.abs(b - 43.5) < 0.05, `removed ${a}-${b}`);
+      assert.ok(await page.locator('.doc .cutaway').count() > 0, 'words in the removed time are shown as cut');
+      assert.equal(await page.locator('.markinfo').count(), 0, 'the mark is cleared after use');
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => !(window.fixture.saves.at(-1)?.removed ?? []).length);
+    });
+    await step('dragging over the waveform marks a range to remove or keep', async () => {
+      const canvas = page.locator('canvas[data-view]');
+      const box = await canvas.boundingBox();
+      const { view, span } = await page.evaluate(() => { const c = document.querySelector('canvas[data-view]'); return { view: Number(c.dataset.view), span: Number(c.dataset.span) }; });
+      const edges = (await page.evaluate(() => window.__lastPreview.keep)).flat();
+      // A stretch of about 1.6 s without cut edges near its ends.
+      let from = view + 0.5;
+      while (edges.some(e => Math.abs(e - from) < 0.4 || Math.abs(e - (from + 1.6)) < 0.4) && from < view + span - 2.5) from += 0.2;
+      const px = t => box.x + ((t - view) / span) * box.width, y = box.y + 50;
+      await page.mouse.move(px(from), y); await page.mouse.down();
+      await page.mouse.move(px(from + 1.6), y, { steps: 6 }); await page.mouse.up();
+      await page.getByRole('button', { name: /Ta bort markerat/ }).click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(b - a - 1.6) < 0.1, `marked ${a}-${b}`);
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => !(window.fixture.saves.at(-1)?.removed ?? []).length);
+    });
+    await step('long silences are marked in the text and removed with a margin, one or all', async () => {
+      await page.evaluate(() => { window.fixture.silences = [[50, 54], [90, 92.6]]; });
+      await page.locator('.silences select').selectOption('2');
+      await page.locator('.pause-mark').first().waitFor();
+      assert.equal(await page.locator('.pause-mark').count(), 2);
+      assert.equal(await page.locator('.timeline .quiet').count(), 2);
+      await page.locator('.pause-mark').first().click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(a - 50.25) < 0.04 && Math.abs(b - 53.75) < 0.04, `kept 0.25 s each side, got ${a}-${b}`);
+      await page.locator('.pause-mark.gone').first().waitFor();
+      await page.getByRole('button', { name: 'Ta bort alla tystnader' }).click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 2);
+      await page.locator('.pause-mark.gone').first().click();
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => { const s = window.fixture.saves.at(-1); return !s.removed.length && !s.kept.length; });
+      await page.evaluate(() => { window.fixture.silences = []; });
+      await page.locator('.silences select').selectOption('3');
+    });
+    await step('retakes are marked in the text and removed from there', async () => {
+      const chips = page.locator('.retake-mark');
+      assert.ok(await chips.count() >= 2, 'a ↺ before each earlier take');
+      const before = await page.evaluate(() => window.fixture.saves.at(-1)?.deleted.length ?? 0);
+      await chips.first().click();
+      await page.waitForFunction(n => (window.fixture.saves.at(-1)?.deleted.length ?? 0) > n, before);
+      await page.locator('.retake-mark.gone').first().waitFor();
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(n => (window.fixture.saves.at(-1)?.deleted.length ?? 0) === n, before);
     });
     await step('listening to a join loops around it and never plays the struck word', async () => {
       const w = await page.evaluate(id => window.fixture.project.transcript.utterances.flatMap(u => u.words)[id], egentligen);

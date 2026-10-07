@@ -113,6 +113,34 @@ impl Loudness {
             .collect()
     }
 
+    /// Long quiet stretches anywhere in the recording, regardless of words: below the pause level
+    /// for at least `min` seconds, bridging sounds shorter than `bridge` seconds (a click, a breath).
+    /// Words can lie across such a stretch when the transcript or its times are off, so these are
+    /// found from the audio alone.
+    pub fn silences(&self, min: f64, bridge: f64) -> Vec<Pause> {
+        let bridge_ms = (bridge * 1000.0) as usize;
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut start = None;
+        for i in 0..=self.db.len() {
+            let quiet = i < self.db.len() && self.db[i] < self.quiet_db;
+            match (quiet, start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    match runs.last_mut() {
+                        Some(last) if s - last.1 <= bridge_ms => last.1 = i,
+                        _ => runs.push((s, i)),
+                    }
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        runs.into_iter()
+            .filter(|(a, b)| (b - a) as f64 / 1000.0 >= min)
+            .map(|(a, b)| Pause { start: a as f64 / 1000.0, end: b as f64 / 1000.0 })
+            .collect()
+    }
+
     /// Quiet stretches of at least 150 ms inside the gaps `(end of item, start of next item)`.
     pub fn pauses(&self, gaps: impl IntoIterator<Item = (f64, f64)>) -> Vec<Pause> {
         let mut out = Vec::new();
@@ -161,6 +189,23 @@ mod tests {
         assert_eq!(w.len(), 20);
         assert!(w[9] < 0.1 && w[10] < 0.1, "{w:?}"); // 0.45-0.55 s is well inside the silence
         assert!(w[2] > 0.8 && w[17] > 0.8, "{w:?}");
+    }
+
+    #[test]
+    fn long_silences_bridge_short_sounds() {
+        // 6 s: tone 0-1 s, silence 1-5 s with a 40 ms click at 3 s, tone 5-6 s.
+        let audio: Vec<f32> = (0..96000)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                if (1.0..5.0).contains(&t) && !(3.0..3.04).contains(&t) { 0.0 } else { (i as f32 * 0.3).sin() * 0.5 }
+            })
+            .collect();
+        let l = Loudness::new(&audio, 16000);
+        let s = l.silences(2.0, 0.15);
+        assert_eq!(s.len(), 1, "{s:?}");
+        assert!((s[0].start - 1.0).abs() < 0.02 && (s[0].end - 5.0).abs() < 0.02, "{s:?}");
+        assert!(l.silences(5.0, 0.15).is_empty());
+        assert_eq!(l.silences(1.5, 0.0).len(), 2, "without bridging the click splits it");
     }
 
     #[test]
