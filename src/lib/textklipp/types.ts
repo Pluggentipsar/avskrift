@@ -4,7 +4,7 @@ export type Word = { start: number; end: number; text: string };
 export type Utterance = { start: number; end: number; speaker: string | null; text: string; words: Word[] };
 export type Transcript = { utterances: Utterance[]; language: string; model: string; diarized: boolean };
 export type Sound = { id: number; start: number; end: number; heard: string; score: number };
-export type EditList = { deleted: number[]; removed: [number, number][]; pauseLimit: number | null; kept: [number, number][] };
+export type EditList = { deleted: number[]; removed: [number, number][]; pauseLimit: number | null; kept: [number, number][]; splits?: number[] };
 export type MediaInfo = {
   duration: number; sizeBytes: number; container: string;
   video: { codec: string; width: number; height: number; fps: number; variableRate: boolean; rotation: number } | null;

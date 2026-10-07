@@ -24,6 +24,10 @@ pub struct EditList {
     /// Ranges always kept, overriding every removal (a cut edge dragged inwards on the timeline).
     #[serde(default)]
     pub kept: Vec<(f64, f64)>,
+    /// Split points made with the scissors tool. They cut nothing by themselves; they divide the
+    /// timeline into pieces the user can select and remove.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub splits: Vec<f64>,
 }
 
 /// A transcript item on the source timeline.
@@ -158,6 +162,14 @@ mod tests {
         // A kept range inside a removal makes a separate piece.
         let edits = EditList { deleted: [1, 2].into(), kept: vec![(4.0, 4.5)], ..Default::default() };
         assert_eq!(keep_ranges(&items(), &edits, &[], 10.0, mid), [(0.0, 2.5), (4.0, 4.5), (6.5, 10.0)]);
+    }
+
+    #[test]
+    fn splits_alone_cut_nothing_and_old_edit_lists_still_load() {
+        let edits = EditList { splits: vec![2.5, 6.5], ..Default::default() };
+        assert_eq!(keep_ranges(&items(), &edits, &[], 10.0, mid), [(0.0, 10.0)]);
+        let old: EditList = serde_json::from_str(r#"{"deleted":[1],"removed":[],"pauseLimit":null,"kept":[]}"#).unwrap();
+        assert!(old.splits.is_empty());
     }
 
     #[test]

@@ -1,12 +1,14 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { fmt, type Token, type Edge } from './types';
-  let { projectId, time, duration, keep, tokens, deleted, fps, active, mark = null, silences = [], onseek, onedge, onrange }: {
+  let { projectId, time, duration, keep, tokens, deleted, fps, active, mark = null, silences = [], tool = 'select', splits = [], onpick, onedge, onrange }: {
     projectId: string; time: number; duration: number; keep: [number, number][]; tokens: Token[];
     deleted: Set<number>; fps: number; active: [number, number] | null;
     /** Range marked for a manual cut, and long silences still in the edit. */
     mark?: [number, number] | null; silences?: [number, number][];
-    onseek: (t: number) => void; onedge: (edge: Edge, to: number) => void; onrange: (a: number, b: number) => void;
+    /** Scissors split on click; select moves the playhead and selects. */
+    tool?: 'select' | 'blade'; splits?: number[];
+    onpick: (t: number, near: number) => void; onedge: (edge: Edge, to: number) => void; onrange: (a: number, b: number) => void;
   } = $props();
 
   const SPAN = 8; // seconds shown
@@ -74,7 +76,9 @@
       const label = tok.kind === 'sound' ? `[${tok.text}]` : tok.text;
       if (px > lastRight + 4) { g.fillText(label, px, 114); lastRight = px + g.measureText(label).width; }
     }
-    // Cut edges (handles), then the playhead.
+    // Split points from the scissors (dashed), then cut edges (handles), then the playhead.
+    g.fillStyle = ink;
+    for (const sp of splits) { if (sp < view || sp > view + SPAN) continue; for (let yy = 0; yy < h; yy += 6) g.fillRect(x(sp) - 1, yy, 2, 3); }
     for (const e of edges) {
       const px = drag && drag.edge.at === e.at && drag.edge.kind === e.kind ? drag.x : x(e.at);
       g.fillStyle = '#923115'; g.fillRect(px - 1, 0, 2, h);
@@ -90,7 +94,7 @@
   }
   function local(e: PointerEvent) { return e.clientX - (e.currentTarget as HTMLElement).getBoundingClientRect().left; }
   function down(e: PointerEvent) {
-    const px = local(e), edge = hit(px);
+    const px = local(e), edge = tool === 'select' ? hit(px) : null;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     if (edge) drag = { edge, x: px };
     else sweep = { from: px, x: px, moved: false };
@@ -98,14 +102,14 @@
   function move(e: PointerEvent) {
     const px = Math.max(0, Math.min(width, local(e)));
     if (drag) drag = { ...drag, x: px };
-    else if (sweep) sweep = { ...sweep, x: px, moved: sweep.moved || Math.abs(px - sweep.from) > 4 };
-    else (e.currentTarget as HTMLElement).style.cursor = hit(px) ? 'ew-resize' : 'pointer';
+    else if (sweep) sweep = { ...sweep, x: px, moved: tool === 'select' && (sweep.moved || Math.abs(px - sweep.from) > 4) };
+    else (e.currentTarget as HTMLElement).style.cursor = tool === 'blade' ? '' : hit(px) ? 'ew-resize' : 'pointer';
   }
   function up() {
     if (sweep) {
       const s = sweep; sweep = null;
       if (s.moved) onrange(t(Math.min(s.from, s.x)), t(Math.max(s.from, s.x)));
-      else onseek(t(s.from));
+      else onpick(t(s.from), (6 / width) * SPAN);
       return;
     }
     if (!drag) return;
@@ -116,7 +120,7 @@
 </script>
 
 <div class="detail" bind:clientWidth={width}>
-  <canvas bind:this={canvas} data-view={view} data-span={SPAN} aria-label="Detaljvy med vågform, ord och klipp kring uppspelningsmarkören. Dra en röd kant för att flytta ett klipp, eller dra över vågformen för att markera ett avsnitt."
+  <canvas bind:this={canvas} class:blade={tool === 'blade'} data-view={view} data-span={SPAN} aria-label="Detaljvy med vågform, ord och klipp kring uppspelningsmarkören. Dra en röd kant för att flytta ett klipp, eller dra över vågformen för att markera ett avsnitt."
     onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={() => { drag = null; sweep = null; }}></canvas>
   <div class="scale"><span>{fmt(view)}</span>{#if drag}<span class="dragging">{fmt(t(drag.x))}.{String(Math.round((t(drag.x) % 1) * 100)).padStart(2, '0')}</span>{/if}<span>{fmt(view + SPAN)}</span></div>
 </div>
@@ -126,4 +130,5 @@
   canvas { display: block; width: 100%; height: 120px; border-radius: 6px; background: var(--accent-soft); touch-action: none; cursor: pointer; }
   .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .dragging { color: #923115; font-weight: 600; }
+  canvas.blade { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%231c1d1a' stroke-width='1.8' stroke-linecap='round'%3E%3Cpath d='M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM8.5 7.5L20 18M8.5 16.5L20 6'/%3E%3C/svg%3E") 11 11, crosshair; }
 </style>

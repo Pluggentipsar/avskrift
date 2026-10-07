@@ -218,6 +218,7 @@ fs.mkdirSync(shots, { recursive: true });
     });
     await step('dragging a cut edge in the detail view moves the cut', async () => {
       const canvas = page.locator('canvas[data-view]');
+      await canvas.evaluate(c => c.scrollIntoView({ block: 'center' }));
       const box = await canvas.boundingBox();
       const { view, span } = await page.evaluate(() => {
         const c = document.querySelector('canvas[data-view]');
@@ -259,6 +260,7 @@ fs.mkdirSync(shots, { recursive: true });
     });
     await step('dragging over the waveform marks a range to remove or keep', async () => {
       const canvas = page.locator('canvas[data-view]');
+      await canvas.evaluate(c => c.scrollIntoView({ block: 'center' }));
       const box = await canvas.boundingBox();
       const { view, span } = await page.evaluate(() => { const c = document.querySelector('canvas[data-view]'); return { view: Number(c.dataset.view), span: Number(c.dataset.span) }; });
       const edges = (await page.evaluate(() => window.__lastPreview.keep)).flat();
@@ -274,6 +276,41 @@ fs.mkdirSync(shots, { recursive: true });
       assert.ok(Math.abs(b - a - 1.6) < 0.1, `marked ${a}-${b}`);
       await page.keyboard.press('Control+z');
       await page.waitForFunction(() => !(window.fixture.saves.at(-1)?.removed ?? []).length);
+    });
+    await step('scissors: split twice, select the piece between and remove it, as in a video editor', async () => {
+      const canvas = page.locator('canvas[data-view]');
+      await canvas.evaluate(c => c.scrollIntoView({ block: 'center' }));
+      const box = await canvas.boundingBox();
+      const { view, span } = await page.evaluate(() => { const c = document.querySelector('canvas[data-view]'); return { view: Number(c.dataset.view), span: Number(c.dataset.span) }; });
+      const edges = (await page.evaluate(() => window.__lastPreview.keep)).flat();
+      let from = view + 0.6;
+      while (edges.some(e => e > from - 0.3 && e < from + 2.3) && from < view + span - 3) from += 0.2;
+      const px = t => box.x + ((t - view) / span) * box.width, y = box.y + 50;
+      await page.getByRole('button', { name: 'Sax', exact: true }).click();
+      assert.equal(await page.getByRole('button', { name: 'Sax', exact: true }).getAttribute('aria-pressed'), 'true');
+      await page.mouse.click(px(from), y);
+      await page.mouse.click(px(from + 2), y);
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.splits ?? []).length === 2);
+      assert.equal(await page.locator('.timeline .split').count(), 2);
+      // Clicking a split again with the scissors removes it; S splits at the playhead.
+      await page.mouse.click(px(from + 2), y);
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.splits ?? []).length === 1);
+      await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.splits ?? []).length === 2);
+      await page.keyboard.press('v');
+      assert.equal(await page.getByRole('button', { name: 'Markera', exact: true }).getAttribute('aria-pressed'), 'true');
+      await page.mouse.click(px(from + 1), y);
+      await page.locator('.markinfo').filter({ hasText: /\(2 s\)/ }).waitFor();
+      await page.evaluate(() => { document.activeElement?.blur(); window.getSelection().removeAllRanges(); });
+      await page.keyboard.press('Delete');
+      await page.waitForFunction(() => (window.fixture.saves.at(-1)?.removed ?? []).length === 1);
+      const [a, b] = await page.evaluate(() => window.fixture.saves.at(-1).removed[0]);
+      assert.ok(Math.abs(b - a - 2) < 0.05, `removed the piece ${a}-${b}`);
+      const n = await page.evaluate(() => window.fixture.saves.at(-1).splits.length);
+      await page.keyboard.press('s');
+      await page.waitForFunction(n => (window.fixture.saves.at(-1)?.splits ?? []).length === n + 1, n);
+      await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z'); await page.keyboard.press('Control+z');
+      await page.waitForFunction(() => { const s = window.fixture.saves.at(-1); return !s.removed.length && !(s.splits ?? []).length; });
     });
     await step('long silences are marked in the text and removed with a margin, one or all', async () => {
       await page.evaluate(() => { window.fixture.silences = [[50, 54], [90, 92.6]]; });
