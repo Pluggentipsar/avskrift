@@ -18,6 +18,7 @@ mod jobs;
 mod llm;
 mod memory;
 mod models;
+mod model_files;
 mod pianissimo;
 mod pii;
 mod summarize;
@@ -195,6 +196,35 @@ async fn download_whisper_model(app: AppHandle, id: String) -> Result<(), String
                 serde_json::json!({ "id": id_cb, "downloaded": downloaded, "total": total }),
             );
         })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
+// ---- Manual model install (when downloads are blocked) ----
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelLink {
+    url: String,
+    file: String,
+}
+
+/// The files a model needs, to download in a browser when the app cannot reach the server.
+#[tauri::command]
+fn model_download_links(backend: State<Backend>, kind: String, id: String) -> Result<Vec<ModelLink>, String> {
+    let sources = model_files::sources(&backend.paths, &kind, &id).map_err(|e| e.to_string())?;
+    Ok(sources.iter().map(|s| ModelLink { url: s.url.clone(), file: model_files::file_name(&s.url).to_string() }).collect())
+}
+
+/// Put files downloaded in a browser in place (checked like a download). Returns URLs still missing.
+#[tauri::command]
+async fn import_model_files(app: AppHandle, kind: String, id: String, paths: Vec<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let backend = app.state::<Backend>();
+        let picked: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+        model_files::import(&backend.paths, &kind, &id, &picked)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1877,7 +1907,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![updates::check_update, updates::install_update, refresh_library, begin_work, cancel_work, forget_work,
+        .invoke_handler(tauri::generate_handler![updates::check_update, updates::install_update, model_download_links, import_model_files, refresh_library, begin_work, cancel_work, forget_work,
             create_template_draft, template_package, list_document_templates, save_document_template, import_document_template, export_document_template,
             dictation::dictation_snapshot,
             dictation::configure_dictation,

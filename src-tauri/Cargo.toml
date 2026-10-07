@@ -76,7 +76,9 @@ rubato = "0.15"
 rustfft = "6.4"
 
 # On-demand download of Whisper models (small, blocking HTTP client).
-ureq = "2"
+# Model downloads: Windows trust store and system proxy, like a browser (see download.rs).
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "system-proxy", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # Optimera beroenden även i dev-bygget så lokal inferens är användbar under `tauri dev`.
 # Vår egen krate förblir ooptimerad för snabba, felsökbara ombyggen.

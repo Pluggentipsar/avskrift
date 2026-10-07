@@ -2,11 +2,13 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { openUrl } from '@tauri-apps/plugin-opener';
+  import { open as openFiles } from '@tauri-apps/plugin-dialog';
   type Model = { id:string;label:string;sizeMb:number;downloaded:boolean };
   let { models, textModels, speech = $bindable(), text = $bindable(), dictationModel, locked, downloading, percent, stage, error,
-    ondownload, ondictation, onchange, onclose }: {
+    ondownload, ondictation, onchange, onclose, onimported }: {
     models:Model[];textModels:Model[];speech:string;text:string;dictationModel?:string;locked:boolean;downloading:string|null;percent:number;stage:string;error:string;
-    ondownload:(kind:'speech'|'text',id:string)=>Promise<void>;ondictation:(id:string)=>Promise<void>;onchange:()=>void;onclose:()=>void;
+    ondownload:(kind:'speech'|'text',id:string)=>Promise<void>;ondictation:(id:string)=>Promise<void>;onchange:()=>void;onclose:()=>void;onimported:(kind:'speech'|'text')=>Promise<void>;
   } = $props();
   let dialog:HTMLDialogElement;
   let pending=$state(false), localError=$state('');
@@ -24,6 +26,26 @@
     void refresh();const timer=setInterval(refresh,5000);
     return ()=>{alive=false;clearInterval(timer);};
   });
+  // Manual install: download in the browser (which uses the computer's network settings), then pick the files.
+  type Link={url:string;file:string};
+  let manualFor=$state(''), manualLinks=$state<Link[]>([]), manualBusy=$state(false), manualNote=$state(''), manualError=$state('');
+  async function toggleManual(kind:'speech'|'text'|'wordalign',id:string,slot:string){
+    const key=slot+':'+id;manualNote='';manualError='';
+    if(manualFor===key){manualFor='';return;}
+    manualFor=key;manualLinks=[];
+    try{manualLinks=await invoke<Link[]>('model_download_links',{kind,id});}catch(e){manualError=String(e);}
+  }
+  async function importFiles(kind:'speech'|'text'|'wordalign',id:string){
+    const picked=await openFiles({multiple:true,title:'Välj de hämtade modellfilerna'});
+    const paths=Array.isArray(picked)?picked:picked?[picked]:[];
+    if(!paths.length)return;
+    manualBusy=true;manualNote='';manualError='';
+    try{
+      const missing=await invoke<string[]>('import_model_files',{kind,id,paths});
+      if(missing.length){manualNote='Saknas fortfarande: '+missing.map(u=>u.split('/').pop()).join(', ')+'.';}
+      else{manualNote='Modellen är på plats.';if(kind==='wordalign')align=await invoke<AlignStatus>('wordalign_status');else await onimported(kind);}
+    }catch(e){manualError=String(e);}finally{manualBusy=false;}
+  }
   async function changeDictation(id:string){pending=true;localError='';try{await ondictation(id);}catch(e){localError=String(e);}finally{pending=false;}}
   // Exact word times (Textklipp): own status and download, independent of the speech/text model flow.
   type AlignStatus={ready:boolean;available:boolean;sizeMb:number};
@@ -46,30 +68,44 @@
   <p class="intro">Hämtning kräver internet. När modellerna finns på datorn bearbetas tal och text lokalt. Modellval sparas direkt.</p>
   {#if locked}<p role="status" class="notice">Ett arbete pågår. Du kan ändra modell när bearbetningen eller inspelningen är klar.</p>{/if}
   {#if error||localError}<p role="alert" class="error">{localError||error}</p>{/if}
-  {#snippet selector(kind:'speech'|'text',id:string,available:Model[])}
+  {#snippet manual(kind:'speech'|'text'|'wordalign',id:string,slot:string)}
+    <button class="link small" aria-expanded={manualFor===slot+':'+id} onclick={()=>toggleManual(kind,id,slot)}>Går det inte att hämta? Hämta i webbläsaren</button>
+    {#if manualFor===slot+':'+id}
+      <div class="manual">
+        <p>1. Öppna länkarna och spara filerna. Webbläsaren använder datorns nätverksinställningar och kommer ofta åt filerna när appen inte gör det.</p>
+        <ul>{#each manualLinks as l}<li><button class="link" onclick={()=>openUrl(l.url)}>{l.file}</button></li>{/each}</ul>
+        <p>2. Välj de hämtade filerna, så lägger Avskrift dem på rätt plats och kontrollerar dem.</p>
+        <button onclick={()=>importFiles(kind,id)} disabled={manualBusy||locked||!!downloading||!manualLinks.length}>{manualBusy?'Lägger filerna på plats…':'Välj hämtade filer…'}</button>
+        {#if manualNote}<p role="status" class="ready">{manualNote}</p>{/if}
+        {#if manualError}<p role="alert" class="error">{manualError}</p>{/if}
+      </div>
+    {/if}
+  {/snippet}
+  {#snippet selector(kind:'speech'|'text',id:string,available:Model[],slot:string)}
     {@const chosen=available.find(m=>m.id===id)}
     <div class="model-status">
       {#if downloading===id}<span role="status">{stage || `Hämtar ${percent}%`}</span><progress value={stage.includes('Förbereder') || stage.includes('Färdigställer') ? undefined : percent} max="100" aria-label="Modellhämtning och förberedelse"></progress>
       {:else if chosen?.downloaded}<span class="ready">Finns på datorn</span>{#if id==='pianissimo-sv'}<button onclick={()=>ondownload(kind,id)} disabled={!!downloading||locked||pending}>Kontrollera modell</button>{/if}
       {:else}<span>Behöver hämtas{chosen?.sizeMb ? ` · ${chosen.sizeMb} MB` : ''}</span><button onclick={()=>ondownload(kind,id)} disabled={!chosen||!!downloading||locked||pending}>Hämta modell</button>{/if}
     </div>
+    {#if chosen && !chosen.downloaded && downloading!==id}{@render manual(kind,id,slot)}{/if}
     {#if id==='pianissimo-sv'}<p>Pianissimo är experimentell och körs på CPU. Hämtning: cirka 660 MB, klar att använda direkt. Svenska, utan översättning eller ordtider. Har du hämtat en tidigare version: välj Hämta modell igen för Klangs egen export.</p>
     <p>Modell: <a href="https://huggingface.co/KlangAI/pianissimo-sv" target="_blank" rel="noreferrer">KlangAI</a>. ONNX-export: <a href="https://huggingface.co/KlangAI/pianissimo-sv-onnx" target="_blank" rel="noreferrer">KlangAI</a>. <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a>.</p>{/if}
   {/snippet}
   <section><div><h3>Möten och ljudfiler</h3><p>Talmodellen används vid nästa transkribering. Sparad text ändras inte av modellvalet.</p></div><div>
     <label for="speech-model">Talmodell för möten</label><select id="speech-model" bind:value={speech} onchange={()=>queueMicrotask(onchange)} disabled={locked||pending}>
       {#if !models.some(m=>m.id===speech)}<option value={speech}>{speech} – inte tillgänglig</option>{/if}
-      {#each models as m}<option value={m.id}>{m.label}</option>{/each}</select>{@render selector('speech',speech,models)}
+      {#each models as m}<option value={m.id}>{m.label}</option>{/each}</select>{@render selector('speech',speech,models,'meeting')}
   </div></section>
   <section><div><h3>Diktering</h3><p>Ett eget modellval för korta diktat. Hämtade talmodeller delas med mötesfunktionen.</p></div><div>
     <label for="dictation-model">Talmodell för diktering</label><select id="dictation-model" value={dictationModel??''} onchange={e=>{const select=e.currentTarget;void changeDictation(select.value).finally(()=>select.value=dictationModel??'');}} disabled={locked||pending||!dictationModel}>
       {#if !models.some(m=>m.id===dictationModel)}<option value={dictationModel??''}>{dictationModel??'Diktering är inte tillgänglig'}</option>{/if}
-      {#each models as m}<option value={m.id}>{m.label}</option>{/each}</select>{#if dictationModel}{@render selector('speech',dictationModel,models)}{/if}
+      {#each models as m}<option value={m.id}>{m.label}</option>{/each}</select>{#if dictationModel}{@render selector('speech',dictationModel,models,'dictation')}{/if}
   </div></section>
   <section><div><h3>Sammanfattning och textbearbetning</h3><p>Gemensamt val för källutkast, fria sammanfattningar, frågor, åtgärdsförslag och bearbetning av diktat. Ett öppnat projekt kan återställa sitt sparade textmodellval.</p></div><div>
     <label for="text-model">Textmodell</label><select id="text-model" bind:value={text} onchange={()=>queueMicrotask(onchange)} disabled={locked||pending}>
       {#if !textModels.some(m=>m.id===text)}<option value={text}>{text} – inte tillgänglig</option>{/if}
-      {#each textModels as m}<option value={m.id}>{m.label}</option>{/each}</select>{@render selector('text',text,textModels)}
+      {#each textModels as m}<option value={m.id}>{m.label}</option>{/each}</select>{@render selector('text',text,textModels,'text')}
   </div></section>
   <section><div><h3>Exakta ordtider</h3><p>Används när ordtider är påslagna vid transkribering av ljudfiler. Varje ord får sin tid från ljudet i stället för talmodellens uppskattning – grunden för textklippning av video. Svenska. Körs på grafikkortet när det går, annars på CPU.</p></div><div>
     <div class="model-status">
@@ -80,6 +116,7 @@
       {:else}<span>Behöver hämtas · {align.sizeMb} MB</span><button onclick={downloadAlign} disabled={locked||pending||!!downloading}>Hämta modell</button>{/if}
     </div>
     {#if alignError}<p role="alert" class="error">{alignError}</p>{/if}
+    {#if align?.available && !align.ready && !alignBusy}{@render manual('wordalign','wordalign','wordalign')}{/if}
     <p>Modell: <a href="https://huggingface.co/KBLab/wav2vec2-large-voxrex-swedish" target="_blank" rel="noreferrer">KBLab VoxRex</a>, <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0</a>. Avskrift använder en ONNX-export i halv precision.</p>
   </div></section>
   <details class="memory"><summary>Minne och bearbetning</summary>
@@ -98,5 +135,5 @@
   <footer><button onclick={()=>dialog.close()} disabled={pending}>Tillbaka till arbetet</button></footer>
 </dialog>
 <style>
-  dialog{box-sizing:border-box;width:min(880px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);font:14px/1.6 Archivo,sans-serif}dialog::backdrop{background:#1c1d1a66}header{display:flex;justify-content:space-between;align-items:start;gap:20px}h2{font:34px 'Instrument Serif',serif;margin:0}h3{font-size:16px;margin:0 0 6px}p{color:var(--muted);margin:6px 0}header>button{font-size:22px;padding:0 12px}.intro{margin:20px 0}section{display:grid;grid-template-columns:1fr 1fr;gap:32px;border-top:1px solid var(--line);padding:24px 0}label{display:block;font-weight:500;margin-bottom:6px}select,button{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line-2);border-radius:6px;padding:9px 12px}select{width:100%;box-sizing:border-box}button{cursor:pointer}button:disabled,select:disabled{opacity:.55}.model-status{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;margin-top:10px;color:var(--muted)}.ready{color:var(--accent)}progress{max-width:130px;accent-color:var(--accent)}.notice{padding:12px;background:var(--accent-soft)}.error{color:#923115}details{border-top:1px solid var(--line);padding-top:18px}summary{cursor:pointer}footer{display:flex;justify-content:flex-end;margin-top:24px}:is(button,select,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px}@media(max-width:650px){section{grid-template-columns:1fr;gap:12px}dialog{padding:20px}}
+  dialog{box-sizing:border-box;width:min(880px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);font:14px/1.6 Archivo,sans-serif}dialog::backdrop{background:#1c1d1a66}header{display:flex;justify-content:space-between;align-items:start;gap:20px}h2{font:34px 'Instrument Serif',serif;margin:0}h3{font-size:16px;margin:0 0 6px}p{color:var(--muted);margin:6px 0}header>button{font-size:22px;padding:0 12px}.intro{margin:20px 0}section{display:grid;grid-template-columns:1fr 1fr;gap:32px;border-top:1px solid var(--line);padding:24px 0}label{display:block;font-weight:500;margin-bottom:6px}select,button{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line-2);border-radius:6px;padding:9px 12px}select{width:100%;box-sizing:border-box}button{cursor:pointer}button:disabled,select:disabled{opacity:.55}.model-status{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;margin-top:10px;color:var(--muted)}.ready{color:var(--accent)}progress{max-width:130px;accent-color:var(--accent)}.notice{padding:12px;background:var(--accent-soft)}.error{color:#923115}.link{border:0;background:none;padding:0;color:var(--ink);text-decoration:underline;text-underline-offset:3px;cursor:pointer}.link.small{font-size:12px;margin-top:8px;color:var(--muted)}.manual{margin-top:10px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--canvas)}.manual p{margin:4px 0}.manual ul{margin:6px 0 10px;padding-left:18px}details{border-top:1px solid var(--line);padding-top:18px}summary{cursor:pointer}footer{display:flex;justify-content:flex-end;margin-top:24px}:is(button,select,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px}@media(max-width:650px){section{grid-template-columns:1fr;gap:12px}dialog{padding:20px}}
 </style>

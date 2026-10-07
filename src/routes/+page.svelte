@@ -3040,7 +3040,7 @@
   {#if modelsOpen}
     <ModelSettings {models} textModels={summaryModels} bind:speech={selectedModel} bind:text={selectedSummaryModel} dictationModel={dictation?.settings.model}
       locked={busy || recording || recSaving || meetingActive || meetingBusy || bgMeetings.length>0 || qaBusy || actionsBusy || !!dictation && dictation.phase!=='idle'} {downloading} percent={downloadPct} stage={modelStage} {error}
-      ondownload={(kind,id)=>kind==='speech'?downloadModel(id):downloadSummaryModel(id)} ondictation={setDictationModel} onchange={()=>{if(currentJobId)saveWorkspace();}} onclose={()=>modelsOpen=false} />
+      ondownload={(kind,id)=>kind==='speech'?downloadModel(id):downloadSummaryModel(id)} ondictation={setDictationModel} onchange={()=>{if(currentJobId)saveWorkspace();}} onclose={()=>modelsOpen=false} onimported={(kind)=>kind==='text'?refreshSummaryModels():refreshModels()} />
   {/if}
 
   <div class="dictation-container" hidden={screen !== "dictation"}>
