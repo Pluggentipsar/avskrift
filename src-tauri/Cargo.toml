@@ -66,8 +66,9 @@ libloading = "0.8.9"
 whisper-rs = "0.14"
 
 # --- Diarisering (pyannote-segmentering + talar-embeddings via ONNX) ---
-# sherpa-onnx-bindningar; kör hela diariserings-pipen i ren Rust/ONNX (samma ort-tänk).
-sherpa-rs = "0.6"
+# sherpa-onnx räknar bara talar-embeddings (C-API:t via `sys`); segmentering körs med ort och
+# klustring/etikettering i Rust (diarize.rs), eftersom sherpa-onnx 1.12.9:s diarisering kan krascha.
+sherpa-rs = { version = "0.6", features = ["sys"] }
 
 # --- Ljudavkodning -> 16 kHz mono f32 (ingen extern FFmpeg) ---
 symphonia = { version = "0.5", features = [
