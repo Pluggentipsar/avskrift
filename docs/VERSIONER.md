@@ -4,6 +4,12 @@ Vad som kommit i varje version, nyast först. Förhandsversioner (beta) är prov
 stabila version visas som *Latest* bland [releaserna](https://github.com/Pluggentipsar/avskrift/releases).
 Detaljer finns i release-anteckningarna (`docs/RELEASE-*.md`) och stegdokumenten (`docs/ARBETSYTA-STEG-*.md`).
 
+- **Modellhämtning på fler nätverk och sammanfattningar från extern AI (0.8.0-beta.4, förhandsrelease)** —
+  hämtning med Windows certifikat och proxy, fortsättning efter avbrott och hämtning via webbläsaren
+  som nödutgång; sammanfattningar som markdown med Klistra in från AI, formaterad visning och riktig
+  Word-export. Se [release-anteckningarna](RELEASE-0.8.0-beta.4.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.4).
+
 - **Uppdateringar i appen och möten direkt efter stopp (0.8.0-beta.3, förhandsrelease)** — välj
   *Sök efter uppdatering* i menyn så hämtas och installeras nya versioner med ett klick (signerade,
   bara när du ber om det). Efter ett möte visas texten direkt, och bara det som realtidsdelen
