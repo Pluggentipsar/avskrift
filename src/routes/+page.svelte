@@ -8,6 +8,8 @@
   import UpdateDialog from '$lib/UpdateDialog.svelte';
   import SummaryEditor from '$lib/SummaryEditor.svelte';
   import ProgressEta from '$lib/ProgressEta.svelte';
+  import SpeakerPanel from '$lib/SpeakerPanel.svelte';
+  import { countParticipants, hasMeetingVoices, mergeSpeakers, withDefaultLabels } from '$lib/speakers';
   import { copyMarkdown, readClipboardMarkdown } from '$lib/markdown';
   import Dictation from "$lib/Dictation.svelte";
   import Textklipp from "$lib/textklipp/Textklipp.svelte";
@@ -266,6 +268,15 @@
   let meetingShowLive = $state(true); // live-text pane visible during a meeting
   let meetingShowNotes = $state(false); // notes/actions pane visible during a meeting (the "Anteckningar"-knapp)
   let retranscribeDiarize = $state(true); // after "Transkribera om", auto-split "Mötet" into speakers
+  // Telling the participants apart: chosen before a meeting (count null = from the participant list or
+  // a guess), and per open transcript in the speaker panel.
+  let meetingSeparate = $state(true);
+  let meetingVoiceCount = $state<number | null>(null);
+  let meetingVoices: { separate: boolean; count: number | null } = { separate: true, count: null };
+  let separateCount = $state<number | null>(null);
+  let speakerPanelOpen = $state(false);
+  let separatingVoices = $state<string[]>([]); // meetings whose participants are being told apart in the background
+  let sampleStop: number | null = null;
   let retranscribeEchoCancel = $state(false); // strip meeting audio that leaked into the mic before transcribing "Jag"
   let meetingLagging = $state(false); // worker fell behind real time (weak hardware)
   // Background work keeps its own stable project identity.
@@ -341,6 +352,7 @@
       pendingFolders = [];
     }
     // Pick a sensible default Whisper model + meeting mode for this machine (user can override).
+    meetingSeparate = localStorage.getItem("avskrift.meetingSeparate") !== "0";
     const savedModel = localStorage.getItem("avskrift_model");
     selectedModel = savedModel || hwDefaultModel();
     selectedSummaryModel = localStorage.getItem('avskrift.textModel') || 'qwen2.5-3b';
@@ -379,6 +391,7 @@
     });
     // A background meeting finished transcribing → save it straight to Bibliotek.
     const md = listen<any>("avskrift:meeting-done", (e) => { void onMeetingDone(e.payload); });
+    const mv = listen<any>("avskrift:meeting-voices", (e) => { void onMeetingVoices(e.payload); });
     // The live result, saved while the rest is completed: readable now, replaced when done.
     const mpv = listen<{ token: string; transcript: Transcript }>("avskrift:meeting-provisional", (e) => {
       if (currentJobId === e.payload.token && currentJobPending) showProvisional(e.payload.transcript);
@@ -401,6 +414,7 @@
       ml.then((f) => f());
       mp.then((f) => f());
       md.then((f) => f());
+      mv.then((f) => f());
       mpv.then((f) => f());
       mf.then((f) => f());
     };
@@ -1161,6 +1175,7 @@
     try {
       const job={version:2,id,jobType:'meeting',title,createdAt:now,updatedAt:now,category:currentCategory||lastCategory,
         notes:'',agenda:meetingAgenda,participants:meetingPeople.split("\n").filter(line=>line.trim()).map(line=>{const [name,...roles]=line.split(";");return {name:name.trim(),role:roles.join(";").trim()};}),summaryTemplate:selectedTemplate,actions:followupActions.filter(a=>!excludedFollowup.includes(a.id!)),followupFrom,transcriptionPending:true};
+      meetingVoices={separate:meetingSeparate,count:meetingVoiceCount??countParticipants(job.participants.map((p:{name:string})=>p.name))};
       const ack=await invoke<{micWavPath:string;systemWavPath:string}>('start_meeting',{args:{model:selectedModel,language,live:meetingLive,job,micDevice:micDevice||null,systemDevice:systemDevice||null}});
       resetWorkspace();
       transcript={utterances:[],language,model:selectedModel,diarized:true};originalTranscript=null;originalSourceText=null;summaryBasis=null;
@@ -1184,7 +1199,7 @@
     const token=currentJobId;
     bgMeetings=[...bgMeetings,{id:token,title:currentJobTitle,msg:'Transkriberar…'}];
     try {
-      await invoke('stop_meeting',{args:{model:selectedModel,language,token}});
+      await invoke('stop_meeting',{args:{model:selectedModel,language,token,separateVoices:meetingVoices.separate,numSpeakers:meetingVoices.count}});
       meetingActive=false;meetingPaused=false;if(meetingTimer)clearInterval(meetingTimer);
       const live=liveUtterances.map(u=>({start:u.start,end:u.end,speaker:u.source,text:u.text,words:[]})).sort((a,b)=>a.start-b.start);
       if(live.length) showProvisional({utterances:live,language,model:selectedModel,diarized:true});
@@ -1211,11 +1226,49 @@
         transcript=payload.transcript;currentJobPending=false;meetingMixWav=payload.mixWavPath??null;
         originalTranscript=job.originalTranscript??payload.transcript;
         meetingWarning=job.meetingWarning??job.meetingError??'';
-        speakerLabels=Object.fromEntries((transcript?.utterances??[]).filter(u=>u.speaker).map(u=>[u.speaker!,u.speaker!]));
+        speakerLabels=withDefaultLabels(transcript?.utterances??[],job.speakerLabels??{});
+        speakerPanelOpen=hasMeetingVoices(transcript?.utterances??[]);
         await invoke('update_transcript',{transcript});
       }
-      await refreshJobs();await loadAllActions();showToast('Mötets transkript är klart.');
+      if(payload.separatingVoices)separatingVoices=[...separatingVoices,token];
+      await refreshJobs();await loadAllActions();
+      showToast(payload.separatingVoices?'Mötets transkript är klart. Deltagarna skiljs åt i bakgrunden.':'Mötets transkript är klart.');
     }catch(e){error='Kunde inte uppdatera mötesvyn: '+String(e);}
+  }
+
+  /** A finished meeting's participants were told apart in the background (see `separate_finished_meeting`). */
+  async function onMeetingVoices(payload: any) {
+    const token = payload?.token;
+    if (!token) return;
+    separatingVoices = separatingVoices.filter((id) => id !== token);
+    if (currentJobId !== token) {
+      if (payload.status === "done") showToast("Deltagarna i ett möte har skilts åt.");
+      return;
+    }
+    if (payload.status !== "done") {
+      showToast(payload.error ?? "Deltagarna kunde inte skiljas åt.");
+      return;
+    }
+    const split: Transcript = payload.transcript;
+    // Same text as shown here, only "Mötet" split up? Otherwise you edited it meanwhile: your edits win.
+    const same = !!transcript && transcript.utterances.length === split.utterances.length &&
+      transcript.utterances.every((u, i) => {
+        const v = split.utterances[i];
+        return u.start === v.start && u.end === v.end && u.text === v.text &&
+          (u.speaker === v.speaker || (u.speaker === "Mötet" && !!v.speaker?.startsWith("TALARE_")));
+      });
+    if (!same) {
+      await saveCurrentJob("meeting");
+      showToast("Texten ändrades innan deltagarna hann skiljas åt. Välj Skilj på deltagarna när du vill.");
+      return;
+    }
+    snapshotTranscript();
+    transcript = split;
+    speakerLabels = withDefaultLabels(split.utterances, { ...speakerLabels, ...(payload.speakerLabels ?? {}) });
+    speakerPanelOpen = true;
+    await invoke("update_transcript", { transcript });
+    const n = new Set(split.utterances.map((u) => u.speaker).filter((x) => x?.startsWith("TALARE_"))).size;
+    showToast(n ? `${n} ${n === 1 ? "röst" : "röster"} hittades i mötet. Ge dem namn under Talare.` : "Inga skilda röster hittades i mötesljudet.");
   }
 
   async function askMeeting(){
@@ -1226,35 +1279,55 @@
     catch(e){error=String(e);}finally{qaBusy=false;progressMsg='';}
   }
 
+  /** Names after a new split: the new TALARE_n are different people than before, so their old names go. */
+  function freshVoiceLabels(t: Transcript): Record<string, string> {
+    const kept = Object.fromEntries(Object.entries(speakerLabels).filter(([id]) => !id.startsWith("TALARE_")));
+    return withDefaultLabels(t.utterances, kept);
+  }
+
+  /** Give everything `from` said to `into` (two voices that are the same person). */
+  function mergeSpeaker(from: string, into: string) {
+    if (!transcript || currentJobPending || from === into) return;
+    snapshotTranscript();
+    transcript.utterances = mergeSpeakers(transcript.utterances, from, into);
+    // The merged speaker's name stays in the labels, so "Ångra" brings it back with its name.
+    void pushTranscript();
+    showToast(`${speakerLabels[from] ?? from} slogs ihop med ${speakerLabels[into] ?? into}`);
+  }
+
+  /** Play a short stretch of one speaker, then stop. */
+  function listenTo(start: number, end: number) {
+    sampleStop = end;
+    seekTo(start);
+  }
+
   /** Split the meeting's "Mötet" utterances into distinct speakers via diarisation of the system WAV. */
-  async function separateMeetingVoices() {
-    if (!meetingSysWav || !transcript || busy) return;
+  async function separateMeetingVoices(count: number | null = separateCount) {
+    if (!meetingSysWav || !transcript || busy || currentJobPending) return;
     const jobId = currentJobId;
     const sys = meetingSysWav;
     busy = true;
     error = "";
-    progressMsg = "Separerar mötesröster…";
+    progressMsg = "Skiljer på deltagarna…";
     try {
-      const t = await invoke<Transcript>("diarize_meeting", {
-        args: { systemWavPath: sys, numSpeakers: null },
+      const t = await invokeWork<Transcript>("diarize_meeting", {
+        args: { systemWavPath: sys, numSpeakers: count },
       });
       if (currentJobId !== jobId) {
         showToast("Avbröts – du bytte projekt under tiden.");
         return;
       }
+      snapshotTranscript();
       transcript = t;
-      const labels: Record<string, string> = {};
-      for (const u of t.utterances) {
-        if (u.speaker && !(u.speaker in labels)) {
-          labels[u.speaker] = u.speaker.startsWith("TALARE_") ? u.speaker.replace("TALARE_", "Talare ") : u.speaker;
-        }
-      }
-      speakerLabels = labels;
+      speakerLabels = freshVoiceLabels(t);
+      speakerPanelOpen = true;
       dirty = false;
       await saveCurrentJob("meeting");
-      showToast("Mötesröster separerade");
+      const n = new Set(t.utterances.map((u) => u.speaker).filter((s) => s?.startsWith("TALARE_"))).size;
+      showToast(n ? `${n} ${n === 1 ? "röst" : "röster"} hittades i mötet. Ge dem namn under Talare.` : "Inga skilda röster hittades i mötesljudet.");
     } catch (e) {
-      error = String(e);
+      if (isWorkCancelled(String(e))) showToast("Avbröts. Transkriptet är oförändrat.");
+      else error = String(e);
     } finally {
       busy = false;
       progressMsg = "";
@@ -1289,7 +1362,7 @@
       if (retranscribeDiarize && sys) {
         progressMsg = "Separerar mötesröster…";
         t = await invoke<Transcript>("diarize_meeting", {
-          args: { systemWavPath: sys, numSpeakers: null },
+          args: { systemWavPath: sys, numSpeakers: separateCount },
         });
         if (currentJobId !== jobId) {
           showToast("Avbröts – du bytte projekt under tiden. Öppna mötet och kör om.");
@@ -1297,14 +1370,8 @@
         }
       }
       transcript = t;
-      // Map speaker ids to friendly labels (Jag/Mötet kept as-is; diarised TALARE_n → "Talare n").
-      const labels: Record<string, string> = {};
-      for (const u of t.utterances) {
-        if (u.speaker && !(u.speaker in labels)) {
-          labels[u.speaker] = u.speaker.startsWith("TALARE_") ? u.speaker.replace("TALARE_", "Talare ") : u.speaker;
-        }
-      }
-      speakerLabels = labels;
+      // Jag/Mötet keep their names; diarised TALARE_n are new people → "Talare n".
+      speakerLabels = freshVoiceLabels(t);
       analysis = null;
       summaryDraft = "";
       dirty = false;
@@ -1687,6 +1754,7 @@
   let presetName = $state("");
   let meetingPresets = $state<{name:string;agenda:string;people?:string;summaryTemplate?:string}[]>([]);
   let meetingPeople=$state("");
+  const listedPeople = $derived(countParticipants(meetingPeople.split("\n").map((l) => l.split(";")[0])));
   let followupFrom = $state<string|null>(null);
   let followupActions = $state<ActionItem[]>([]);
   let excludedFollowup = $state<string[]>([]);
@@ -2812,10 +2880,12 @@
       currentJobCreatedAt = j.createdAt ?? null;
       currentJobPending = !!j.transcriptionPending;
       currentCategory = j.category ?? "";
-      speakerLabels = j.speakerLabels ?? {};
+      speakerLabels = withDefaultLabels(j.transcript?.utterances ?? [], j.speakerLabels ?? {});
       agenda=j.agenda??"";bookmarks=j.bookmarks??[];decisions=j.decisions??[];followupFrom=j.followupFrom??null;meetingWarning=j.meetingWarning??j.meetingError??"";playbackTrack="mix";
       notes = typeof j.notes === "string" ? j.notes : "";
       participants = Array.isArray(j.participants) ? j.participants : [];
+      separateCount = countParticipants(participants.map((p) => p.name));
+      speakerPanelOpen = j.jobType === "meeting" && !!j.transcript?.utterances?.some((u: any) => u.speaker === "Mötet");
       actions = Array.isArray(j.actions) ? j.actions : [];
       followup = typeof j.followup === "string" ? j.followup : "";
       maximized = null;
@@ -3569,6 +3639,9 @@
           <label>Mötesmall<select bind:value={meetingPreset} onchange={()=>{const preset=meetingPresets.find(p=>p.name===meetingPreset);if(preset){meetingAgenda=preset.agenda;meetingPeople=preset.people??'';selectedTemplate=preset.summaryTemplate??selectedTemplate;}}}><option value="">Ingen mall</option>{#each meetingPresets as p}<option>{p.name}</option>{/each}</select></label>
           <label>Syfte och agenda<textarea bind:value={meetingAgenda} rows="3" placeholder="Valfritt – kan ändras under mötet"></textarea></label>
           <details><summary>Deltagare och sammanfattningsmall</summary><label>Deltagare, en per rad<textarea aria-label="Deltagare inför mötet" bind:value={meetingPeople} rows="3" placeholder="Alex; Samordnare"></textarea></label><label>Sammanfattningsmall<select bind:value={selectedTemplate}>{#each summaryTemplates as t}<option value={t.id}>{t.label}</option>{/each}</select></label></details>
+          <div class="voices-setup"><label class="ai-toggle"><input type="checkbox" bind:checked={meetingSeparate} onchange={()=>{try{localStorage.setItem('avskrift.meetingSeparate',meetingSeparate?'1':'0');}catch{}}}/><span>Skilj på deltagarna när mötet är klart</span></label>
+          {#if meetingSeparate}<label>Övriga deltagare (utom dig)<select aria-label="Antal röster att leta efter" value={meetingVoiceCount??''} onchange={e=>meetingVoiceCount=e.currentTarget.value?+e.currentTarget.value:null}><option value="">{listedPeople?`Enligt deltagarlistan (${listedPeople})`:'Gissa'}</option>{#each Array.from({length:12},(_,i)=>i+1) as n}<option value={n}>{n}</option>{/each}</select></label>{/if}
+          <p class="hint">Det som hörs från mötet delas upp efter röst, så att du kan ge varje talare ett namn efteråt.</p></div>
           <details><summary>Spara som mötesmall</summary><div class="row"><input aria-label="Namn på mötesmall" bind:value={presetName}/><button class="btn" onclick={saveMeetingPreset} disabled={!presetName.trim()}>Spara mall</button></div></details>
           {#if followupActions.length}<div><p>{followupActions.length-excludedFollowup.length} öppna åtgärder följer med från föregående möte.</p>{#each followupActions as a}<label class="ai-toggle"><input type="checkbox" checked={!excludedFollowup.includes(a.id!)} onchange={e=>{excludedFollowup=e.currentTarget.checked?excludedFollowup.filter(id=>id!==a.id):[...excludedFollowup,a.id!];}}/><span>{a.text}</span></label>{/each}</div>{/if}
           <label>Din mikrofon<select aria-label="Välj mikrofon" bind:value={micDevice}><option value="">Windows standardmikrofon</option>{#each devices.filter(d=>d.source==='mic') as d}<option value={d.id}>{d.name}</option>{/each}</select></label>
@@ -3860,8 +3933,8 @@
         {#if meetingSysWav}
           <section class="anon-block">
             <h2>Mötesröster</h2>
-            <button class="btn block" onclick={separateMeetingVoices} disabled={busy}>Separera mötesröster</button>
-            <p class="hint">Delar upp ”Mötet” i Talare 1, 2 … (din röst förblir ”Jag”).</p>
+            <button class="btn block" onclick={() => { speakerPanelOpen = true; tab("transcript"); }} disabled={busy}>Skilj på deltagarna</button>
+            <p class="hint">Delar upp ”Mötet” i Talare 1, 2 … som du sedan ger namn (din röst förblir ”Jag”).</p>
           </section>
         {/if}
         <section class="anon-block">
@@ -3950,9 +4023,9 @@
               src={audioSrc}
               preload="metadata"
               onloadedmetadata={()=>{if(audioEl){audioEl.currentTime=Math.min(currentTime,audioEl.duration||0);audioEl.playbackRate=Number(playbackRate);}}}
-              ontimeupdate={() => (currentTime = audioEl?.currentTime ?? 0)}
+              ontimeupdate={() => {currentTime = audioEl?.currentTime ?? 0;if(sampleStop!==null&&currentTime>=sampleStop){sampleStop=null;audioEl?.pause();}}}
               onplay={() => (playing = true)}
-              onpause={() => {playing = false;if(!restoringJob)saveWorkspace();}}
+              onpause={() => {playing = false;sampleStop=null;if(!restoringJob)saveWorkspace();}}
               onended={() => (playing = false)}
             ></audio>
           </div>
@@ -3965,7 +4038,7 @@
             {#if currentJobPending}<p role="status">{bgMeetings.find(m=>m.id===currentJobId)?.msg??'Bearbetningen avbröts. Öppna Transkript och välj Transkribera om.'}</p>{/if}{#if currentJobPending && transcribePct !== null && bgMeetings.some(m=>m.id===currentJobId)}<div class="state-progress"><ProgressEta pct={transcribePct} /></div>{/if}
             <div class="overview-next"><button onclick={()=>tab('transcript')}><strong>Transkript</strong><span>{transcript?.utterances.length??0} avsnitt</span></button><button onclick={()=>tab('notes')}><strong>Anteckningar</strong><span>{bookmarks.length} tidsmarkeringar</span></button><button onclick={()=>tab('actions')}><strong>Beslut och åtgärder</strong><span>{decisions.length} beslut · {actions.filter(a=>!a.done).length} öppna åtgärder</span></button></div>
             <div class="overview-grid"><section><h3>Syfte och agenda</h3><textarea aria-label="Mötets agenda" bind:value={agenda} oninput={saveWorkspace} rows="6" placeholder="Vad ska mötet handla om?"></textarea></section>
-            <section><h3>Deltagare</h3>{#each participants as p,i}<div class="row"><input aria-label="Deltagarnamn" bind:value={participants[i].name} oninput={saveWorkspace}/><input aria-label="Deltagarens roll" bind:value={participants[i].role} oninput={saveWorkspace}/><button class="link" onclick={()=>removeParticipant(i)} aria-label="Ta bort deltagare">×</button></div>{/each}<button class="btn small" onclick={addParticipant}>Lägg till deltagare</button><button class="btn small" onclick={seedParticipantsFromSpeakers}>Från talare</button>
+            <section><h3>Deltagare</h3>{#each participants as p,i}<div class="row"><input aria-label="Deltagarnamn" bind:value={participants[i].name} oninput={saveWorkspace}/><input aria-label="Deltagarens roll" bind:value={participants[i].role} oninput={saveWorkspace}/><button class="link" onclick={()=>removeParticipant(i)} aria-label="Ta bort deltagare">×</button></div>{/each}<button class="btn small" onclick={addParticipant}>Lägg till deltagare</button><button class="btn small" onclick={seedParticipantsFromSpeakers}>Från talare</button>{#if meetingSysWav && !currentJobPending && transcript && hasMeetingVoices(transcript.utterances)}<button class="btn small" onclick={() => { speakerPanelOpen = true; tab("transcript"); }} title="Dela upp mötesljudet i de som pratade och ge dem namn">Skilj på deltagarna</button>{/if}
               <label class="followup-date">Följ upp den<input type="date" bind:value={followup} onchange={saveWorkspace}/></label></section></div>
             {#if followupFrom}<button class="link" onclick={()=>followupFrom&&openJobById(followupFrom)}>Öppna föregående möte</button>{/if}
             {#if summaryDraft}<section><h3>Sammanfattning – utkast</h3><p class="summary-preview">{summaryDraft}</p><button class="btn" onclick={()=>tab('summary')}>Granska och redigera</button></section>{:else}<button class="btn" onclick={()=>tab('summary')} disabled={currentJobPending}>Skapa sammanfattning</button>{/if}
@@ -3995,6 +4068,12 @@
               {editMode ? "klicka en rad för att rätta · byt talare · ta bort" : "klicka tid för att spela · klicka/dubbelklicka text för att rätta"}
             </span>
           </div>
+          {#if speakerOptions.length}
+            <SpeakerPanel utterances={transcript?.utterances ?? []} {speakerLabels} participantNames={participants.map((p) => p.name.trim()).filter(Boolean)}
+              canSeparate={!!meetingSysWav} bind:separateCount bind:open={speakerPanelOpen} busy={busy || separatingVoices.includes(currentJobId ?? "")}
+              working={separatingVoices.includes(currentJobId ?? "")} readonly={currentJobPending}
+              onrename={renameSpeaker} onmerge={mergeSpeaker} onlisten={listenTo} onseparate={(n) => void separateMeetingVoices(n)} />
+          {/if}
           {#key currentJobId}
             <TranscriptView bind:this={transcriptView} utterances={transcript?.utterances??[]} {speakerLabels} {speakerOptions} {playing} {currentTime} {editMode} {editingIdx} bind:editText
               onseek={seekTo} onedit={startEdit} oncommit={commitEdit} oncancel={cancelEdit} onrename={renameSpeaker} onspeaker={setSpeaker} ondelete={deleteUtterance} />
@@ -4177,6 +4256,7 @@
                     <header class="ws-head">
                       <h3><svg class="ws-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 5.5a3 3 0 0 1 0 5M17.5 14c2.2.5 3.5 2.2 3.5 5"/></svg> Deltagare</h3>
                       <div class="ws-head-actions">
+                        {#if meetingSysWav && !currentJobPending && transcript && hasMeetingVoices(transcript.utterances)}<button class="btn small" onclick={() => { speakerPanelOpen = true; tab("transcript"); }} title="Dela upp mötesljudet i de som pratade och ge dem namn">Skilj på deltagarna</button>{/if}
                         {#if speakerOptions.length}<button class="btn small" onclick={seedParticipantsFromSpeakers} title="Hämta namn från transkriptets talare">Från talare</button>{/if}
                         <button class="btn small" onclick={addParticipant}>+ Lägg till</button>
                       </div>
@@ -4375,6 +4455,8 @@
   .recdot { width: 9px; height: 9px; border-radius: 50%; background: #e11d48; animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 
+  .voices-setup { display: flex; flex-direction: column; gap: 8px; }
+  .voices-setup .hint { margin: 0; }
   .ai-toggle { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; font-size: 13px; color: var(--muted); }
   .ai-toggle em { font-style: normal; color: var(--faint); display: block; margin-top: 2px; font-size: 12px; }
   .numrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; font-size: 13.5px; }

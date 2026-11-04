@@ -860,6 +860,12 @@ struct StopMeetingArgs {
     /// Frontend-generated id correlating this meeting to its saved project; echoed back in the
     /// `avskrift:meeting-done` / `avskrift:meeting-failed` event so the UI knows which one finished.
     token: String,
+    /// Split "Mötet" into the individual participants once the text is complete.
+    #[serde(default)]
+    separate_voices: bool,
+    /// How many people besides you were in the meeting (`None` = guess).
+    #[serde(default)]
+    num_speakers: Option<usize>,
 }
 
 /// Returned by `stop_meeting` immediately after the recording is stopped — the source WAV paths +
@@ -952,8 +958,12 @@ fn finalize_meeting(
                     "systemWavPath": files.sys_wav,
                     "mixWavPath": mix_wav_path,
                     "durationS": files.duration_s,
+                    "separatingVoices": args.separate_voices,
                 }),
             );
+            if args.separate_voices {
+                separate_finished_meeting(app, &args, &files.sys_wav, transcript);
+            }
         }
         Err(e) => {
             let backend=app.state::<Backend>();
@@ -961,6 +971,45 @@ fn finalize_meeting(
             let _ =
                 app.emit("avskrift:meeting-failed", serde_json::json!({ "token": args.token, "error": e.to_string() }));
         }
+    }
+}
+
+/// After a meeting's text is done: tell its participants apart in the background (minutes for a long
+/// meeting) and store the result, unless the text was edited meanwhile. Reports through
+/// `avskrift:meeting-voices` with `status` "done" (with the transcript), "skipped" or "failed".
+fn separate_finished_meeting(app: &AppHandle, args: &StopMeetingArgs, sys_wav: &str, transcript: Transcript) {
+    let emit_voices = |payload: serde_json::Value| {
+        let mut payload = payload;
+        payload["token"] = args.token.clone().into();
+        let _ = app.emit("avskrift:meeting-voices", payload);
+    };
+    let backend = app.state::<Backend>();
+    let result = split_meeting_voices(app, sys_wav, transcript.utterances.clone(), args.num_speakers, &|_: &str| {})
+        .and_then(|utterances| {
+            let split = Transcript { utterances, ..transcript.clone() };
+            let mut applied = false;
+            let job = jobs::edit(&backend.paths.jobs_dir, &args.token, |job| {
+                if job.transcript.as_ref().map(|t| &t.utterances) != Some(&transcript.utterances) {
+                    return Ok(()); // edited or re-transcribed meanwhile: never overwrite that
+                }
+                job.transcript = Some(split.clone());
+                for u in &split.utterances {
+                    if let Some(n) = u.speaker.as_deref().and_then(|s| s.strip_prefix("TALARE_")) {
+                        job.speaker_labels.entry(format!("TALARE_{n}")).or_insert_with(|| format!("Talare {n}"));
+                    }
+                }
+                applied = true;
+                Ok(())
+            })?;
+            Ok((applied, split, job.speaker_labels))
+        });
+    match result {
+        Ok((true, split, labels)) => emit_voices(serde_json::json!({ "status": "done", "transcript": split, "speakerLabels": labels })),
+        Ok((false, ..)) => emit_voices(serde_json::json!({
+            "status": "skipped",
+            "error": "Texten ändrades innan deltagarna hann skiljas åt. Välj Skilj på deltagarna när du vill.",
+        })),
+        Err(e) => emit_voices(serde_json::json!({ "status": "failed", "error": format!("Deltagarna kunde inte skiljas åt: {e}") })),
     }
 }
 
@@ -1089,8 +1138,8 @@ struct DiarizeMeetingArgs {
 /// Split the current meeting transcript's "Mötet" utterances into distinct speakers (TALARE_1..) by
 /// diarising the system-audio WAV; "Jag" (the mic) is left untouched.
 #[tauri::command]
-async fn diarize_meeting(app: AppHandle, args: DiarizeMeetingArgs) -> Result<Transcript, String> {
-    tauri::async_runtime::spawn_blocking(move || run_diarize_meeting(&app, args))
+async fn diarize_meeting(app: AppHandle, args: DiarizeMeetingArgs, work_id: Option<String>) -> Result<Transcript, String> {
+    tauri::async_runtime::spawn_blocking(move || work::run(work_id, || run_diarize_meeting(&app, args)))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -1107,19 +1156,8 @@ fn run_diarize_meeting(app: &AppHandle, args: DiarizeMeetingArgs) -> anyhow::Res
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Inget mötestranskript att separera."))?;
 
-    progress("Läser mötesljud…");
-    let audio = audio::load(Path::new(&args.system_wav_path))?;
-    progress("Identifierar mötesröster…");
-    let turns = diarize::diarize(
-        &backend.paths.diar_segmentation,
-        &backend.paths.diar_embedding,
-        &audio.samples,
-        args.num_speakers,
-        &progress,
-    )?;
-
     let transcript = Transcript {
-        utterances: align::split_meeting_speakers(current.utterances, &turns, "Mötet"),
+        utterances: split_meeting_voices(app, &args.system_wav_path, current.utterances, args.num_speakers, &progress)?,
         language: current.language,
         model: current.model,
         diarized: true,
@@ -1127,6 +1165,32 @@ fn run_diarize_meeting(app: &AppHandle, args: DiarizeMeetingArgs) -> anyhow::Res
     *backend.transcript.lock().unwrap() = Some(transcript.clone());
     progress("Klar");
     Ok(transcript)
+}
+
+/// Split a meeting's "Mötet" (and any earlier "TALARE_n") utterances into the people heard in the
+/// system WAV. `num_speakers` is how many there were besides you; `None` guesses.
+fn split_meeting_voices(
+    app: &AppHandle,
+    sys_wav: &str,
+    utterances: Vec<transcript::Utterance>,
+    num_speakers: Option<usize>,
+    progress: &dyn Fn(&str),
+) -> anyhow::Result<Vec<transcript::Utterance>> {
+    if !utterances.iter().any(|u| u.speaker.as_deref().is_some_and(|s| s == "Mötet" || s.starts_with("TALARE_"))) {
+        return Ok(utterances);
+    }
+    let backend = app.state::<Backend>();
+    progress("Läser mötesljud…");
+    let audio = audio::load(Path::new(sys_wav))?;
+    progress("Identifierar mötesröster…");
+    let turns = diarize::diarize(
+        &backend.paths.diar_segmentation,
+        &backend.paths.diar_embedding,
+        &audio.samples,
+        num_speakers.filter(|&n| n > 0),
+        progress,
+    )?;
+    Ok(align::split_meeting_speakers(utterances, &turns, "Mötet"))
 }
 
 /// Batch-transcribe a meeting's two source WAVs (mic = "Jag", system = "Mötet") with `model` and

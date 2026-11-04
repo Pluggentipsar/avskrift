@@ -11,8 +11,9 @@ och ingen text lämnar maskinen, och ingen Python eller molntjänst behövs.
 
 - **Möten** – spela in digitala möten med din mikrofon och mötesljudet som två spår, med text
   i realtid om du vill. Efter mötet finns texten direkt; det som saknas kompletteras i
-  bakgrunden. Anteckningar och tidsmarkeringar under mötet, beslut och åtgärder med ansvarig och
-  datum, uppföljning och ett samlat mötesunderlag att exportera.
+  bakgrunden. Övriga deltagare skiljs åt efter röst och får namn ur deltagarlistan. Anteckningar
+  och tidsmarkeringar under mötet, beslut och åtgärder med ansvarig och datum, uppföljning och ett
+  samlat mötesunderlag att exportera.
 - **Transkribera** – ljud- och videofiler med KB-Whisper (tiny till large) eller den snabbare
   Pianissimo (experimentell, svenska). Talare skiljs åt, uppspelningen följer texten ord för
   ord, och texten går att rätta direkt. Även översättning till engelsk text.

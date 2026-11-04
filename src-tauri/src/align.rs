@@ -33,9 +33,10 @@ pub fn from_labeled(mut utterances: Vec<Utterance>) -> Vec<Utterance> {
     utterances
 }
 
-/// Re-attribute the utterances currently labelled `meeting_label` (e.g. "Mötet") to diarised
-/// speakers "TALARE_1".. by dominant temporal overlap with `turns`; utterances with any other
-/// speaker (e.g. "Jag") are left untouched. First-appearance numbering, like [`with_speakers`].
+/// Re-attribute the utterances currently labelled `meeting_label` (e.g. "Mötet"), or already split
+/// into "TALARE_n" by an earlier run, to diarised speakers "TALARE_1".. by dominant temporal overlap
+/// with `turns`; utterances with any other speaker (e.g. "Jag") are left untouched. First-appearance
+/// numbering, like [`with_speakers`]. An utterance no turn overlaps goes back to `meeting_label`.
 pub fn split_meeting_speakers(
     utterances: Vec<Utterance>,
     turns: &[SpeakerTurn],
@@ -46,15 +47,18 @@ pub fn split_meeting_speakers(
     utterances
         .into_iter()
         .map(|mut u| {
-            if u.speaker.as_deref() == Some(meeting_label) {
-                if let Some(cluster) = dominant_speaker(u.start, u.end, turns) {
-                    let n = *order.entry(cluster).or_insert_with(|| {
-                        let v = next;
-                        next += 1;
-                        v
-                    });
-                    u.speaker = Some(format!("TALARE_{n}"));
-                }
+            if u.speaker.as_deref().is_some_and(|s| s == meeting_label || s.starts_with("TALARE_")) {
+                u.speaker = Some(match dominant_speaker(u.start, u.end, turns) {
+                    Some(cluster) => {
+                        let n = *order.entry(cluster).or_insert_with(|| {
+                            let v = next;
+                            next += 1;
+                            v
+                        });
+                        format!("TALARE_{n}")
+                    }
+                    None => meeting_label.to_string(),
+                });
             }
             u
         })
@@ -123,5 +127,17 @@ mod tests {
         let utts = with_speakers(segs, &turns);
         assert_eq!(utts[0].speaker.as_deref(), Some("TALARE_1"));
         assert_eq!(utts[1].speaker.as_deref(), Some("TALARE_2"));
+    }
+
+    #[test]
+    fn meeting_split_can_be_rerun_and_leaves_my_voice_alone() {
+        let u=|start,end,speaker:&str| Utterance {start,end,speaker:Some(speaker.into()),text:String::new(),words:vec![]};
+        let turns=vec![SpeakerTurn{start:0.0,end:2.0,speaker:3},SpeakerTurn{start:4.0,end:6.0,speaker:0}];
+        let first=split_meeting_speakers(vec![u(0.0,2.0,"Mötet"),u(2.0,4.0,"Jag"),u(4.0,6.0,"Mötet"),u(7.0,8.0,"Mötet")],&turns,"Mötet");
+        let names=|v:&[Utterance]|v.iter().map(|u|u.speaker.clone().unwrap()).collect::<Vec<_>>();
+        assert_eq!(names(&first),["TALARE_1","Jag","TALARE_2","Mötet"]);
+        // A second run with another speaker count re-splits the earlier TALARE_n, not just "Mötet".
+        let again=split_meeting_speakers(first,&[SpeakerTurn{start:0.0,end:8.0,speaker:1}],"Mötet");
+        assert_eq!(names(&again),["TALARE_1","Jag","TALARE_1","TALARE_1"]);
     }
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import {activeWork,cancelActiveWork,pauseActiveWork} from './work';
   let {dialog=false}:{dialog?:boolean}=$props();
-  const labels:Record<string,string>={anonymize:'Avidentifierar transkript',analyze_document:'Avidentifierar underlaget',transcribe:'Transkriberar ljudfil',summarize:'Skapar sammanfattning',ask_transcript:'Bearbetar underlaget',create_grounded_draft:'Skapar källutkast',rewrite_dictation:'Bearbetar diktat'};
+  const labels:Record<string,string>={anonymize:'Avidentifierar transkript',analyze_document:'Avidentifierar underlaget',transcribe:'Transkriberar ljudfil',summarize:'Skapar sammanfattning',ask_transcript:'Bearbetar underlaget',create_grounded_draft:'Skapar källutkast',rewrite_dictation:'Bearbetar diktat',diarize_meeting:'Skiljer på deltagarna'};
 </script>
 {#if $activeWork && (dialog || $activeWork.command!=='rewrite_dictation')}
   <div class="work-control" aria-label="Pågående arbete">

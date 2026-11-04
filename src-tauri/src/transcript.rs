@@ -10,14 +10,14 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// One word with absolute timestamps in seconds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Word {
     pub start: f64,
     pub end: f64,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Utterance {
     /// Start time in seconds.
     pub start: f64,
@@ -32,7 +32,7 @@ pub struct Utterance {
     pub words: Vec<Word>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transcript {
     pub utterances: Vec<Utterance>,
     /// Detected/forced language (ISO code), e.g. "sv".

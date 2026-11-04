@@ -38,6 +38,12 @@ const MIN_DURATION_OFF: f32 = 0.5;
 /// A (chunk, local speaker) pair needs this many active frames to get an embedding.
 const MIN_FRAMES: usize = 10;
 
+/// Threads for the segmentation and embedding models: half the cores, at most 4, so diarising a long
+/// meeting takes minutes rather than a quarter of an hour without starving the rest of the app.
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4))
+}
+
 /// Run diarisation over 16 kHz mono `samples`.
 ///
 /// `num_speakers` forces a fixed speaker count when `Some`; `None` uses [`AUTO_SPEAKERS`]. The
@@ -153,7 +159,7 @@ impl Segmenter {
         let session = Session::builder()?
             .with_independent_thread_pool()
             .map_err(|e| anyhow!("{e}"))?
-            .with_intra_threads(1)
+            .with_intra_threads(threads())
             .map_err(|e| anyhow!("{e}"))?
             .commit_from_file(path)
             .map_err(|e| anyhow!("kunde inte initiera diariseringen: {e}"))?;
@@ -317,7 +323,7 @@ impl Embedder {
         let provider = std::ffi::CString::new("cpu")?;
         let config = sys::SherpaOnnxSpeakerEmbeddingExtractorConfig {
             model: model.as_ptr(),
-            num_threads: 1,
+            num_threads: threads() as i32,
             debug: 0,
             provider: provider.as_ptr(),
         };
