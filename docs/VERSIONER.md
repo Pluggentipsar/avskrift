@@ -4,6 +4,11 @@ Vad som kommit i varje version, nyast först. Förhandsversioner (beta) är prov
 stabila version visas som *Latest* bland [releaserna](https://github.com/Pluggentipsar/avskrift/releases).
 Detaljer finns i release-anteckningarna (`docs/RELEASE-*.md`) och stegdokumenten (`docs/ARBETSYTA-STEG-*.md`).
 
+- **Pausa möten och arbeten, och tid kvar (0.8.0-beta.6, förhandsrelease)** — pausa en
+  mötesinspelning utan att avsluta mötet, pausa och fortsätta en transkribering, och se ungefär hur
+  lång tid som är kvar. Se [release-anteckningarna](RELEASE-0.8.0-beta.6.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.6).
+
 - **Sax i Textklipp och stabilare talarseparering (0.8.0-beta.5, förhandsrelease)** — dela med sax
   och ta bort bitar på tidslinjen, långa tystnader och omstarter markerade i texten, och
   talarsepareringen kraschar inte längre på långa inspelningar.
