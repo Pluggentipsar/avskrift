@@ -4,6 +4,11 @@ Vad som kommit i varje version, nyast först. Förhandsversioner (beta) är prov
 stabila version visas som *Latest* bland [releaserna](https://github.com/Pluggentipsar/avskrift/releases).
 Detaljer finns i release-anteckningarna (`docs/RELEASE-*.md`) och stegdokumenten (`docs/ARBETSYTA-STEG-*.md`).
 
+- **Skilj på deltagarna i möten (0.8.0-beta.7, förhandsrelease)** — övriga deltagare delas upp
+  efter röst när mötet är klart, får namn ur deltagarlistan och kan slås ihop om samma person blivit
+  två. Se [release-anteckningarna](RELEASE-0.8.0-beta.7.md).
+  [Hämta förhandsreleasen](https://github.com/Pluggentipsar/avskrift/releases/tag/v0.8.0-beta.7).
+
 - **Pausa möten och arbeten, och tid kvar (0.8.0-beta.6, förhandsrelease)** — pausa en
   mötesinspelning utan att avsluta mötet, pausa och fortsätta en transkribering, och se ungefär hur
   lång tid som är kvar. Se [release-anteckningarna](RELEASE-0.8.0-beta.6.md).
