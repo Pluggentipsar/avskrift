@@ -7,6 +7,7 @@
   import ModelSettings from '$lib/ModelSettings.svelte';
   import UpdateDialog from '$lib/UpdateDialog.svelte';
   import SummaryEditor from '$lib/SummaryEditor.svelte';
+  import ProgressEta from '$lib/ProgressEta.svelte';
   import { copyMarkdown, readClipboardMarkdown } from '$lib/markdown';
   import Dictation from "$lib/Dictation.svelte";
   import Textklipp from "$lib/textklipp/Textklipp.svelte";
@@ -253,6 +254,8 @@
   let meetingElapsed = $state(0);
   let meetingBusy = $state(false);
   let meetingTimer: ReturnType<typeof setInterval> | null = null;
+  // A paused recording keeps its streams open but records nothing; the timer and timeline stop too.
+  let meetingPaused = $state(false), meetingPausing = $state(false);
   let meetingSysWav = $state<string | null>(null);
   let meetingMicWav = $state<string | null>(null);
   let meetingMixWav = $state<string | null>(null); // mixed playback track (mic + meeting, echo removed)
@@ -1166,7 +1169,8 @@
       currentJobId=id;currentJobTitle=title;currentJobCreatedAt=now;currentJobType='meeting';currentJobPending=true;
       agenda=meetingAgenda;actions=job.actions;participants=job.participants;followupFrom=job.followupFrom;meetingWarning='';channelLevels=[];meetingLagging=false;
       meetingShowLive=true;meetingShowNotes=true;meetingActive=true;meetingElapsed=0;liveUtterances=[];saveState='saved';savedAt=now;dirty=false;
-      meetingTimer=setInterval(()=>(meetingElapsed+=1),1000);
+      meetingPaused=false;
+      meetingTimer=setInterval(()=>{if(!meetingPaused)meetingElapsed+=1;},1000);
       meetingName='';meetingAgenda='';meetingPeople='';followupActions=[];
       void refreshJobs();
     }catch(e){error='Kunde inte starta inspelningen: '+String(e);}
@@ -1181,7 +1185,7 @@
     bgMeetings=[...bgMeetings,{id:token,title:currentJobTitle,msg:'Transkriberar…'}];
     try {
       await invoke('stop_meeting',{args:{model:selectedModel,language,token}});
-      meetingActive=false;if(meetingTimer)clearInterval(meetingTimer);
+      meetingActive=false;meetingPaused=false;if(meetingTimer)clearInterval(meetingTimer);
       const live=liveUtterances.map(u=>({start:u.start,end:u.end,speaker:u.source,text:u.text,words:[]})).sort((a,b)=>a.start-b.start);
       if(live.length) showProvisional({utterances:live,language,model:selectedModel,diarized:true});
       view=live.length?'transcript':'overview';screen='transcribe';
@@ -1703,6 +1707,18 @@
   onMount(()=>{try{meetingPresets=JSON.parse(localStorage.getItem('avskrift.meetingPresets')||'[]');}catch{}});
   function saveMeetingPreset(){if(!presetName.trim())return;meetingPresets=[...meetingPresets.filter(p=>p.name!==presetName.trim()),{name:presetName.trim(),agenda:meetingAgenda,people:meetingPeople,summaryTemplate:selectedTemplate}];localStorage.setItem('avskrift.meetingPresets',JSON.stringify(meetingPresets));meetingPreset=presetName.trim();presetName='';}
   async function listenActionSource(source:{quote:string;start:number|null;jobId?:string}){if(source.jobId&&source.jobId!==currentJobId){await openJobById(source.jobId);if(currentJobId!==source.jobId)return;}tab('transcript');await tick();if(source.start!==null)seekTo(source.start);}
+  /** Pause or resume the recording. A pause is noted at its place in the notes. */
+  async function togglePause(){
+    if(!meetingActive||meetingPausing)return;
+    meetingPausing=true;
+    const next=!meetingPaused;
+    try{
+      await invoke('pause_meeting',{paused:next});
+      meetingPaused=next;
+      bookmarks=[...bookmarks,{id:crypto.randomUUID(),time:meetingElapsed,text:next?'Paus':'Fortsätter efter paus'}];saveWorkspace();
+    }catch(e){error='Kunde inte '+(next?'pausa':'fortsätta')+' inspelningen: '+String(e);}
+    finally{meetingPausing=false;}
+  }
   function markMeetingTime(){bookmarks=[...bookmarks,{id:crypto.randomUUID(),time:meetingActive?meetingElapsed:currentTime,text:'Markering'}];saveWorkspace();}
   function addDecision(){if(!decisionText.trim())return;decisions=[...decisions,{id:crypto.randomUUID(),text:decisionText.trim()}];decisionText='';saveWorkspace();}
   function addGroundedDecision(text:string,source:{quote:string;start:number|null}){decisions=[...decisions,{id:crypto.randomUUID(),text,...source}];saveWorkspace();}
@@ -3591,7 +3607,7 @@
         {:else if meetingActive || meetingBusy}
           <div class="m-live-head">
             {#if meetingActive}
-              <div class="big-rec"><span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}</div>
+              <div class="big-rec" class:paused={meetingPaused} role="status">{#if meetingPaused}<span class="pausedot"></span> Pausad · {fmtTime(meetingElapsed)}{:else}<span class="recdot"></span> Spelar in · {fmtTime(meetingElapsed)}{/if}</div>
             {:else}
               <!-- Finalisation runs in the background; keep the notes/actions reachable while it does. -->
               <div class="working" aria-live="polite"><span class="working-dot"></span>{progressMsg || "Transkriberar mötet…"}{#if transcribePct !== null} · {transcribePct}%{/if}</div>
@@ -3601,10 +3617,11 @@
               <button class="btn small" class:on={meetingShowNotes} onclick={toggleNotesPane} title="Visa/dölj anteckningar">Anteckningar</button>
             </div>
             {#if meetingActive}
+              <button class="btn" onclick={togglePause} disabled={meetingPausing||meetingBusy} title={meetingPaused?'Fortsätt spela in i samma möte':'Pausa utan att avsluta mötet. Pausen spelas inte in.'}>{meetingPaused?'Fortsätt inspelningen':'Pausa inspelningen'}</button>
               <button class="btn primary" onclick={stopMeeting}>Stoppa inspelningen</button>
             {/if}
           </div>
-          <div class="channel-levels">{#each ['Min mikrofon','Övriga deltagare'] as name,i}<div><strong>{name}</strong><span>{channelLevels[i]?.name||'Väntar på ljudenhet…'}</span><meter aria-label={name+' – ljudnivå'} min="0" max="1" value={Math.min(1,(channelLevels[i]?.peak??0)*5)}></meter><small>{channelLevels[i]?.peak>0.0003?'Ljud registreras':'Ingen ljudnivå just nu'}</small></div>{/each}</div>
+          <div class="channel-levels">{#each ['Min mikrofon','Övriga deltagare'] as name,i}<div><strong>{name}</strong><span>{channelLevels[i]?.name||'Väntar på ljudenhet…'}</span><meter aria-label={name+' – ljudnivå'} min="0" max="1" value={meetingPaused?0:Math.min(1,(channelLevels[i]?.peak??0)*5)}></meter><small>{meetingPaused?'Pausad – inget spelas in':channelLevels[i]?.peak>0.0003?'Ljud registreras':'Ingen ljudnivå just nu'}</small></div>{/each}</div>
           {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
           {#if meetingLagging && meetingActive}
             <div class="banner warn">Transkriberingen släpar efter på den här datorn. All text kommer ikapp när du stoppar — men välj gärna en mindre modell, eller stäng av ”Live-text” nästa gång.</div>
@@ -3872,8 +3889,8 @@
           <div class="spinner"></div>
           <p class="state-title">{progressMsg || "Arbetar…"}</p>
           {#if transcribePct !== null}
-            <div class="progress"><div class="progress-bar" style="width:{transcribePct}%"></div></div>
-            <p class="state-sub">{transcribePct}% — transkriberar</p>
+            <div class="state-progress"><ProgressEta pct={transcribePct} /></div>
+            <p class="state-sub">Datorn kan gå i viloläge, till exempel om du fäller ner locket. Arbetet fortsätter när den vaknar.</p>
           {:else}
             <p class="state-sub">Allt körs lokalt på din dator. Första körningen laddar modellen.</p>
           {/if}
@@ -3945,7 +3962,7 @@
           <section class="meeting-overview">
             <div class="overview-heading"><div><h2>{currentJobTitle}</h2><p>{currentJobPending?'Transkriptet bearbetas. Dina anteckningar och åtgärder är tillgängliga.':'Mötets innehåll och nästa steg.'}</p></div><button class="btn" onclick={prepareFollowup} disabled={meetingActive}>Förbered uppföljningsmöte</button></div>
             {#if meetingWarning}<p class="banner warn" role="status">{meetingWarning}</p>{/if}
-            {#if currentJobPending}<p role="status">{bgMeetings.find(m=>m.id===currentJobId)?.msg??'Bearbetningen avbröts. Öppna Transkript och välj Transkribera om.'}</p>{/if}
+            {#if currentJobPending}<p role="status">{bgMeetings.find(m=>m.id===currentJobId)?.msg??'Bearbetningen avbröts. Öppna Transkript och välj Transkribera om.'}</p>{/if}{#if currentJobPending && transcribePct !== null && bgMeetings.some(m=>m.id===currentJobId)}<div class="state-progress"><ProgressEta pct={transcribePct} /></div>{/if}
             <div class="overview-next"><button onclick={()=>tab('transcript')}><strong>Transkript</strong><span>{transcript?.utterances.length??0} avsnitt</span></button><button onclick={()=>tab('notes')}><strong>Anteckningar</strong><span>{bookmarks.length} tidsmarkeringar</span></button><button onclick={()=>tab('actions')}><strong>Beslut och åtgärder</strong><span>{decisions.length} beslut · {actions.filter(a=>!a.done).length} öppna åtgärder</span></button></div>
             <div class="overview-grid"><section><h3>Syfte och agenda</h3><textarea aria-label="Mötets agenda" bind:value={agenda} oninput={saveWorkspace} rows="6" placeholder="Vad ska mötet handla om?"></textarea></section>
             <section><h3>Deltagare</h3>{#each participants as p,i}<div class="row"><input aria-label="Deltagarnamn" bind:value={participants[i].name} oninput={saveWorkspace}/><input aria-label="Deltagarens roll" bind:value={participants[i].role} oninput={saveWorkspace}/><button class="link" onclick={()=>removeParticipant(i)} aria-label="Ta bort deltagare">×</button></div>{/each}<button class="btn small" onclick={addParticipant}>Lägg till deltagare</button><button class="btn small" onclick={seedParticipantsFromSpeakers}>Från talare</button>
@@ -3959,7 +3976,7 @@
           {#if currentJobPending && transcript?.utterances?.length}
             <div class="banner provisional" role="status">
               {#if bgMeetings.some((m) => m.id === currentJobId)}
-                <span><strong>Preliminär text från mötet.</strong> {bgMeetings.find((m) => m.id === currentJobId)?.msg} Texten byts ut när transkriptet är klart; då går det att redigera.</span>
+                <span><strong>Preliminär text från mötet.</strong> {bgMeetings.find((m) => m.id === currentJobId)?.msg} Texten byts ut när transkriptet är klart; då går det att redigera.</span>{#if transcribePct !== null}<div class="banner-progress"><ProgressEta pct={transcribePct} /></div>{/if}
               {:else}
                 <span><strong>Preliminär text från mötet.</strong> Bearbetningen avbröts innan transkriptet blev komplett.</span>
                 {#if meetingMicWav && meetingSysWav && selectedDownloaded}<button class="btn small" onclick={retranscribeMeeting} disabled={busy}>Transkribera om</button>{/if}
@@ -4390,8 +4407,7 @@
   .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
   .meta strong { color: var(--ink); font-weight: 700; }
 
-  .progress { width: 220px; height: 7px; background: var(--line); border-radius: 4px; margin: 4px auto 10px; overflow: hidden; }
-  .progress-bar { height: 100%; background: var(--accent); transition: width .25s; }
+  .state-progress { width: min(360px, 100%); margin: 4px auto 10px; text-align: left; }
 
   .row { display: flex; gap: 8px; margin: 8px 0 22px; }
   .grow { flex: 1; }
@@ -4510,6 +4526,7 @@
   .m-field { flex: 1; display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
   .m-field .profile { width: 100%; }
   .big-rec { font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 10px; justify-content: center; padding: 16px 0 2px; }
+  .big-rec.paused { color: #855700; } .pausedot { width: 10px; height: 10px; border-left: 3px solid currentColor; border-right: 3px solid currentColor; box-sizing: border-box; }
   .live-feed { max-height: 340px; overflow-y: auto; text-align: left; background: color-mix(in srgb, var(--accent) 4%, #fff); border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; margin-top: 4px; }
   .live-line { margin: 0; font-size: 14px; line-height: 1.45; }
   .live-who { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 3px; color: #fff; margin-right: 6px; }
@@ -4621,6 +4638,7 @@
   .rev-speaker { font-weight: 600; color: var(--muted); }
   .t-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .banner.provisional { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; } .banner.provisional span { flex: 1; min-width: 220px; }
+  .banner-progress { flex-basis: 100%; }
   .t-toolbar .meta { margin: 0; }
   .btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .job-search { width: 100%; max-width: 520px; padding: 9px 13px; border: 1px solid var(--line-2); border-radius: 3px; font: inherit; margin-bottom: 18px; display: block; }

@@ -748,11 +748,10 @@ fn run_start_meeting_idle(app: &AppHandle, args: StartMeetingArgs) -> Result<Sto
         // One worker drains chunks from BOTH streams and transcribes them serially on the shared
         // Transcriber, emitting each utterance live and accumulating it for the final transcript.
         let worker_app = app.clone();
-        let started = std::time::Instant::now();
         let abort = Arc::new(AtomicBool::new(false));
         let worker_abort = abort.clone();
         let worker = std::thread::spawn(move || {
-            meeting_worker(worker_app, chunks, args.model, args.language, started, worker_abort)
+            meeting_worker(worker_app, chunks, args.model, args.language, worker_abort)
         });
         *backend.meeting_worker.lock().unwrap() = Some((worker, abort));
     } else {
@@ -775,7 +774,6 @@ fn meeting_worker(
     chunks: capture::ChunkReceiver,
     model: String,
     language: String,
-    started: std::time::Instant,
     abort: Arc<AtomicBool>,
 ) -> meeting::LiveResult {
     let backend = app.state::<Backend>();
@@ -797,7 +795,8 @@ fn meeting_worker(
         };
         // Normal latency is ~one chunk length; >30 s behind means the machine can't keep up live.
         // Warn the UI once so it can suggest a smaller model or the "efter mötet" mode.
-        if !warned_lag && started.elapsed().as_secs_f64() - chunk.start_s > 30.0 {
+        // Measured from when the chunk was cut, so a paused meeting does not look like lag.
+        if !warned_lag && chunk.at.elapsed().as_secs_f64() > 30.0 {
             warned_lag = true;
             let _ = app.emit("avskrift:meeting-lag", true);
         }
@@ -834,6 +833,21 @@ fn meeting_worker(
         }
     }
     result
+}
+
+/// Pause or resume a running job started with `begin_work`.
+#[tauri::command]
+fn pause_work(id: String, paused: bool) -> bool {
+    work::pause(&id, paused)
+}
+
+/// Pause or resume the running meeting recording. Paused time is left out of the recording.
+#[tauri::command]
+fn pause_meeting(backend: State<Backend>, paused: bool) -> Result<(), String> {
+    let meeting = backend.meeting.lock().unwrap();
+    let cap = meeting.as_ref().ok_or("Ingen mötesinspelning pågår.")?;
+    cap.set_paused(paused);
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -1923,7 +1937,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![updates::check_update, updates::install_update, model_download_links, import_model_files, refresh_library, begin_work, cancel_work, forget_work,
+        .invoke_handler(tauri::generate_handler![pause_meeting, pause_work, updates::check_update, updates::install_update, model_download_links, import_model_files, refresh_library, begin_work, cancel_work, forget_work,
             create_template_draft, template_package, list_document_templates, save_document_template, import_document_template, export_document_template,
             dictation::dictation_snapshot,
             dictation::configure_dictation,

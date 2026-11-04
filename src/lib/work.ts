@@ -1,7 +1,7 @@
 import {invoke} from '@tauri-apps/api/core';
 import {get, writable} from 'svelte/store';
 
-type Work = {id:string; command:string; cancelling:boolean; finished:boolean; error:string};
+type Work = {id:string; command:string; cancelling:boolean; finished:boolean; error:string; paused?:boolean};
 export const activeWork = writable<Work|null>(null);
 export const isWorkCancelled = (message:string) => message.includes('Arbetet avbröts. Tidigare resultat finns kvar.');
 let starting = false;
@@ -23,6 +23,16 @@ export async function invokeWork<T>(command:string, args:Record<string,unknown>)
     }
     starting = false;
   }
+}
+/** Pause or resume the running job. It stops at its next step and keeps what it has done. */
+export async function pauseActiveWork(paused:boolean) {
+  const work = get(activeWork);
+  if(!work || work.cancelling || work.finished) return;
+  const update = (patch:Partial<Work>) => activeWork.update(current=>current?.id===work.id?{...current,...patch}:current);
+  try {
+    const accepted = await invoke<boolean>('pause_work',{id:work.id,paused});
+    if(accepted) update({paused,error:''}); else update({finished:true});
+  } catch(e) { update({error:`Kunde inte ${paused?'pausa':'fortsätta'}: ${String(e)}`}); }
 }
 export async function cancelActiveWork() {
   const work = get(activeWork);

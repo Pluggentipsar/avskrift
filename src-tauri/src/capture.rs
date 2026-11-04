@@ -56,6 +56,8 @@ pub struct CapturedChunk {
     pub start_s: f64,
     pub samples: Vec<f32>,
     pub src_rate: u32,
+    /// When the chunk was cut: how far behind the live worker is (recording time leaves out pauses).
+    pub at: std::time::Instant,
 }
 
 /// Paths to the two finished source recordings plus the meeting's duration.
@@ -185,7 +187,7 @@ mod imp {
             let start_s = self.start_samples as f64 / self.rate as f64;
             self.start_samples += cut as u64;
             if crate::meeting::has_audio(&chunk, self.rate) {
-                tx.send(CapturedChunk { source: self.source, start_s, samples: chunk, src_rate: self.rate });
+                tx.send(CapturedChunk { source: self.source, start_s, samples: chunk, src_rate: self.rate, at: Instant::now() });
             }
         }
 
@@ -202,6 +204,9 @@ mod imp {
     /// its WASAPI client + WAV writer (COM objects stay on their own thread) and a chunk sender.
     pub struct MeetingCapture {
         stop: Arc<AtomicBool>,
+        /// While set, both streams keep reading but neither writes nor transcribes: the paused time
+        /// is left out of the recording, so the two tracks stay aligned and timestamps continue.
+        paused: Arc<AtomicBool>,
         live_overflowed: Arc<AtomicBool>,
         mic: Option<JoinHandle<(u64, u32)>>,
         sys: Option<JoinHandle<(u64, u32)>>,
@@ -216,6 +221,7 @@ mod imp {
         pub fn start(mic_wav: PathBuf, sys_wav: PathBuf, mic_device: Option<String>, system_device: Option<String>) -> Result<(MeetingCapture, Receiver<CapturedChunk>), String> {
             *super::LEVELS.lock().unwrap()=vec![super::ChannelLevel::default();2];
             let stop = Arc::new(AtomicBool::new(false));
+            let paused = Arc::new(AtomicBool::new(false));
             let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
             // About 17 MB maximum at 48 kHz and 11 s/chunk, independent of meeting length.
             let (tx, chunk_rx) = mpsc::sync_channel::<CapturedChunk>(8);
@@ -223,12 +229,12 @@ mod imp {
             let chunk_tx = LiveSender { tx, overflowed: live_overflowed.clone() };
 
             let mic = {
-                let (wav, stop, rt, ct) = (mic_wav.clone(), stop.clone(), ready_tx.clone(), chunk_tx.clone());
-                thread::spawn(move || run_stream(Source::Mic, Direction::Capture, wav, stop, rt, ct, mic_device))
+                let (wav, stop, pause, rt, ct) = (mic_wav.clone(), stop.clone(), paused.clone(), ready_tx.clone(), chunk_tx.clone());
+                thread::spawn(move || run_stream(Source::Mic, Direction::Capture, wav, stop, pause, rt, ct, mic_device))
             };
             let sys = {
-                let (wav, stop, rt, ct) = (sys_wav.clone(), stop.clone(), ready_tx.clone(), chunk_tx.clone());
-                thread::spawn(move || run_stream(Source::Meeting, Direction::Render, wav, stop, rt, ct, system_device))
+                let (wav, stop, pause, rt, ct) = (sys_wav.clone(), stop.clone(), paused.clone(), ready_tx.clone(), chunk_tx.clone());
+                thread::spawn(move || run_stream(Source::Meeting, Direction::Render, wav, stop, pause, rt, ct, system_device))
             };
             drop(ready_tx);
             drop(chunk_tx); // only the threads hold senders now → channel closes when both end
@@ -247,7 +253,12 @@ mod imp {
                 let _ = sys.join();
                 return Err(errs.join("; "));
             }
-            Ok((MeetingCapture { stop, live_overflowed, mic: Some(mic), sys: Some(sys), mic_wav, sys_wav }, chunk_rx))
+            Ok((MeetingCapture { stop, paused, live_overflowed, mic: Some(mic), sys: Some(sys), mic_wav, sys_wav }, chunk_rx))
+        }
+
+        /// Pause or resume both streams.
+        pub fn set_paused(&self, paused: bool) {
+            self.paused.store(paused, Ordering::Relaxed);
         }
 
         /// Signal both threads to stop, wait for the WAVs to finalise (and the last chunks to be
@@ -288,6 +299,7 @@ mod imp {
         device_dir: Direction,
         wav_path: PathBuf,
         stop: Arc<AtomicBool>,
+        paused: Arc<AtomicBool>,
         ready: Sender<Result<(), String>>,
         chunks: LiveSender,
         selected_device: Option<String>,
@@ -341,6 +353,7 @@ mod imp {
         let mut chunker = Chunker::new(RATE, source);
         let mut first = true;
         let mut down_since: Option<Instant> = None;
+        let mut was_paused = false;
 
         'session: loop {
             if stop.load(Ordering::Relaxed) {
@@ -366,7 +379,8 @@ mod imp {
 
             // Pad the WAV + advance the chunker timeline for any switch-over downtime, so the saved
             // recording and the live timestamps stay aligned with the other stream.
-            if let Some(t) = down_since.take() {
+            // No padding for a switch-over during a pause: paused time is not in the recording.
+            if let Some(t) = down_since.take().filter(|_| !paused.load(Ordering::Relaxed)) {
                 let pad = (t.elapsed().as_secs_f64() * RATE as f64).min(30.0 * RATE as f64) as u64;
                 let zeros = [0f32; 2048];
                 let mut left = pad;
@@ -401,6 +415,8 @@ mod imp {
                     continue 'session;
                 }
                 // Drain whole interleaved f32 frames → mono; write 16-bit PCM and buffer for chunking.
+                // While paused the audio is read (so the device buffer never overflows) and dropped.
+                let pause_now = paused.load(Ordering::Relaxed);
                 let mut batch: Vec<f32> = Vec::with_capacity(queue.len() / frame_bytes + 1);
                 while queue.len() >= frame_bytes {
                     let mut acc = 0f32;
@@ -414,6 +430,9 @@ mod imp {
                         acc += f32::from_le_bytes(b);
                     }
                     let mono = (acc / channels as f32).clamp(-1.0, 1.0);
+                    if pause_now {
+                        continue;
+                    }
                     if writer.write_sample((mono * 32767.0) as i16).is_err() {
                         wav_fault = true;
                         break;
@@ -433,6 +452,11 @@ mod imp {
                     levels[index].peak=level_peak; levels[index].active=true;
                     level_peak=0.0;level_at=Instant::now();
                 }
+                if pause_now && !was_paused {
+                    // Send what was said just before the pause, so it is transcribed now.
+                    chunker.flush(&chunks);
+                }
+                was_paused = pause_now;
                 chunker.push(&batch, &chunks);
                 // Loopback is silent when nothing plays → the event simply times out; keep recording.
                 let _ = h_event.wait_for_event(200);
@@ -485,6 +509,7 @@ mod imp {
         pub fn stop(self) -> Result<MeetingFiles, String> {
             Err("Mötesinspelning stöds endast på Windows.".to_string())
         }
+        pub fn set_paused(&self, _paused: bool) {}
     }
 }
 
@@ -506,7 +531,7 @@ mod queue_tests {
         let (tx, rx) = mpsc::sync_channel(1);
         let overflowed = Arc::new(AtomicBool::new(false));
         let sender = LiveSender { tx, overflowed: overflowed.clone() };
-        let chunk = || CapturedChunk { source: Source::Mic, start_s: 0.0, samples: vec![0.3; 16], src_rate: 16000 };
+        let chunk = || CapturedChunk { source: Source::Mic, start_s: 0.0, samples: vec![0.3; 16], src_rate: 16000, at: std::time::Instant::now() };
         sender.send(chunk());
         assert!(!overflowed.load(Ordering::Relaxed));
         sender.send(chunk()); // must return immediately, even when the worker is stuck

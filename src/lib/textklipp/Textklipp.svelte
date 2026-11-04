@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressEta from '$lib/ProgressEta.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { open, ask } from '@tauri-apps/plugin-dialog';
@@ -83,7 +84,7 @@
         </div>
         <label class="check"><input type="checkbox" bind:checked={diarize} disabled={busy} /> Skilj på talare</label>
         <p class="hint">Talmodell: <strong>{model?.label ?? speechModel}</strong> · <button class="link" onclick={onmodels}>Byt</button>{#if modelProblem}<br /><span class="error">{modelProblem}</span>{/if}</p>
-        {#if busy}<div class="progress" role="status"><span>{progress || 'Importerar…'}</span><progress value={percent} max="100"></progress></div>
+        {#if busy}<div class="progress"><ProgressEta pct={percent} label={progress || 'Importerar…'} /></div>
         {:else}<div class="row"><button class="btn primary" onclick={start} disabled={!!modelProblem}>Transkribera och öppna</button><button class="btn" onclick={() => (picked = null)}>Välj en annan fil</button></div>{/if}
       {/if}
     </section>
@@ -117,7 +118,7 @@
   .hint { font-size: 12px; color: var(--muted); margin: 0; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-  .progress { display: grid; gap: 6px; font-size: 13px; } progress { width: 100%; accent-color: var(--accent); }
+  .progress { display: grid; gap: 6px; font-size: 13px; }
   .btn { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 9px 14px; cursor: pointer; justify-self: start; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; } .btn:disabled { opacity: .5; cursor: default; }
   .link { font: inherit; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; }

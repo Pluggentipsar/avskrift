@@ -175,11 +175,11 @@ fn transcribe_state(
     crate::work::check()?;
     // The Arc outlives the synchronous native call. Callback only reads an atomic, never Rust
     // model state. Avoid the pinned wrapper's safe callback which boxes/casts closures incorrectly.
-    let cancel = crate::work::token();
-    if let Some(token) = &cancel {
+    let flags = crate::work::flags().map(|(cancel, pause)| Box::new(AbortFlags { cancel, pause }));
+    if let Some(flags) = &flags {
         unsafe {
             params.set_abort_callback(Some(abort_requested));
-            params.set_abort_callback_user_data(Arc::as_ptr(token) as *mut std::ffi::c_void);
+            params.set_abort_callback_user_data(&**flags as *const AbortFlags as *mut std::ffi::c_void);
         }
     }
     let result = state.full(params, samples);
@@ -230,9 +230,17 @@ fn transcribe_state(
     Ok(out)
 }
 
+/// The current job's flags, handed to whisper.cpp for the duration of `state.full`.
+struct AbortFlags {
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    pause: Arc<std::sync::atomic::AtomicBool>,
+}
+
 unsafe extern "C" fn abort_requested(data: *mut std::ffi::c_void) -> bool {
-    // Valid only during state.full; ownership stays with its local Arc.
-    unsafe { &*(data as *const std::sync::atomic::AtomicBool) }.load(std::sync::atomic::Ordering::Relaxed)
+    // Valid only during state.full; ownership stays with its local Box. whisper.cpp asks this between
+    // computation steps, so waiting here pauses the transcription (on CPU or GPU) until resumed.
+    let flags = unsafe { &*(data as *const AbortFlags) };
+    crate::work::wait_while_paused(&flags.cancel, &flags.pause)
 }
 
 /// Group whisper's sub-word tokens `(bytes, start s, end s)` of one segment into words. A new word
@@ -502,6 +510,42 @@ impl LoadedSpeech {
 #[cfg(test)]
 mod memory_native_tests {
     use super::*;
+    /// Pausing holds a real Whisper run inside its native computation; resuming finishes it.
+    #[test]
+    #[ignore]
+    fn pause_holds_native_speech_and_resume_finishes() {
+        let path = std::env::var("AVSKRIFT_BENCH_MODEL").expect("existing Whisper model");
+        let path = Path::new(&path);
+        let mut t = Transcriber::new();
+        t.prepare("pause-test", path).unwrap();
+        // Real speech (AVSKRIFT_BENCH_AUDIO, e.g. 10 min) keeps even a GPU busy long enough to be
+        // caught mid-computation; a synthetic tone is skipped too fast.
+        let audio = std::env::var("AVSKRIFT_BENCH_AUDIO").expect("a long speech recording");
+        let samples = crate::audio::load(Path::new(&audio)).unwrap().samples;
+        let id = crate::work::begin().unwrap();
+        let last = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let seen = last.clone();
+        let control = { let id = id.clone(); std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            assert!(crate::work::pause(&id, true), "still running when paused");
+            std::thread::sleep(std::time::Duration::from_millis(500)); // let the current step end
+            let quiet_from = std::time::Instant::now();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let progressed_while_paused = *seen.lock().unwrap() > quiet_from;
+            assert!(crate::work::pause(&id, false));
+            progressed_while_paused
+        }) };
+        let start = std::time::Instant::now();
+        let result = crate::work::run(Some(id), || {
+            t.transcribe("pause-test", path, &samples, "sv", false, false, &|_| {}, move |_| { *last.lock().unwrap() = std::time::Instant::now(); })
+        });
+        let progressed_while_paused = control.join().unwrap();
+        result.unwrap();
+        assert!(!progressed_while_paused, "no progress reports while paused");
+        assert!(start.elapsed().as_secs_f64() > 4.5, "the pause added its time");
+        println!("PAUSE speech: held for 3 s inside whisper, resumed and finished in {:.1} s", start.elapsed().as_secs_f64());
+    }
+
     #[test]
     #[ignore]
     fn cancellation_native_speech_then_fresh_recording() {

@@ -26,7 +26,8 @@ impl Gate {
         let mut s = self.state.lock().unwrap();
         if priority { s.priority_waiters += 1; }
         loop {
-            if let Err(e) = crate::work::check() {
+            // Holds the gate's lock: only look, never wait on a pause here.
+            if let Err(e) = crate::work::check_now() {
                 if priority { s.priority_waiters -= 1; self.wake.notify_all(); }
                 return Err(e);
             }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressEta from '$lib/ProgressEta.svelte';
   import { onMount } from 'svelte';
   import { save } from '@tauri-apps/plugin-dialog';
   import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -65,7 +66,7 @@
     </fieldset>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if busy}
-      <div class="progress" role="status"><span>{cancelling ? 'Avbryter…' : progress || 'Exporterar…'}</span><progress value={percent} max="100"></progress></div>
+      <div class="progress"><ProgressEta pct={percent} label={cancelling ? 'Avbryter…' : progress || 'Exporterar…'} /></div>
       <div class="row"><button class="btn" onclick={cancel} disabled={cancelling}>Avbryt</button></div>
     {:else}
       <div class="row"><button class="btn primary" onclick={run}>Välj plats och exportera…</button><button class="btn" onclick={() => dialog.close()}>Avbryt</button></div>
@@ -86,7 +87,7 @@
   .row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
   .btn { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 9px 14px; cursor: pointer; }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; } .btn:disabled { opacity: .5; cursor: default; }
-  .progress { display: grid; gap: 6px; margin-top: 16px; } progress { width: 100%; accent-color: var(--accent); }
+  .progress { display: grid; gap: 6px; margin-top: 16px; }
   .error, .warn { color: #923115; } .ok { color: var(--accent); }
   .done p { margin: 6px 0; }
 </style>
